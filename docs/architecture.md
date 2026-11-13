@@ -1,5 +1,7 @@
 # 架构设计
 
+2026-11-13 F17／F31 补充：双端最新历史与事件使用同一个 `ConversationSnapshotFence`，按完整目标和导航／连接代次隔离；同 epoch 的旧游标回包不能覆盖较新的任务状态、消息和分页入口。缺少版本或 epoch 不同的并发响应使用本地读取代次判断，后续有界读取仍可建立新检查点；历史前缀分页保留当前运行时且不更新最新检查点，见[专项记录](acceptance/thread-filtered-events-20261113.md#additional-active-task-investigation)。
+
 2026-11-13 F17／F31：双端按会话过滤的事件订阅明确区分 Host 全局游标和会话快照；空批次游标前进不撤销控制新鲜度，重置、epoch 变化及独立有界补读继续修复真实缺口。Android 较早页请求与后台最新页读取分离，等待后复核原导航、连接及前台生命周期，见[实现与验收](acceptance/thread-filtered-events-20261113.md)。
 
 内置 Markdown 与可注册原生预览器；iPhone 真实原桌面文件核心阅读闭环通过，Android 编译及共享规则通过，完整双端与正式发布待验
