@@ -55,3 +55,5 @@ packages/mobile-core/build/
 apps/ios/FilePreviewKit/.build/
 apps/ios/FilePreviewKit/.swiftpm/
 !/docs/acceptance/file-preview-20261026.md
+
+!/docs/acceptance/thread-filtered-events-20261113.md
