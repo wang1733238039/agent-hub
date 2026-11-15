@@ -1,3 +1,4 @@
+import type { MetadataExecutable } from './desktop-thread-preparer.js';
 import { withWindowsProcessCreation } from './windows-process.js';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -5,11 +6,9 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
-  mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
-  renameSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -28,6 +27,9 @@ import {
 import { DesktopRuntime } from './desktop-ipc.js';
 import { DesktopThreadPreparer } from './desktop-thread-preparer.js';
 import {
+  makePrivateDirectorySync,
+  openPrivateFileSync,
+  renamePrivateFileSync,
   assertPrivateFile,
   protectWindowsStateDirectory,
   protectWindowsStateFile,
@@ -142,7 +144,7 @@ export const preparedAdapterDigest = () => loadedDigest;
 
 function save(path: string, value: unknown): void {
   const temporary = path + '.' + randomUUID() + '.tmp';
-  const fd = openSync(temporary, 'wx', 0o600);
+  const fd = openPrivateFileSync(temporary, 'wx', 0o600);
   try {
     writeFileSync(fd, JSON.stringify(value));
     fsyncSync(fd);
@@ -150,7 +152,7 @@ function save(path: string, value: unknown): void {
     closeSync(fd);
   }
   protectWindowsStateFile(temporary);
-  renameSync(temporary, path);
+  renamePrivateFileSync(temporary, path);
   if (process.platform !== 'win32') {
     const fd = openSync(dirname(path), 'r');
     try {
@@ -256,7 +258,7 @@ export class DesktopPreparedBridge implements DesktopCreationBridge {
     private readonly hostId: string,
     private readonly runtime: DesktopRuntime,
     private readonly directory: string,
-    executable: string,
+    executable: MetadataExecutable,
     home: string,
     private readonly firstInput: (
       plan: DesktopCreationPlan,
@@ -266,7 +268,7 @@ export class DesktopPreparedBridge implements DesktopCreationBridge {
     ) => Promise<void>,
     private readonly rememberPrepared?: (metadata: PreparedThreadMetadata) => void,
   ) {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    makePrivateDirectorySync(directory);
     protectWindowsStateDirectory(directory);
     this.preparer = new DesktopThreadPreparer(executable, home);
   }
@@ -449,7 +451,7 @@ export class DesktopPreparedBridge implements DesktopCreationBridge {
     };
     persist();
     if (!plan.directory) {
-      mkdirSync(record.cwd, { recursive: true, mode: 0o700 });
+      makePrivateDirectorySync(record.cwd);
       protectWindowsStateDirectory(record.cwd);
     }
     const cwd = record.cwd;

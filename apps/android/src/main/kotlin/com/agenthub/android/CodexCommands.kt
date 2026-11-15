@@ -98,6 +98,11 @@ object CodexCommandCodec {
 
 /** Commands have specific names and immutable target arguments; no arbitrary route or method API. */
 interface AgentCommands {
+    suspend fun computerFiles(client: MobileClient): ComputerFileCatalog = error("此连接尚未支持文件互传，请更新电脑连接程序。")
+    suspend fun prepareComputerFile(client: MobileClient,file: ComputerFileManifest): ComputerFileReceipt = error("此连接尚未支持文件互传，请更新电脑连接程序。")
+    suspend fun computerFile(client: MobileClient,id: String): ComputerFileReceipt = error("此连接尚未支持文件互传，请更新电脑连接程序。")
+    suspend fun uploadComputerFile(client: MobileClient,source: ComputerFileUpload,progress: (Long)->Unit): ComputerFileReceipt = error("此连接尚未支持文件互传，请更新电脑连接程序。")
+    suspend fun acknowledgeRead(client: MobileClient,request: NativePendingRead): JSONObject = throw UnsupportedOperationException("Reading acknowledgement is unavailable")
     suspend fun archiveWorkspace(client: MobileClient,request: WorkspaceArchiveRequest): WorkspaceArchiveReceipt = error("此客户端尚未支持批量归档")
     suspend fun workspaceArchiveStatus(client: MobileClient,request: WorkspaceArchiveRequest): WorkspaceArchiveReceipt = error("此客户端尚未支持批量归档")
     suspend fun chatAction(client: MobileClient,request: ChatActionRequest): ChatActionReceipt = error("此客户端尚未支持聊天管理")
@@ -109,12 +114,13 @@ interface AgentCommands {
     suspend fun createProject(client: MobileClient,name: String,directory: String,operationId: String): MobileProject=error("请先在桌面授权项目目录")
     suspend fun createdProject(client: MobileClient,operationId: String): MobileProject=error("请在电脑核对项目创建结果")
     fun agentTitle(client: MobileClient)="Codex"
-    fun permissionOptions(client: MobileClient)=listOf(AgentPermissionOption("read-only","请求批准","编辑外部文件和使用互联网时始终询问"),AgentPermissionOption("guardian-approvals","帮我批准","仅对检测到的风险操作请求批准"),AgentPermissionOption("full-access","完全访问权限","可访问互联网和电脑上的任何文件",true))
+    fun permissionOptions(client: MobileClient)=listOf(AgentPermissionOption("read-only","请求批准","编辑外部文件和使用互联网时始终询问",appOwnedCopy=true),AgentPermissionOption("guardian-approvals","帮我批准","仅对检测到的风险操作请求批准",appOwnedCopy=true),AgentPermissionOption("full-access","完全访问权限","可访问互联网和电脑上的任何文件",true,appOwnedCopy=true))
     fun creationOperationId(client: MobileClient,parent: String): String = parent
     suspend fun createdThread(client: MobileClient, operationId: String): MobileThread = error("此电脑未提供创建状态查询，请核对桌面历史")
     suspend fun forkOptions(client: MobileClient,threadId: String): ThreadForkOptions = error("此客户端尚未支持对话分支")
     suspend fun forkThread(client: MobileClient,request: ThreadForkRequest): ThreadForkOperation = error("此客户端尚未支持对话分支")
     suspend fun forkStatus(client: MobileClient,threadId: String,operationId: String): ThreadForkOperation = error("此客户端尚未支持对话分支")
+    suspend fun usage(client: MobileClient): String = error("此客户端暂未提供额度")
     suspend fun models(client: MobileClient): List<CodexModel>
     suspend fun events(client: MobileClient, threadId: String, epoch: String, cursor: Long): EventBatch
     suspend fun send(client: MobileClient, intent: ReplyIntent): DeliveryReceipt
@@ -131,9 +137,11 @@ interface AgentCommands {
     suspend fun cancelQueue(client: MobileClient, threadId: String, operationId: String)
     suspend fun answer(client: MobileClient, threadId: String, turnId: String, approvalId: String, decision: String, answers: Map<String,List<String>>)
     suspend fun upload(client: MobileClient, threadId: String, file: CreationFile, bytes: ByteArray): MobileFile
-    suspend fun downloadResource(client: MobileClient,file: MobileFile,cache: java.io.File): java.io.File = error("此电脑未提供逻辑资源下载")
+    suspend fun resolveMessageFile(client: MobileClient,threadId: String,messageId: String,reference: String): MobileFile = throw CodexCommandError("此电脑未提供逻辑资源下载",appOwnedCopy=true)
+    suspend fun downloadResource(client: MobileClient,file: MobileFile,cache: java.io.File): java.io.File = throw CodexCommandError("此电脑未提供逻辑资源下载",appOwnedCopy=true)
     suspend fun uploadCreation(client: MobileClient, operationId: String, file: CreationFile, bytes: ByteArray)
 }
 typealias CodexCommands = AgentCommands
-data class AgentPermissionOption(val id: String,val title: String,val detail: String,val highPrivilege: Boolean=false)
+/** appOwnedCopy is native adapter metadata, never decoded from provider/wire content. */
+data class AgentPermissionOption(val id: String,val title: String,val detail: String,val highPrivilege: Boolean=false,val appOwnedCopy: Boolean=false)
 class AgentOperationNotSubmitted(message: String?,cause: Throwable?=null): Exception(message,cause)

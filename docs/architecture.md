@@ -5,6 +5,105 @@
 2026-11-13 F17／F31 补充：双端最新历史与事件使用同一个 `ConversationSnapshotFence`，按完整目标和导航／连接代次隔离；同 epoch 的旧游标回包不能覆盖较新的任务状态、消息和分页入口。缺少版本或 epoch 不同的并发响应使用本地读取代次判断，后续有界读取仍可建立新检查点；历史前缀分页保留当前运行时且不更新最新检查点，见[专项记录](acceptance/thread-filtered-events-20261113.md#additional-active-task-investigation)。
 
 2026-11-13 F17／F31：双端按会话过滤的事件订阅明确区分 Host 全局游标和会话快照；空批次游标前进不撤销控制新鲜度，重置、epoch 变化及独立有界补读继续修复真实缺口。Android 较早页请求与后台最新页读取分离，等待后复核原导航、连接及前台生命周期，见[实现与验收](acceptance/thread-filtered-events-20261113.md)。
+2026-11-08 F69：退役 Windows 原生建议 Responses 回环转发，Host 不再把建议采集放进原 Codex 的模型网络路径。安装、升级和回退剔除旧设置，仅移除产品安装且有回执的 URL。Windows 手机端暂缺这项建议来源。[运行说明](runtime.md#windows-原生建议-responses-转发退役)
+
+2026-11-07 C2-SUB：EasyWork iOS/Android 在同一认证会话消费子代理事件与权威快照，由共享规则核对原 thread、branch、root/child 并投影完整详情。事件只唤醒读取；不拼接重发片段、不新增运行或命令。共同时间线保留原角色和独立子行，原生折叠预览不改数据，既有传输安全上限保留。Codex 适配器对已加载和已保存的可用子代理输出使用同一只读投影。按原序保留任务与正文，每卡限定 200000 UTF-16 单元和 32 个父项明确关联的子线程，超限时提供部分详情提示。见[阶段121](plans/android-alignment-20261022/records/stage121-c2-selection-and-codex-detail.md)。源码、组件、真实设备/桌面及待验边界见[阶段120](plans/android-alignment-20261022/records/stage120-c2-subagent-native-reading.md)。
+
+2026-11-04 F69 Windows Responses 通道：Windows Host 显式选择独立的回环转发采集，从原桌面预测请求绑定来源聊天／完成轮及 response ID，不依赖前台 UI、OCR 或额外生成。原 CLI TCP peer、IPC owner、读取前中后来源及当前结果版本分别核验；每聊天只保存最新状态，失败／取消／空值／新请求不回退旧正文。兼容领域接口增加 `responses-forwarder` 来源说明，不声称 renderer 可见或安全后确认。macOS 原 Trace／native-sample 安全判定及启动路径保持，详见[实现与验收边界](acceptance/windows-response-suggestions-20261104.md)。
+
+2026-11-05 Android F61：旧not-written不再单独授予原ID重试/恢复原文；Android依现有完整目标/信任/指纹及有效强未接受证明保守准入，未确认的failed回复须核对或显式结束等待。首次提交与KMP/iOS不改，普通journal持久消费、source/outbox与strict lineage仍待补强，不通过重写旧READY建立历史证明。功能/交互与真实验收分列于[阶段95](plans/android-alignment-20261022/records/stage95-legacy-reply-safety.md)。
+
+2026-11-05 Android F59：独立文件页及现有Host电脑级文件端点已源码接入，不创建聊天或模型任务。安装级writer、根snapshot及具名F59独占锁保护分块加密原件；严格文件同步/关闭/替换与目录确认先于UNKNOWN及POST，终态与精确删除确认先于本地额度回收。普通存储调用未全局迁移，F59域尚无portable格式，有原件/资源未知时整包迁移拒绝。Android明确的本机容量与Host未配置上限仍有差异；源码、编译、故障、UI及真实DEV分别登记，见[阶段94](plans/android-alignment-20261022/records/stage94-f59-strict-storage.md)。iOS实现不变，A6仍暂停。
+
+2026-11-04 F69 本机部署候选：在正式 R11 对应的规范提交上叠加空日志候选计数修复和 macOS 私有诊断日志，保留正式 Host 已有诊断、恢复和原生 owner 规则。空文件每次复查，增长后从零读取，已跟踪截断仍拒绝；日志记录生命周期、固定原因、阶段、心跳和结果状态。iOS／Android 共用 Host 来源规则，UI／草稿语义保持，Android 建议 UI 与 A6 状态不变。源码、辅助检查、实际部署与建议来源验收分别记录。
+
+2026-11-04 F34／F36：按最新交互要求，输入区立即预览下一轮草稿模型／推理／速度，未覆盖字段回落到准确 owner 已知值；设置页“电脑当前设置”继续只读显示真实运行参数。iOS／Android 共用 KMP 展示规则，沿用原目标隔离、持久化和实际发送边界，选择本身不写入电脑任务。此修订取代 2026-10-26 的输入区只显示当前 owner 设计；历史验收不自动升级，见[本轮记录](acceptance/next-turn-generation-display-20261104.md)。
+
+2026-11-03 F59／F19／F32：移除独立文件互传与聊天资源下载预览的 20 MiB 固定上限。新 Codex Host 的文件目录以 `maxFileBytes: null` 表示未配置大小上限，iOS 兼容旧 Host 的有限值；Host、电脑发送 CLI 与 iOS／Android 下载不再按 20 MiB 拒绝。仍验证准确目标、原消息授权、普通文件、不可变长度和 SHA-256，未知传输只查询原回执。大文件仍受可用存储、内存、网络及系统格式支持影响；Markdown／HTML 渲染预算不改变下载与分享能力。双端影响、辅助检查、物理设备与真实桌面证据分列于[专项记录](acceptance/file-size-limits-20261103.md)。
+
+原桌面的自有 CLI 启动器被动观察已有 thread/sample 请求及其匹配返回；不调用建议 getter、不启动模型轮、不修改 Electron。只有同一 sourceThread/sourceTurn 的原桌面 safety_decision 明确 suppressed=false 后，才保存并发布准确正文。Host 按完整机器目标、原 owner、当前完成轮、原生进程链、producer epoch、实现摘要和短期租约复核；失败关闭当前显示，历史 latestExtracted 不回退显示。macOS 使用既有共享启动器，Windows 原候选使用当前用户私有固定 C# shim→Node→实际签名 CLI；该路径会把可选采集的失败放进原桌面启动边界，2026-11-01 已停用未来安装并提供旧覆盖恢复，不能再作为默认接入路径。Windows 每次重连元数据 reader 重新定位当前可信原桌面的 CLI，确认旧 reader 退出后再启动；历史路径仅为提示。统一包、逐机部署及实体手机验收仍须分别记录。
+
+2026-11-01 F69 目标继续：完整保留 Windows 原桌面建议采集，先证明独立于 Codex 启动的只读数据源，再开发并实机验证。固定上游代码发现既有 Trace 的完整响应可能先于 sample 清理保存，但原机来源及安全决定的一对一关联仍缺，不能放宽取消守卫。当前 Windows 入口拒绝连接，本轮未开发或部署新采集器；详见[独立采集可行性研究](research/windows-suggestion-independent.md)。
+
+2026-11-01 F03／F69 Windows 启动安全：停用会接管原 Codex 后端的全局建议采集垫片安装。旧安装仅解除有本产品私有清单证明且仍指向原 launcher.exe 的 HKCU CODEX_CLI_PATH，保留其他覆盖、私有配置、身份和运行中的进程；config.json 损坏、旧源码摘要或应用路径失效不阻断恢复。iOS／Android 共用此 Windows Host 限制，UI、macOS 路径及 A6 暂停范围保持；Windows 被动结果采集暂不可安装，真实桌面与手机验收分别记于[启动安全记录](acceptance/windows-codex-startup-safety-20261101.md)。
+
+## F52：按 topic 隔离 APNs 与 EasyWork publisher（2026-11-01）
+
+Relay 源码支持非默认 `topicKeys` 的逐环境密钥，未知 topic 或缺少的环境不回退到正式 topic。Host publisher 可配置 `topic`、`allowedTargets` 和 `environments`；EasyWork 的完整 Agent、Host、workspace、runtime、account authority/subject 在注册、撤销、状态读取、发布与待投递检查中核对。旧 publisher 省略这些字段时沿用原配置，旧绑定缺少 topic 时仅解释为原默认 topic。
+
+iOS 独立 development 验收环境可据此使用单独 Sandbox 授权；Android/FCM 本轮无实现或配置变化，不能复用 iOS 结果。当前新增辅助边界检查与实际部署、Apple 接受、手机到达分别留证；配置完成不代表 F52 全项通过。
+
+2026-10-31 F02/F03：EasyWork发现候选显示电脑名、系统用户名及地址，读取验证后的/host可选computer元数据并兼容旧name；名称不作授权目标。旧Host缺自动直连声明时明确提示扫码并提供入口，不盲目POST或绕过原配对。桌面自动直连/VPN历史增量同步至EasyWork源码，保留较新TLS；两端源码、辅助检查、实体iPhone、真实Electron/模型和实际部署分别记于docs/acceptance/easywork-discovery-20261031.md，A6暂停保持。
+
+2026-11-01 F19／F32 可视化：Adapter 将完整 visualize 指令转换为普通原消息文件链接并登记 HTML 附件；iOS 对旧缓存指令提供展示兼容，仍走准确消息具名解析。下载校验后的不可变 HTML 在无原生桥、非持久 WebKit 与 allow-scripts 沙箱 frame 中运行，固定 CSP 限制 CDN、导航、表单及嵌套页面，不给页面 Host 凭据或目录授权。Markdown F72 路径保持原生纯阅读；Android HTML 容器尚待实施。实现与本机实体结果见[专项记录](acceptance/visualization-20261101.md)。
+
+Windows 私有状态的 `protect` 在同一 retained handle 校验当前 User owner 和对象类型后，只对已 protected 且 DACL 字节与标准三 SID／完整权限／继承标志完全一致的对象跳过 `SetSecurityInfo`；仍重读并执行 owner、protected、访问主体校验。其他 DACL 沿用原保护／拒绝路径，不按 Administrators owner 或仅 trusted allow 放宽。避免重复写入可继承 DACL 对未 protected 旧 v1 子对象产生副作用；实际 Windows ctime 因果与新 Native 输入通过另行验收，见[幂等保护记录](acceptance/windows-private-dacl-idempotence-20261031.md)。
+
+2026-10-31 F69 源码候选：Windows 原桌面建议观察器在原字节管道建立并收到原执行器响应后启动固定采集 Worker。Worker 使用同一原 owner、配置和启动器链验证的持久 C# producer scope，私有快照及有界 vendor-log range 不再逐次启动进程；旧 Host reader 的接口保持。队列、帧、每次原生响应及聚合阶段均有界，六秒租期不变；观察器失败仅关闭采集，未就绪前的帧不积存或重放。建议先持久保存并读回，每会话仅留最新一条；已封口且安静的对应原始 Trace 才可回收。当前实现、辅助检查和逐机真实验收分别见 [本轮记录](acceptance/host-native-suggestions-20261031.md)，不能以源码或旧版本结果代替本次 Windows 与手机建议通过。
+
+冻结 R2 的 Host 运行能力与 PR73 主线正在按实际三方差异集成：共享 CLI 发现与 reader 代次保留，R2 生命周期串行化、Native 建议、Trace/GC 和只读 Git 同源合入；不复制活动 WIP 或移动端页面。部署门禁按实际合并、制品与 Windows 独立结果解除，见[集成记录](acceptance/codex-update-r2-integration-20261030.md)。
+
+Windows 私有文件的创建事实由 Native 的 CREATE_NEW 句柄产生，并以通道租约交接到 Node 已打开的 FD；收到原租约释放确认前不得截断。Native 冷编译同样保留创建对象与自有编译 job 的退出边界，发布和清理均绑定句柄。既有对象的 User owner/DACL 要求不放宽。旧 Windows v1 阅读缓存不做 owner 迁移，保留后使用可重建的 v2 命名空间；主状态与操作账本位置不变，macOS 仍用 v1。实现、隔离回归、Windows 实测与 R2 集成部署门禁见 [更新恢复记录](acceptance/codex-update-resilience-20261030.md)。
+
+Windows 冷编译输出预约与 Node 交接租约按内部用途选择访问位：普通 Node lease 保持 FILE_READ_DATA 和无 DELETE 共享，编译 A 保持 metadata-only 预约及原句柄身份，目录用 FILE_LIST_DIRECTORY 实施命名空间租约，B 的发布和清理仍绑定原句柄。不得将 metadata 预约描述为文件 rename 屏障；同源冷编译、替代路径拒绝和保留句柄清理的证明范围见[专项记录](acceptance/windows-cold-compiler-reservation-20261031.md)。Windows 新输入尚待独立验收。
+
+2026-10-29 Host 诊断写入使用独立 worker 和固定事件 Schema，HTTP isolate 仅维护有界队列；Windows 辅助诊断走独立线程通道。只读连接合并并发，关闭后迟到代次不复活；命令未知状态不重放。实现与限制见[诊断与恢复](host-reconnect-diagnostics.md)，平台结果见[专项验收](research/host-reconnect-diagnostics-20261029.md)。
+
+## Android 原录音的本机文件识别
+
+Android 以窄接口 `NativeSavedVoiceSpeech` 分离资源检查、显式模型下载与原录音文件识别；当前接入 Vosk/JNA，固定中英模型清单及完整指纹校验，资源检查不下载、不打开麦克风。识别仅消费封存的单声道 PCM16/16k WAV。原录音、原桌面操作与回执保持不可变，本机结果写入版本化私有目录；准确草稿或非敏感问题答案的持久化和读回收据成功后才能标记 applied，失败或结果未知保持 staged，晚到结果不能覆盖新 owner。关闭和迁移须等实际 worker 退出，迁移保留离开 active index 的原件与结果引用。该目录是 Android 本机格式，未据此宣称双端 KMP 规则完整迁移；真实引擎、系统与物理 DEV 的状态以[验收档案](acceptance/mobile-parity.md)为准。
+
+## iOS 迁移容器的语音原件
+
+2026-11-02 阶段61：iOS既有迁移container增加可选语音原件，空原件继续Envelope/Payload v1，非空使用v2与独立AAD、严格闭合解码及原source witness；这不是新的双端整包格式。原音频与metadata/control进入独立惰性档案，不接入普通恢复/prepare/upload/replay/许可。active/cold/saved/incoming共同受64MiB/128文件物理预检和copy前持久journal约束；有效发布原件在业务回滚后仍保留计quota并可再导出，partial/unknown等保留阻断。iOS SDK本次通过，四源macOS CLI匹配复用；运行态/双端DEV与完整迁移仍待验，见[阶段61档案](plans/android-alignment-20261022/records/stage61-p7-voice-originals.md)。
+
+## F74：显式开启的 Host 模型代理
+
+2026-10-29 图像扩展：显式图像模型清单增加 OpenAI 格式的生成与 JSON／multipart 编辑，Codex Adapter 负责固定图像上游和参数偏好转换；Host 负责独立图像预算、实际文件头校验、最终图片 SSE 及元数据回执。当前仅 gpt-image-2，尺寸／编码偏好不冒充硬参数，未知不重放。移动 UI 不新增入口，逐项范围见[图像接口](host-images-proxy.md)与[专项验收](acceptance/host-images-proxy-20261029.md)。
+
+独立监听仅由 `HOST_RESPONSES_PROXY_ENABLED=1` 开启，默认不初始化。官方只读授权、固定 Codex 上游和版本差异在 `packages/codex-adapter/src/desktop-responses.ts`；Host 负责独立 Key、TLS、模型允许清单、资源上限和持久回执。Relay 不持有授权或转发此请求，原桌面对话、手机连接和执行 owner 保持原边界。
+
+`/v1/responses` 流式路径保留上游原始 SSE 字节，非流式返回 `response.completed` 的原 Response 对象。`/v1/chat/completions` 显式转换消息、function 调用标识、文本／推理增量及用量，不宣称其为原始 SSE。Chat 兼容入口支持单选择、文本／用户图片和 function 工具定义；不在 Host 执行工具。温度、采样及输出长度等 Codex 不支持的 Chat 控制参数不向上游发送，不宣称参数已生效。
+
+每次请求重新读取当前授权，不登录、不刷新、不写认证存储；仅接标准 ChatGPT 路由，专用路由及企业 requirements 拒绝。这是 Codex 内部推理后端，区别于另需 OAuth scopes 的官方公共 Responses。普通 Codex 连接仍以机器目标识别，不新增账号连接门禁。
+
+操作先保存路由、模型、请求摘要，再保存提交意图，最后只发一次上游请求。回执不保存输入／响应正文、Token 或账号。重复原 ID 一律拒绝；未完成记录重启后为 outcome-unknown，不自动重放。先取得准确 socket 和私有状态写入权，再恢复回执，第二实例不得改写活动操作。未取得 `response.completed` 不记成功。两端手机 UI 无新增入口，平台验收分别记录。
+
+2026-10-29 Android 设备授权增加按存储root/ref协调的持久撤销栅栏：完整原意图先保存，未知/确认撤销均拒绝迟到refresh或pair保存及旧proof返回；重建从原具名操作恢复，不重放业务输入。原grant未知字段、原pending和指纹在加密审计中保留。语音默认选择使用同一Session自身的加密存储，安装/权限/能力不随用户偏好迁移。精确原生/辅助及未验界限见[PAR4档案](plans/android-alignment-20261022/parallel/fourth-stage-native.json)。
+
+2026-10-29 Android 通知恢复 v2 源码已接到可选前台 monitor：完整原意图先落盘、未知只查原 ID，独立关闭与显式缺口接受保持各自收据，待 Host 确认事件不推进游标。JVM 辅助与原生编译分列；共享 UI／迁移入口和真实 DEV 尚待集成负责人验收。iOS v1 与供应商承诺不变，见[Android 候选与交接](plans/android-alignment-20261022/parallel/p9-notifications/recovery-v2-android.md)。
+
+2026-10-27 F03/F69：Host 的独立局域网 HTTPS 监听启动失败后，以 1、2、4、8、16、30 秒封顶间隔串行重试。每次仍读取原私有身份和端口，不旋转证书或放宽鉴权；已绑定后二维码或发布失败时，须先释放监听和定时资源再重试。Host 关闭会取消待重试，并关闭尚未完成的启动所产生的迟到结果；关闭处理先于首次异步启动注册。已建立监听保留既有生命周期，未将主动关闭解释为再次启动。固定错误标识及重试次数进入诊断，原始错误正文不进入监督器日志。共享 Host 对两端连接生效，UI、设计与协议保持；Windows 异常退出根因、建议读取和物理手机的实际结果独立记录，不能由本地恢复检查代替。
+
+2026-10-27 F03/F69 Windows prepared 前缀收据返修：其他对话在原生批次句柄关闭后追加日志时，重新打开并比对原前缀完整SHA，核对文件/路径身份且禁止截短；不重放Native调用。真实短负前缀仍保留原大小门禁，只有完整配置载荷确认后才允许尾部增长；完整正文/manifest/载荷、ACL/chain、最终commit和原预算不变。新增正常追加反例旧代码RED，以及前缀改写、未分类增长和截短拒绝；macOS与双端UI不变，Android无新增通过，A6暂停。V19 Windows实测prepare拒绝但未唯一定位具体守卫，本次候选的目标部署及手机结果继续分别验证。
+
+2026-10-26 F69 Windows 准备阶段候选：时间过滤后的新鲜目录按最多八项重新组成前缀和配置载荷批次，避免原目录分组中剩余单项反复逐项读取。每个批次至多八项，仅使用本请求的新鲜收据，过滤掉的 manifest 及每个目录、文件和最终 commit 守卫完整保留；原 4/7/8 秒预算、原 owner、权限、内容与六秒租期不变。辅助回归对照同一实际文件系统上的 scalar 原生接口，准备/提交的完整路径及读取长度多重集和全部收据相等；稀疏场景由 17 个 scalar 调用降到仅根目录 1 个，后变为合格的排除项仍拒绝 commit。当前是源码候选，尚未由本次 Windows 原生或手机验收证明收益。macOS 路径和双端 UI 不变，Android 无新增通过，A6 继续暂停。
+
+2026-10-26 F69 真机续验：人类确认 UI 自动化设置及正常重启后，独立物理 iPhone 15 Pro Max 对指定 MacBook 与 M5 的 V7 正式 Host 完成 A→B→A→B 灰字/全文、采用/撤销及冷启动；原 owner 来源和用户输入集合保持。测试表单未切换失败、测试 helper 局部重选及新旧 App 二进制分别留证；新 App SHA256 为 9d393fe796e94bc007323e70bcfb610ba4e75b6f6b2e006ac5287702b1208e11，两台分别 154.647/118.129 秒通过。Windows V7 正式 prepare 仍耗尽 4 秒，当前候选未部署；这些 Mac 通过不升级 Windows、Android 或完整产品状态。见专项连接修复记录，A6 保持暂停。
+
+2026-10-26 F03／F17：逐机复核发现 desktop open 的只读尾部仍强制发布完整状态头。现在该路径同步执行相同的真实 writer／完整磁盘头／权限及完整内容校验，只有已成功同步的相同字节可复用；任何变化（包括回执）仍在返回前完整发布并同步。若存在待补偿的命令提交，读路径也必须执行原强制同步，不能清除未落实的提交门禁。新增实际 RuntimeSession.open 的合成原 owner 回归覆盖重复打开、相同长度正文/状态、变更标题及待提交命令。iOS／Android 共用 Host，UI、草稿和未知操作不重放规则保持，真机与逐机结果另记，A6继续暂停。
+
+2026-10-26 F03／F17／F69：Host 只读目录变更改为合并后台保存；准确原 owner 的完整消息投影逐字段相等时保留历史引用，正文、附件、状态或 ID 变化仍更新。后台状态仅在真实写入者／完整磁盘头连续、实际权限合格且完整序列化字节等于本进程已同步落盘的头时跳过重复发布；命令显式保存仍每次执行文件及适用平台目录同步，任何新写失败均撤销该可复用证明。故障、未知操作与回执边界保持；iOS／Android 共用 Host，未改变 UI 或草稿规则。辅助检查、各机延迟与物理手机结果分别登记，Android 不新增通过，A6 保持暂停。
+
+2026-10-26 Windows 连接恢复：原桌面更新后，运行中的 Host 在每次重连重新核对当前管道 owner、用户／登录会话、相邻协议 archive 与可信 CLI，复用启动阶段同一有界发现实现；不写入正式配置，不改 Host 身份，不重放未知输入。旧只读 metadata 进程须确认退出与 stdio 关闭后才能切换 CLI；辅助边界与实际 Windows 原生结果分别登记。iOS／Android 共用 Host 恢复，UI 和草稿规则不变；物理手机 XCTest 启用自动化超时仍为未通过。
+
+Windows 自动重连更新的可信 CLI 选择同时供新建、分叉、队列和项目管理的下一条元数据连接使用，避免长生命周期辅助对象继续使用失效安装路径。路径提供者仅在 Adapter 内部，逐次要求固定绝对路径，不开放客户端可选命令或方法；原零 Turn 准备、确认退出、原 owner 执行及未知输入不重放边界保持。当前候选的辅助检查和实际 Windows 结果分别登记，不升级手机或 Android 验收状态。
+
+Windows 原生 helper 的暖启动将目录保护、逻辑 binary 和物理 binary 的现有私有权限校验合并到一次 PowerShell 进程中执行，每个新 isolate 仍重新完成全部检查，不复用跨请求授权。校验后再次核对实际路径，失败不填充本进程缓存；冷编译和私有临时文件发布边界保持。此改动减少启动进程数，不能据此宣称原生建议、读取时延或手机验收已通过，实际结果单列。
+
+2026-10-26 F69 Windows 原生批次候选：小项上限由8增为64，仍按原48KiB请求、256KiB响应估计、每项16KiB和100000字符命令行上限规划，原生最多8项并发；每个原始Snapshot的完整新鲜打开、前后路径/身份/ACL/内容核验均保持，失败整批拒绝且不重放。原750ms单批与4/7/8秒读取预算不变；不增加权限或跨请求缓存。真实Windows单次计时四组摘要相同，但不包含正式传输，不能据此断言根因或收益；候选实际部署和手机结果仍待验。iOS／Android UI不变，Android无新增通过，A6暂停。
+
+2026-10-27 Windows prepared 读取候选：批次规划按行增量累计完整序列化字节与原响应链上限，每个候选只做一次路径/大小验证，发送前仍重新验证完整帧；保留原64项、48KiB/256KiB、每项16KiB及全部预算。仅Windows prepared发现先读1KiB前缀；首个session_configured事件完整时，以其精确载荷继续原校验，尚未完整时才将成功的读取扩展到原16KiB，并保留两次前缀/原生收据。失败不扩展、不重试；选中的完整日志/请求/响应及全部目录/ACL/身份/最终commit核验保持，无跨请求缓存。诊断B项计数上限由过期8修正为64。辅助边界与当前Windows原机收益/正式HTTP/手机建议结果分开登记，候选尚未部署；macOS仍用原16KiB路径，双端UI不变，Android无新增通过，A6暂停。
+
+2026-10-28 iOS 主动丢弃录音与生命周期保留分离：输入条“×”和重新录音先落盘丢弃标记，再删除手机音频，恢复时排除该原操作；普通导航／后台仍保留恢复。Host 回执与不可变操作不变，取消代次隔离迟到结果。Android 新断言待对齐，验收见[专项记录](acceptance/voice-discard-20261028.md)。
+
+2026-10-28 Android PAR1：流式迁移、手机独立阅读/逐事件查询与普通通知本地回执已形成窄模块，通知认领在同根锁内重检阅读；系统/认证事件接线与全部子存储仍开放。Android新文件封套v2/归档v3暂非iOS互通格式，原生合成通过不代替真实Desktop/模型或后台送达。[分工与当前范围](plans/android-alignment-20261022/parallel/README.md)。
+
+2026-10-28 通知恢复 v2 源码候选：Host 将完整不可变意图、原 ID 收据、设备订阅代次和缺席设备撤销墓碑保存在同一原子状态文件；先保留后应用，重启只结算原意图。内部磁盘格式升级会阻止旧 writer 忽略新墓碑，未采用 v2 的设备继续使用原 v1/iOS wire。原事件 feed 采用持久 epoch、连续序号、有界分页和显式缺口复位，不自动跳游标或用新版本确认旧 v1 unknown。Android v2 接线、真实 Host／设备／模型及部署仍待阶段验收；没有新增 vendor 承诺或通用 health 能力。见[实现边界](plans/android-alignment-20261022/parallel/p9-notifications/recovery-v2-server.md)。
+
+2026-10-28：Host bridge 的速度能力只按模型目录的稳定 ID 解析，保留 standard／fast／ultrafast，fast 在桌面 wire 边界统一为 priority；未知 ID 不按展示名称猜测能力。原 owner 当前 service tier 优先于保留的旧轮次设置，明确 null 表示标准。iOS 多档选择使用原生菜单；实现、模拟器真实任务与未验收平台见[本次记录](acceptance/host-ultrafast-20261028.md)。
+
+2026-10-28 Windows 安装与连接：按用户要求移除桌面与 CLI 的 Publisher／签名文案／Store 包身份门禁；同一管道句柄、当前用户与登录会话、准确路径／摘要及真实 IPC 方法检查继续执行。私有状态 bootstrap 与常驻 worker 共用文件句柄实现，只读所有者与 DACL、只写受保护 DACL，保留 SACL，不提权或接管他人文件。源码与辅助检查不代表目标 Windows／手机功能通过，见[专项记录](acceptance/windows-install-20261028.md)。
 
 内置 Markdown 与可注册原生预览器；iPhone 真实原桌面文件核心阅读闭环通过，Android 编译及共享规则通过，完整双端与正式发布待验
 
@@ -159,6 +258,10 @@ macOS 的短生命周期完成通知只能作为及时发现通道，不能作�
 聊天首次渲染窗口从最近 60 条缩小到 20 条；连续工具组边界和原有向前加载入口保持，完整历史缓存与草稿不裁剪。导航保存让位于请求启动；历史应用沿用已有的合并保存和后台强制落盘，避免同一结果立即重复扫描未读状态，提交前持久化边界保持。调试构建保存不含目标、正文或凭据的单调时钟分段耗时；XCTest 查询上界和真实提示挂载时间分别记录。真机结果与网络波动单列，不能由 Host 本机接口耗时推断手机必然一秒内显示。
 
 ## 手机正文链接
+
+2026-10-26 P6-4a：双端目的分类统一到MessageLinkRules，原生只解析URL组件，iOS旧分类生产路径已迁移。Android按原消息、完整机器目标及导航/连接代次处理链接；电脑loopback、带凭据网页和未知协议显示错误及复制入口。网页走系统Custom Tabs，不携带Host密钥。系统浏览器实际加载/返回、Android电脑文件解析和当前版本预览仍待后续验收，分类通过不等于资源链路完成。
+
+2026-10-26 P6-4b–4d：Android原消息资源解析/版本缓存、逐段等待、文本/图片原生预览和受控分享已接通；实际原模型链接的资源字节有限通过，完整格式与真实系统接收方仍开。双端资源二进制GET携带捕获的原运行目标，两个严格解析GET省略target并校验返回目标；缓存按共享机器/聊天身份和文件版本隔离，Codex账号字段仅为元数据。iOS旧无runtime连接有独立host/thread缓存空间，不借用已知runtime缓存；不删除旧缓存或改写历史。当前版本解析先于缓存、410不得复活旧版、409只补读一次。iOS新增边界的模拟器辅助与原App/真机证明分开。
 
 Codex Adapter 将当前对话实际返回的本地 Markdown 链接解析为文件引用，支持相对／绝对路径、`sandbox:`、`file://`、URL 转义、尖括号中的空格、括号及行号。文件仍须通过原授权根目录、真实路径、大小与摘要检查；只在本次消息已检查的附件中选择对应版本，正文改为不含电脑路径的逻辑附件链接。精确版本下载继续重新校验登记摘要。2026-10-21 新增按原附件 ID 解析当前版本的只读入口；iOS 打开链接、下载或再次预览时先解析，再按新 ID／摘要使用缓存或下载，解析与下载之间变化仅重新解析一次。旧消息、旧附件与提交回执保持原内容；不接受新路径或扩大目录权限。旧 Host 缺少入口时沿用原精确版本行为。此链路不修改原桌面正文，也不将网页交给 Host 代理。
 
@@ -413,6 +516,8 @@ EasyWork 原生读取使用桌面既有 `thread/sync` 差量契约：同一已�
 
 电脑间文件发送由独立 `transfer-host.mjs` CLI 实现，复用 Host 的 files:upload 接收接口。发送电脑核对 HTTPS、设备密钥和完整机器目标，在本机持久保存不可变文件快照与清单，再直接向接收 Host 上传二进制。重复发送只查询原回执，显式恢复使用同一 ID 和快照；接收 Host 负责固定目录发布与回执恢复。文件字节不经过模型、Relay 或跨聊天消息。实现检查、逐机真实场景和部署指纹分别记录，详见 [文件互传](file-transfers.md)。
 
+2026-10-29 协调 CLI 增加上下文预算：新建／续发的完整正文限 8 KiB UTF-8，拒绝长编码载荷、data URI、二进制控制字符及无效 UTF-8，文件只在正文引用独立传输回执。输出限 16 KiB，目录分页并按 JSON 字节数收缩，回执和模型设置采用字段白名单；HTTPS 压缩及解压响应均限 8 MiB。历史意图可查询且不重放，尚未执行的 prepared 创建先检查新规则。范围仅为 Host Connect 协调工具，不改变 Host HTTP 契约或 iOS／Android 的正常消息、附件与 UI。源码与本地边界检查、已安装工具版本、跨电脑真实交互分别记录；详见[协调预算](../skills/codex-host-connect/references/coordination-guide.md#正文与上下文预算)。
+
 Android 将增量结构合并放在 `mobile-core`，原生层验证 UTF-8 SHA-256 后才发布候选状态；iOS 保留上游 Swift 合并器。两端消费同一份实际桌面生产器生成的 15 项协议向量，不重算或跨语言序列化服务端的消息版本。原生会话负责缓存、连接代际和取消隔离；Android 在四线程限制之外使用保守估算的 4 MiB 缓存权重预算，大完整读取仍返回给调用方但不保留该缓存。当前本机双端实际 DEV 验证复杂消息的已知正文省略及完整变化正文；单文本 append 分支另由共享向量和加密原生通道边界验证。具体包／来源指纹、证据复用及未完成的公网认证／部署见迁移台账。
 
 ## 5. 身份与数据模型
@@ -501,6 +606,8 @@ iOS 工作区与模型目录读取绑定当前客户端选择和连接配置的�
 2026-10-26 F71外部文件：iOS通过文档类型注册接收文件URL，并嵌入只做本地保存的Action扩展。扩展和主App共用受保护App Group收件箱，原子发布有界批次及摘要；主App恢复前台后由用户确认准确草稿，固定文件ID去重、绑定原草稿代次，持久化完成后才消费批次。系统粘贴只在显式点击后读取供应器，支持文件URL、文件表示与字节，普通文本/网页不生成附件。保留20 MiB上限，所有Host上传仍由既有发送协调器调用；扩展不持有Host凭据或提交任务。现有模态关闭后再展示收件箱，避免覆盖系统选择器。实现与各来源实际结果见[专项验收](acceptance/external-attachments-ios-20261026.md)，Android同等入口待A6。
 
 2026-10-25 F71 iOS 首批增加最近图片、拍照和显式粘贴入口。平台服务只提供候选与原生资源，KMP 纯规则校验槽位、目标和草稿代次；读取、图片规范化与文件写入在后台执行，准备记录先落盘，再按原草稿追加附件并持久化。清空使旧代次失效，已提交输入仍引用原附件；崩溃恢复只核对摘要并完成本地事务，不上传或重放。只有既有发送协调器调用上传与提交。最近新增提示要求明确开启、完整相册授权和可靠 addedDate；部分授权或旧系统保留手动选择。实现、辅助与真实 DEV 见[执行计划](plans/mobile-quick-attachments-20261024.md)，Android A6 与分享批次保持原范围。
+
+Android新本地附件请求捕获5项额度，随原目标、草稿代次和请求ID持久；文档账本与收件箱v2显式记录额度，同槽v1按原10项读取，不因读取改写。旧批次重试、补原文件和已提交十项清单保持原额度与身份，新请求越限先于来源读取拒绝；Host清单协议不变。此兼容不代表跨设备迁移或系统进程死亡已验收。
 
 1. iOS 选择图片或 Files 文件，为每个附件创建逻辑 ID，记录名称、类型、长度和摘要。
 2. 将附件传到目标 Host；拟采用可恢复上传。图片可转换为兼容格式，保留用户可见的原文件信息。
@@ -632,7 +739,9 @@ iOS 待答入口固定在浮动输入栏上方，纳入输入栏高度测量与�
 
 Host 将可替换后台状态保存与命令提交分开处理。后台原子保存每轮最多尝试四次（200/500/1500/5000 ms），保留最新状态；耗尽后冷却一分钟并定时主动再尝试，不依赖后续业务事件。历史缓存按 Thread 独立限次／冷却，失败文件不阻塞其他文件。临时文件独占创建、保护当前用户 DACL 后才发布，失败只清理该次未发布文件。命令仍要求立即保存：持久化失败返回 503；执行前失败不提交，执行后失败保留未知回执，同操作 ID 只能核对。关闭即停止重试，即使保存失败也完成连接清理。鉴权健康接口额外提供无路径的 persistence 状态。
 
-Windows 私有状态的固定 `protect`／`protect-file`／`check` 操作通过每个 Node isolate 的常驻本机 helper 执行，复用进程而不缓存路径或权限决定。原子发布与命令账本仍同步等待本次 owner／DACL 校验；CLI 与常驻入口共用同一原生实现。严格有界的本地帧及关联 ID 拒绝迟到、额外或失配回执，超时和未知结果不重放当前操作；旧 helper 已确认退出后，后续独立调用才能新建通道。权限与 Trace 的传输线程统一由 Main 管理，以 owner MessagePort 关联实际调用方；读取线程在原生 ready 前也能关闭，所属线程被强退后仍由存活的传输线程关闭并回收子进程。内部 broker 仅接受已注册固定模块、严格结构及限定的 Trace 身份／目录，不透传调用方启动参数、环境或可执行入口。关闭在最后一次持久保存后清理本产品 helper。该实现针对实测重复启动 helper 导致的主线程阻塞，Windows 实际改善与真实手机结果仍须按产物另验，不能由结构变更推定通过。
+Windows 私有状态的固定 `create-directory`／`create-file`／`protect`／`protect-file`／`check` 操作通过每个 Node isolate 的常驻本机 helper 执行，复用进程而不缓存路径或权限决定。原子发布与命令账本仍同步等待本次 owner／DACL 校验；CLI 与常驻入口共用同一原生实现。严格有界的本地帧及关联 ID 拒绝迟到、额外或失配回执，超时和未知结果不重放当前操作；旧 helper 已确认退出后，后续独立调用才能新建通道。权限与 Trace 的传输线程统一由 Main 管理，以 owner MessagePort 关联实际调用方；读取线程在原生 ready 前也能关闭，所属线程被强退后仍由存活的传输线程关闭并回收子进程。内部 broker 仅接受已注册固定模块、严格结构及限定的 Trace 身份／目录，不透传调用方启动参数、环境或可执行入口。关闭在最后一次持久保存后清理本产品 helper。该实现针对实测重复启动 helper 导致的主线程阻塞，Windows 实际改善与真实手机结果仍须按产物另验，不能由结构变更推定通过。
+
+新建私有对象的安全描述符在创建时指定当前 token 的 User，避免高权限 token 默认 Owner 为 Administrators 时新对象立即被自身严格校验拒绝。既有对象不会改 owner；独占文件创建与同身份打开后写入、受保护 DACL 及原子替换共同保留私有边界。Native 编译输出先预留再核对身份，非覆盖发布；cache 摘要绑定创建策略，旧失败目录不接管。退出诊断分别保留未知、0、有符号退出状态和完整 Windows DWORD。Windows 原机结果按同源产物独立登记。
 
 Windows 正式计划任务启动 worker 监督进程，原桌面仍独占模型执行。监督器一次管理一个 Host 子进程，确认退出后按 1/5/15/60 秒退避，稳定运行一分钟后重置退避；停止撤销重启并通过 IPC 请求该子进程收尾。子进程发现父进程 IPC 断开后退出。服务 stop/restart 先禁用已核对身份的任务，按准确 Node/worker/config、当前用户 SID、创建时间和父子关系捕获本产品进程树并保留句柄；有界等待后清理残留子进程并核对全部退出，失败不继续 restart。根查询按 Node 名称限定，子树按父 PID 批量查找，不重复全机扫描；PS stop/restart 使用 45 秒总期限、Node 外层 60 秒，所有查询和等待共用剩余预算，超时明确失败。异常只监测和记录，不通过全局 catch 继续运行损坏状态。私有日志只记录固定错误阶段、系统错误码、固定源码栈位置、退出与重启信息，最多两个约 1 MiB 文件，不记录原始 stdout/stderr、正文、路径或配置。M4 隔离回归已验证；Windows 原生 DACL、正式计划任务和目标 HTTPS 的新包证据待部署后单列，见 [Host 持久化生命周期验收](acceptance/host-persistence-lifecycle.md)。
 
@@ -1269,4 +1378,179 @@ Host 的 stat 身份继续包含 ctime，以失效同大小改写且恢复 mtime
 
 状态检查点仍最多等待两秒，命令前与后台保存保持原落盘边界。APFS clonefile只用于校验后的备份代次，原子发布并保留有效旧副本，不支持时回退写入；克隆引用字节与实际逻辑写入分开计数。读验证增加不能隐瞒；CPU、系统卡顿、帧间隔和耗电分开记录。详见[性能报告](research/mobile-performance-cpu-20261025.md)。
 
+P5共享建议策略：`DesktopSuggestionRules`持有只读来源配对、版本/租期、原草稿采用及精确撤销判断；iOS生产类型调用该核心，平台保留SHA和ISO日期适配。Android产品读取、生命周期与界面仍在接通中，未声明完整建议能力，逐节点范围及阶段结果见`docs/plans/android-alignment-20261022/P5-source-review.json`。
+
 2026-10-26：原桌面回复的手机阅读版本以附件链接完成投影后的实际消息正文和状态计算。Host另保存仅内部使用的原正文摘要，重复owner/目录摘要不将已投影版本回退为原Markdown版本；旧页与已被取代的异步投影不能移动最新阅读位置。不增加wire字段或改变手机可见性条件。
+
+### Android 专属界面文案补充
+
+Android原生资源在iOS有效中英词表之上合并本平台固定文案，补充文件为 apps/android/localization/native-copy.json。仅允许版本1的封闭双语条目，拒绝共享键覆盖、重复、缺语种、未知字段及参数漂移；补充条目不写入iOS运行查找表。两份Android资源与原生测试资产由同一生成器产出，调用处显式区分产品键和动态参数，原消息/名称/Provider正文保持原文。该展示适配不改变共同协议、目标身份、命令或存储规则。
+
+### Android 原消息资源读取边界（P6-4b）
+
+Provider提供具名原消息文件解析，Host核原thread/message/reference；Android复核readTarget及附件，再解析当前版本，按完整机器/聊天/版本缓存并有界流式校验后原子发布。两个解析GET因Host严格白名单不带target，返回目标必须一致；二进制GET保留target，解析后运行时变化仍由Host拒绝。410不读取旧缓存，404仅兼容旧Host精确版本，409只补读一次；没有POST重试。原消息/导航/连接变动后返回值不能成为当前预览。该切片为已实现且有辅助证据的底层，真实资源GUI尚未验证；iOS二进制目标和缓存命名空间差异保留后续补正。
+
+工具展示的摘要/标题格式由KMP ToolPresentation统一，ToolPresentationText窄接口只接受共享规则传出的固定产品键和已解析语言标志；原Provider名称、活动、命令和输出作为原始数据拼接，不能进入翻译查找。iOS删除重复英文生产组合逻辑，Android与iOS分别提供现有catalog适配；系统交互和执行权限不进入该接口。
+
+2026-10-26 Android P7-1b：原生具名系统文件Intent只接收content URI，本机有界读取到独立Keystore命名空间的版本1加密原子收件箱。索引在payload前固定ID/清单，批次与固定ID准备串行租约，用户确认后绑定不可变原草稿目标/代次；完整元数据与字节摘要落盘后才消费，清理失败保留消费回执，不重放输入。收件箱无Host命令或上传接口，沿用发送时上传边界；新到文件不改已展示批次。辅助重建与实际暖Activity接收已有限定证明，进程冷启动及完整生命周期仍待P7。
+
+2026-10-26 Android P7-2a：照片选择使用原生只选图合约，原请求/原草稿代次持于Session；原菜单释放、主窗口焦点与下一帧均就绪才启动系统页。ContentResolver有界读取后在平台适配层核维度、解码、EXIF方向并生成PNG/JPEG，接回既有本地附件准备；Host上传/提交接口不变。普通文件保留原字节，完整图片政策、旋转/冷结果与相机/最近图继续待验。
+
+2026-10-26 图片输入历史身份：历史reader通过仅Adapter内部的类型化回调提供绝对localImage来源，路径不进入历史HTTP/领域JSON；RuntimeSession沿用已授权文件检查与注册声明。明确完成的原轮及准确目标、正文和完整注册附件版本一致时，冷读临时ID与原owner稳定ID可一对一替换；同名/同文、未完成、未知或变化来源不建立身份。它只修复显示，不恢复执行或重放输入。实际图片原输入及三环境当前Host冷读结果分列于[P7档案](plans/android-alignment-20261022/records/p7-photo-model.md)。
+
+2026-10-27 Android拍照：Session持有不可变原草稿请求，菜单释放/主窗口焦点后一帧才进入权限和系统Camera；相机仅获得本次私有cache URI读写授权，结果只消费原输出，不接受返回的其他URI。照片沿用原有归一化与加密草稿路径，完成/取消后撤销授权并清理；不上传或发送。外部捕获期间的私有临时明文及进程死亡后的原请求/孤立输出恢复仍待P7关闭。系统入口互斥与全部原生结果见[拍照档案](plans/android-alignment-20261022/records/p7-camera.md)。
+
+Android P7-3b：照片媒体查询和缩略图留在原生适配层，面板前台按权限有界读取，选择后才进入共享原稿导入规则。文件选择原请求移至Session，与选图/相机互斥；面板释放后执行原动作，清空草稿使旧代次失效。原生进程死亡结果、URI授权和临时文件恢复仍未关闭。
+
+Android P7-3c：最近照片源通过窄只读平台接口提供权限、64项基线/30图与缩略图，提示资格仍用共享纯规则；显式加入原稿后核对文件/元数据，才保存加密忽略记录。子仓库恢复失败保留字节，停止空记录覆盖；原照片/文件/相机结果与URI的进程冷恢复仍独立待实现验收。
+
+Android P7-3d：照片授权适配器按本机原生权限组独立加密保存尝试记录，成功写入后才进入系统；未知结果不自动重放，记录损坏保留原字节。回调注册在面板外，Session内单请求/原owner/单次启动，结果只刷新读取权限，不触发原图导入或远端写入。首次/拒绝有界验收与原URI/相机输出进程冷恢复分别记录。
+
+Android P7-4a：平台本地文档意图使用版本化加密账本与稳定ActivityResultRegistry键，原目标/代次先持久化，恢复不重新调用选择器。准确结果先加密暂存，固定ID与父元数据确认后消费；等待与准备状态按请求ID、完整草稿及代次隔离，同一文档事务确认前保护附件移除。UI只提供本机等待/原结果重试与丢弃，无Host上传或执行接口变化。实际进程死亡、完整URI权限与存储清理结果分列，不由重建辅助推定。
+
+I4 Android源整合：既有原消息路径仍经具名资源解析、版本/完整目标与受控旧预览；只保留一份流式下载生产路径。新增Markdown阅读器源码尚未接到该入口，不能据此称完整F72实现。当前模型展示以原owner当前参数为源，已有聊天与下一次发送的本地覆盖分开，空草稿按Android空字符串身份处理。
+
+Android P7-5d迁移存储基础：候选记录先在独立加密代次写入并逐条读回，单个Keystore认证AtomicFile指针为发布点。发布前失败保持原资料；发布后旧保存/恢复句柄和排队快照失效，新子仓库不继承原安装授权。指针损坏拒绝回退，原密文保留。该内部边界尚未接产品导入/导出或凭据/身份策略，完整迁移仍未实现验收。
+
+Android迁移候选在既有完整记录/附件/回执检查之前，先使用NativeMigrationMetadata校验当前原生metadata的封闭字段、严格类型/可空值、嵌套与数量，以及同一原生连接解码器的地址/目标。未来未知字段拒绝，原文不规范化；合法旧十附件不受新五项准备额度影响。该门槛仍不代替完整清单、凭据/再配对、新安装/迁入授权策略与产品导入激活。
+
+Android迁移候选增加闭合的文件/原提交快照/操作引用校验，原回复快照的附件顺序必须与不可变输入一致；已配对Codex Vault使用日常相同凭据解码并逐项匹配归档client。未支持的设备/Provider/token记录仍明确拒绝。该内部暂存边界没有授予迁入激活或重试权限，也不是完整本机导出清单。
+
+Android内部迁入激活仅允许metadata与配对Vault均无真实电脑；已发布回执先按原ID/指纹/数量核对，重复激活不覆盖后续编辑。新代次清本机相册提示/旧导入代次，重建阅读身份与空许可/系统回调目录，迁入原操作以持久只读标记隔离执行入口，保留不可变intent/result与原ID正向回执查询。完整库存/导出UI及经新核对后的恢复动作尚未全部对齐，不能将该内部候选称为全产品迁移已通过。
+
+Android导出前内部migrationSnapshot以完整逻辑名逐个核对当前有效代次全部密文文件，在历史快照锁与同目录锁内一次读取；缺失/未知/临时/损坏/越界链接及未支持二进制或配额明确失败，不通过删减资料生成成功备份。自动依赖发现和全类型/配额及产品迁移UI尚未接完，不能宣称完整导出已实现。
+
+Android本机文本新写入采用格式3：逻辑名及正文同为Keystore AES-GCM认证密文，使用不能等于任何旧UTF-8逻辑名的域AAD；普通读取核对原名称、清单发现核对名称散列文件。格式1原名称AAD保持读取且不自动重写，二进制2保持原协议。认证名称发现不代表全类型导出已完成；未知旧散列名、未支持类型和任何不完整资料必须保留并阻止删减式成功。
+
+Android内部NativeMigrationExport将旧依赖点名、新逻辑名认证发现和完整当前代次快照放在同一锁区，发现读取不触发AtomicFile恢复；按同一候选契约验证后才加密。迁移历史v1/v2索引/数组分片复用NativeHistoryCache.decode，另核对封闭字段、生成/顺序/计数/唯一消息ID与完整运行目标归属，保留原记录字符串。缓存资料不授予原owner控制。此边界尚未接产品系统迁移UI，全二进制/子存储/Provider/通知Schema和配额仍有门槛。
+
+Android内部迁移现支持受原附件约束的可选缩略图，复用普通缓存的规范PNG/Base64、摘要和尺寸校验；缩略图不提供上传字节。旧AI共享许可可作为严格档案记录保存（包括历史目标），激活到新代次时写空许可列表，不继承执行或语音共享授权，原安装记录不改写。录音/二进制及其他子存储/Provider/通知和系统迁移UI仍待闭合。
+
+Android录音新二进制格式4以Keystore认证加密的逻辑名/长度头和独立域保护身份；每块AAD再绑定本次头随机标识、名称、总长与位置，拒绝同名同长度的跨次拼接。旧2仅按原协议读取，不在读取时迁写；全部认证通过才返回原件。此为存储基础，文本迁移仍拒绝二进制；全录音档案/候选/代次、临时WAV与子目录归属、系统UI/配额仍开放。iOS独立录音目录不在当前迁移载荷中，双端完整原录音迁移需另补共同断言与验收。
+
+Android内部迁移载荷v1维持纯文本兼容，v2增加分开的规范Base64二进制集合，共用原加密信封v1；根快照按同一锁区捕获文本3/二进制4及准确索引旧1/2，不恢复临时文件或跳过未知记录。封口Codex录音要求索引/元数据/原运行目标、证书/草稿、WAV/时长/摘要/清单与尝试回执字段闭合；激活将二者读回认证后一次发布代次指针。迁入voice持久只读，原状态404或awaiting-audio都不能准备/上传。初始8MiB/12MiB配额、未封口归属、子仓库/Provider/通知和产品系统迁移UI尚未全部覆盖，不能宣称完整迁移已实现验收。
+
+Android未封口原件catalog独立于活动voice index，显式读取version 1／2。v2每条增加仅含size／SHA-256的uncommittedAudio（旧条可null，至少一条非null）；只有原row的manifest仍为null、原身份/索引及未尝试状态通过既有闭合校验、raw为准确常规原件且已认证落盘audio与raw大小/摘要一致，才分别投影raw／audio frame并各自计入既有quota。原row/index字符串保留，catalog／frame集合严格闭合；缺帧、额外帧、未知字段/版本、alias或活动身份冲突均拒绝。该归档不补manifest、不seal、不恢复recorder或执行权限；copyUncommittedAudio只读复制惰性原字节。v1读取和原加密信封保持，不能把本地catalog v2等同于领域协议或完整双端迁移格式。
+
+Android语音展示按来源提供statusCopyKey：正常阶段/明确原录音恢复和类型化ImportedVoiceReceiptOnly携带App文案键；Host/OS任意error.message不做字面猜测翻译。界面与读屏共享解析后的状态文本；文案来源在新请求、结束及清空时失效，原提交/原回执和迁入禁止准备/上传的规则未放宽。
+
+Android迁移候选本机格式2采用256KiB加密块和最后发布的认证头；块逻辑名绑定随机代次/位置、块文件格式4随机头，完整SHA与原Schema通过才可激活。旧内联本机候选只读兼容，外部密码封装与载荷版本不变。读取/替换共用候选子目录锁；发布不明确时保留可能提交块，不重放原操作。当前仍8MiB/12MiB内部边界，先按二进制头核对Base64膨胀配额，文件流式满额迁移尚未完成。
+
+### 2026-10-29 F73 额度接入
+
+公共 usage v1、Codex Host／EasyWork 只读适配与双端原生两处展示已落地；左侧固定设置，右侧环和两行余额位于收起按钮前。KMP 统一精度、未知类型和窗口投影，额度来源变化不改变 Codex 会话／草稿身份。真实、辅助和未验收项分列于 [F73 记录](acceptance/agent-usage-20261028.md)；其他 A6 暂停项保持。
+Android系统迁移候选通过Session拥有的IO完成跟踪连接本机存储、通知协调器及实际HTTP producer；取消Future不等于runnable退出。迁移先停止/汇合实际任务并保存原草稿，再在IO准备准确generation及children，Main用一次性许可发布新Session/原阅读ledger。失败保留原模型和原未知操作，原输入不重放。通知导入仍为archive-only，明确保存启用偏好后允许新安装登记。源码已接入，13项原生/实际系统文件选择和DEV仍待验；Host/Relay/wire接口及iOS未变。
+
+Android EasyWork canonical对象key改为复用既有String标量路径，修正JSONObject.quote在key与value的slash编码差异；不添加另一套encoder或兼容放宽。原受保护段AAD、未知原意图/指纹及具名回执核对保持。
+
+Android迁移静止修正将coordinator构造参数改parentScope，确保登记工作引用coordinator的child scope。原失败显示参数与字段同名会在初始化表达式绑定外层Session；原未知数据/实际IO完成与不重放边界保持。通知原回执只读与登记关闭的独立性另行验证。
+
+Android通知协调器将自动登记门槛与本地原回执只读区分。迁移后未显式启用通知时，只有已经成功初始化、未失败、前台且原目标/原授权仍匹配的owner可查询本地原记录；关闭回调仅核对既有回执，不创建撤销操作。自动登记、feed、导航和gap/reset继续受显式启用门槛约束。
+
+Android迁移新增payload/candidate4：在既有envelope2内按逻辑名排序写text descriptor/UTF8 frame，再写binary frame；每条原件独立验证并按需读，审计view只加载请求的kind。metadata/operation/device变换使用该attempt的加密scratch，发布为既有root storage3记录；候选/源ciphertext及原unknown不可变，租约、实际IO静止与Main一次性发布保持。仅Android格式候选，iOS/远端wire/Host和Relay未改。
+
+Android迁移新增EasyWork授权残留只读审计投影：传入身份/credential/grant/fence/claim/OIDC作为密码加密惰性原件归档，禁止作为目的设备活动授权或重放原操作；目的本地原件独立保留，合并和激活需原候选及静默owner租约。活动EasyWork普通聊天/缓存/业务图仍为后续投影，任务和项目管理暂停。源码已接入，原生与真实DEV另验。
+
+Android P7迁入的EasyWork连接投影为无credentialRef/pin/device身份的只读描述，原安装记录独立加密归档；完整账号/机器/运行时目标保留，显式新配对才能恢复当前权限，旧导入操作继续只读。迁移静默等待实际会话、回调和执行器/OkHttp退出，不以取消等待解除下一次迁移门禁；NSD代次隔离与SDK停止回执分别记。P8迟到地址写回基于最新连接代次合并，P9既有key持久许可仍是独立debug组件、未接Main自然启动。实现与原生/真实DEV分别见PAR30档案，iOS当前credential迁移政策及跨格式互操作仍有差异，不升级旧证据。
+
+Android配对表单的完整后台动作由Session子任务与迁移owner共同持有，注册发生在LAZY任务启动前，取消Compose等待不等于授权落盘或HTTP清理退出；迁移继续join实际任务和IO，等待取消后仍保留sealed门禁。NSD代次隔离尚不代表SDK停止回执，另案补齐；原授权未知不重放。
+
+具名跨电脑协调客户端可按每Host私有目录显式信任单张公有自签证书并固定精确DER指纹；证书签名/有效期与TLS链验证保持，无SAN目标仅以该叶pin替代名称匹配，每次新连接不跨Host复用。固定API、返回Host身份/desktop-runtime与不可变提交边界保持；这是协调客户端路径，未增加手机或Host执行能力。
+
+Android NSD每代独立持有发现/解析/网络句柄，迁移registry同时等待真实SDK终态与本代协程退出；代次/取消屏障不替代SDK回执。API26解析等待自然回调；失败、无回调或超时保持pending而不发布迁移lease。父已源码审查，实际SDK两场景及完整Discovery/Session仍待。
+
+Android 迁移的 Source64 候选已将发现协程、Codex 连接表单与 HTTP 执行/断连纳入同一 Session IO 归属；交接同时等待原 NSD/resolve/network 句柄的实际停止终态。取消请求不等于退出，未知结果保留原归属且不重放；当前仅源码接入，组合 SDK/Native/真实 DEV 见 [Source64 记录](plans/android-alignment-20261022/records/source64-discovery-reading-ownership.md)。
+
+Source64r2 的同一 Session IO/fence 已在 API33 完成 11 个受控方法；实际 NSD/HTTP 与完整生命周期保持待验，不能从 fake connection/worker 断言推导实际系统退出。[限定原生档案](plans/android-alignment-20261022/records/source64-api33-owner-native.md)。
+
+### Source65 迁移及测试归属
+
+连接前私有意图只进入闭合惰性归档图，原 Session、同 storage、冻结 raw writer 贯穿来源/目标及发布；不恢复授权或执行。Native夹具在Main外持有准确Job与最后同步IO至真正退出，未知不放行。P8合成截图仅显式诊断，P9固定采集器仍无运行绑定。组合SDK已验，实际系统/完整DEV待验。 见[检查点](plans/android-alignment-20261022/records/source65-composed-source-sdk.md)。
+
+### Source66 迁移恢复增量
+
+迁移夹具使用现有 prepared restore，阻止普通恢复尾部刷新；客户端图仅对可选 requiresReadTarget 的默认false及false→true加强作兼容，拒绝弱化/错误类型，其余字段保持深等值和原JSON，不扩大命令授权。 详见[检查点](plans/android-alignment-20261022/records/source66-migration-client-restore.md)。
+
+### Codex 更新与独立目录读取器恢复（2026-10-30）
+
+`DesktopWorkspaceView` 的完整目录 reader 与 `DesktopRuntime.reader` 是两个只读进程；前者不能再永久捕获启动环境中的 CLI 路径。两者现通过同一 runtime 的 `DesktopInstallation` 取得可信安装快照，Windows 沿用当前管道 owner／用户／会话、安装来源与协议 archive 校验，再选择 CLI。成功发现仅在 CLI／owner／archive 的真实路径与文件身份未变时缓存 30 秒；同路径替换、缺失路径或连接故障可提前失效，同一秒内合并，失败按 1–15 秒退避。发现不扫描 PATH 或全机，不写私有配置，不重启桌面。
+
+目录刷新合并并发，只有 transport 失败可重新发现并重读完整幂等目录一次；协议拒绝、坏协议和旧进程退出未确认不在同一次刷新内重试。所有 reader 切换仍等待旧进程退出及 stdio close；关闭期间不能启动新 reader。主 IPC 的 owner 改变或发现信任失败会撤销就绪。只读目录失效与主 IPC 就绪分别记录；聊天管理／转写的下一次元数据连接也取得当前 CLI，提交后的操作及原回执没有自动重放路径。
+
+macOS 继续使用原显式 CLI 或固定应用 bundle 路径；应用在相同路径更新时复用原退出屏障恢复，不引入任意安装搜索。上述是已实现的候选恢复策略，真实 Windows 更新和手机验收按当前产物逐机记录，不能以辅助夹具通过代替。
+
+目录 reader 失效或刷新失败后有单个后台只读恢复定时器，失败按既定退避继续；完整刷新成功后停止，关闭后清除且不能发布晚到目录。恢复不依赖手机或协调工具发起下一次读取，也不放宽其 health 校验。
+
+### Windows 冷编译与 Host 分页游标（2026-10-30）
+
+Native 编译的发布仍通过 B 的原 WRITE/DELETE 创建句柄且禁止覆盖。Win32 `SetFileInformationByHandle(FileRenameInfo)` 使用 `RootDirectory=NULL` 和固定 cache 绝对目标；源目录、cache 及每级祖先均保持非 reparse、无 DELETE 共享的句柄租约，直到退出确认、发布与清理完成。发布后通过同一固定目标的只读 receipt 比较 B 的文件身份。没有路径删除、未知 owner 接管、作业约束降级或追加预算。有限诊断保留首次失败 API 阶段和独立清理阶段／数字错误码，不输出原始异常、源码、命令行或路径。旧仅有 Win32 87 的记录不能证明准确 API；本次修正相对目标的 Win32 wrapper 兼容问题，Windows 冷编译预检仍须独立实测。
+
+RuntimeSession 首次直接调用私有创建边界建立 state 根，Windows 新附件统一写入 `attachments-v2`，同步上传和异步 inline 图像都用排他私有创建。旧 `attachments` 的 owner、DACL、字节、绝对登记路径及 ID 保留，既有 `runtime-history-v1` 继续保留；不把已有 Administrators-owned 私有对象当作当前用户对象放行。macOS 仍使用原附件命名空间。此变化不建立 reader 或执行权限。
+
+`desktop-page-v1:` 属于 Host 的有界消息窗口，无论是否重复 `window=latest-v1` 都由 Host 解析并核对 Host/thread/anchor；不能成为 Codex opaque cursor。缓存存在时只按既定 100 条／2 MiB 窗口读取；格式错误返回 400，跨目标或锚点／缓存失效返回 409，不启动模型或兜底全量读取。底层只读 reader 再次拒绝该保留前缀。其他 native opaque 游标保持原协议。诊断只记录数字 native 错误码、白名单元数据方法及固定失败分类；单个 -32600 不证明所有历史失败具有相同根因。
+
+2026-10-31 F03／F31／F32：增加正式 Windows 启动的具名只读预检与独占 scheduled envelope，保留原 Worker 环境白名单；有界日志分类不输出 stderr／凭据。PR81 五组件和核心 Native 输入保持；来源完整 legacy／reader 辅助已通过，正式启动两处拒绝仍需按真实上下文诊断，不计正式升级通过。iOS／Android UI 和未知操作不重放规则不变，A6保持暂停。见[入口与证据边界](acceptance/windows-formal-startup-preflight-20261031.md)。
+
+Windows 常驻私有状态通道保留五种固定 owner/DACL 拒绝分类；仅错误序列化和严格解析变化，不改变权限接受/拒绝、退出和超时边界。错误证据与正式启动成功分列，见[正式启动诊断](acceptance/windows-formal-startup-preflight-20261031.md#pr82-实测之后的最小证据修复)。
+
+正式启动已取得 `WRONG_FILE_OWNER` 后，仅在该拒绝上附加实际 Native helper 与被拒绝同句柄的有界摘要。安全日志严格投影，缺失证据不推断匹配；独立只读 metadata 与 Native 判断分别记录。prepare 返回当前实际 Node、固定 Worker 和 envelope 三路径，调用方仍须验证正式 Node 和实际 Limited token，不引入 wrapper、加载器或权限放宽。见[同句柄 owner 与 Limited 探针](acceptance/windows-native-owner-evidence-20261031.md)。iOS／Android 协议和 UI 不变，A6保持暂停。
+
+通知锁和临时快照的创建也通过 Host 的 Native 私有文件工厂，而非普通创建后保护，保持通知 Runtime 与 Adapter 的窄回调边界及原原子保存／回执规则。owner 拒绝的目标、创建和编译检查均保留有界部分元数据，bootstrap 与 serve 来源分别标注，Host 记录固定通知文件角色而不猜测 publisher。源码栈映射修正、独立合成通知状态入口及正式恢复边界见[通知私有启动](acceptance/windows-notification-private-startup-20261031.md)。移动端 UI／协议、Android状态与A6暂停保持。
+
+定型 owner 证据在 Framework `Exception.Data` 中存储时满足其可序列化类型约束，附加失败保留原始拒绝，不转换为接受或覆盖成诊断异常。生产协议仍显式投影固定字段，不启用任意异常反序列化。纯托管回归使用自己构造的内存流，分别标注编译目标与实际执行 CLR，不能冒充 Windows Native 或正式初始化。
+
+owner 证据读取先判定原拒绝类别，并保护 Data getter、缺键检查和定型值查找；任何可恢复的诊断读取失败均返回证据缺省，仍保留原访问拒绝。字符串或其他任意 Data 不能充当证据。原只读 Data 夹具保留，额外的故障字典与固定阶段只用于回归，不新增生产权限或错误接受分支。
+
+Windows 创建租约使用带 FILE_READ_DATA 的 CREATE_NEW 句柄参与共享冲突检查，同时继续只分享 READ|WRITE；仅 metadata 句柄的无 DELETE share 不构成同等保护。Node r+ 打开、创建 ID／路径复查、release ACK 和截断顺序不改，原 owner/DACL 与既有对象拒绝保持。真实平台的 rename/unlink 前后断言与证据边界见[创建租约专项](acceptance/windows-private-creation-lease-20261031.md)；旧 Framework managed 成功不等于租约或正式初始化通过。
+
+2026-11-01 Android 系统通知的本地导航回执采用独立 v2 存储，严格兼容 v1 已消费终态；它与通知恢复通信 v2 分开。pending claim 只为原 ticket/event/lease/到期与 nonce 恢复只读导航，精确 ack 仅结算原已知成功；配置代次在首次 IO 前捕获，撤销阻止尚未导航的旧回调。迁移保留原审计但清空 active leases/receipts，不迁移导航权限。iOS、Host 与领域 wire 契约不变；SDK 与真实 DEV 结果分列。
+
+Android严格existing-key迁移恢复先以准确Restore ticket／Session／lease验证BOUND子存储，仅读取模型和账本；此时不运行会写账本的阅读协调或发布未读就绪。完成ACTIVE移交后由新Session原后台worker协调，账本失败沿用新owner自身重试，提交后不新增可取消等待来抛弃已发布generation。普通恢复及无policy路径保持。实现已编译，Source72冷链／故障／真实DEV待验；详见[验收记录](plans/android-alignment-20261022/records/source72-bound-reading-handoff.md)。
+
+### Android 同 owner 的首次迁移恢复
+
+严格原件 writer 只在原实际 Frozen lease、owner/session 约束仍成立，且本实例记忆的已提交 publication tuple 与当前 authority 原值及稳定 sidecar 完全一致时，在首次 prepare 确认并转交新 Session。冷进程只读核对同一原 candidate/receipt，不获得旧 writer 的写权限，也不重新激活或重放未知输入。打开 storage 时在不可取消 IO 范围内先登记所有权；失败清理保持原首错；Activation scratch逐项清理互不跳过，无法确认释放则保留原对象等待原进程退出。
+
+内部同步标量 publication observer 仅用于受信验收代码，属于非沙箱观察点；命名异常注入不能替代真实 I/O 故障、OS 崩溃或掉电原子性证明。当前有限 Native 结果与剩余 UI/24域范围见[阶段66档案](plans/android-alignment-20261022/records/stage66-p7-strict-first-prepare.md)。
+
+Android 阶段68：Controller 的通知恢复审计临时句柄由现有 ReadLifetime.use 独占，读取失败保留首错、关闭失败附加并保留原句柄；不把关闭未确认写为释放。实际新 Session 恢复到 ACTIVE 后，Controller 在 IO 准备其 runtime 所有的 migration-candidates 缓存，候选与流式读者共用该句柄，BOUND 阶段授权不扩大。内部标量观察点不开放外部能力；有限原生结果见[阶段68](plans/android-alignment-20261022/records/stage68-p7-controller-strict-restore.md)。
+
+Android 阶段69只增加非空资料普通Session的验收入口及独立准入工具：已初始化空目的root经真实Session/export/stage/activate/恢复和不可变unknown只读核对有限通过；未新增产品UI或放宽existing-only读策略。调用计数不承诺OS FD、executor或Controller worker已退出。iOS保留迁入设备身份/绑定并排队revoke，Android将设备authority重置为失效审计/tombstones，不能宣称相同存储政策；pristine无root KEY、paired cold、全局通知owner/端口与完整24项继续开放。见[阶段69](plans/android-alignment-20261022/records/stage69-p7-nonempty-device-session.md)。
+
+Android 阶段70仅增加受控SDK原进程等待/全量输入封存与同包首次/只读cold验收工具：新PID的ExistingView只读原scope，不创建Session/writer/key或重放未知输入。实际闭环仅普通已初始化空目标9条资料，不能替代Controller/24项完整范围/UI/物理证明；旧cold anchor失败保留，未放宽身份条件。见[阶段70](plans/android-alignment-20261022/records/stage70-p7-paired-readonly-cold.md)。
+
+Windows regular Host recovery P1 adds an explicit process-scoped profile-v1 native-helper namespace, independently checked by the Node resolver and native compiler, with no legacy AppData ACL exception. A local preparation transaction reserves a new private operation, retains native namespace/file read leases, creates exclusive rollback-data snapshots and validates owned synthetic lease controls. It does not implement formal Task activation/rollback or retire an old unconfirmed operation. Original desktop startup, credentials and global environment remain outside this transaction; see [the recovery contract](windows-host-regular-recovery.md).
+
+Windows regular Host recovery P2 uses a precompiled fixed synthetic runner and a controller-owned kill-on-close Job. It requires actual Limited Scheduler access controls, exact long arguments and retained process creation/exit evidence before isolated fixture cleanup; it does not compile inside the Task or adopt the historical unconfirmed subtree. Formal Host runtime closure, Task migration/rollback and pending retirement remain separate gates. See [the recovery contract](windows-host-regular-recovery.md).
+
+The Windows regular-service continuation candidate separates immutable profile-owned code/Node from the original Host state and instance configuration. The launcher retains verified code leases, and the worker selects the private helper namespace before its first ACL check. Routine service controls follow a private installation pointer; it preserves Host identity, keys, original state, Task principal/triggers and normal desktop shortcuts. A real read-only Scheduler startup passed locally, but production activation, qualified old-boot marker retirement, rollback and peer connectivity remain separate acceptance steps. UAC-disabled execution preserves the existing user context and does not claim Limited-token isolation. See [the recovery contract](windows-host-regular-recovery.md).
+
+2026-11-03 regular Host integration: the Windows delivery reports one no-restart activation using the reviewed legacy synthetic-test scope while retaining its original pending/unknown state. The maintaining Mac independently verified original certificate-pinned LAN and Tailscale authentication and the exact Host/desktop-runtime workspace. The running Windows artifact is retained; this source integration does not deploy it, change UAC/AppData ACLs or resume suggestions. Native rollback, login/restart autostart and mobile DEV are not upgraded by this peer read. Stage-specific failures above remain unchanged. See [the integrated evidence](acceptance/windows-regular-host-recovery-20261103.md).
+
+## iOS / EasyWork 本任务主线整合（2026-11-05）
+
+仅整合 iOS 与 EasyWork 的协议、数据、权限及执行差异。原清单保留75项范围、51项对接/16项纯手机免重验/8项排除及14条补充；68个限定场景通过与21项Native失败均按原指纹保留，整项通过数不据此扩大。详见 [原清单](acceptance/codex-easywork-feature-matrix.md)。
+
+本批包含完整目标的 usage/read、project/git/status/files、原回执与队列恢复及问题元数据；旧桌面未准入项仅读，未知输入不重发。isSecret只控制输入遮罩，回答仍按正常工具结果和会话留存。本批优先保留主线现有读取目标、建议接口、启动、附件和迁移行为；Android源码及纯手机端重复验收不开展。合并后的检查与真实DEV结果另回填，不将旧指纹通过当作新主线全量通过。
+
+阶段98 F59迁移域：Android唯一journal decoder与流式graph已调用KMP惰性描述符规则，独立闭合Schema只定义子域，不开放新的Host端点或发送权限。当前未接Export/Activation，旧整包F59拒绝与v4限额保持；strict源freeze/generation/FD/库存/barrier、独立大容量流式封包与目的端惰性publication及iOS接线继续实现。JVM6/Node3和普通Android编译是辅助，真实字节源、系统/界面/手机及跨端未验。见docs/plans/android-alignment-20261022/records/stage98-f59-portable-domain.md。
+
+阶段101 F59源：NativeSessionStorage窄入口要求实际Session/raw Frozen及准确当前generation，既有key-only解码、固定目录FD/单record读取和全cipher摘要，终态缺失要求真实fsync-close/双目录barrier；close未知保留owner。当前只支持单child、无export/activation接线，old-generation family/新容器/惰性发布/iOS与完整验收继续，旧整包拒绝保持。普通编译和8方法源码/独立940输入SDK资格不等于运行通过。见docs/plans/android-alignment-20261022/records/stage101-f59-readonly-source.md。
+
+阶段104 F59 family：实际root与全部受限retained generation按代严格只读/独立graph，保留UNKNOWN/原receipt，目录存在不授予lineage或激活权。仅新增内部source入口，旧整包F59拒绝和Host/传输边界不变；新SDK/15项Native、认证容器/目的端/iOS仍待验。见docs/plans/android-alignment-20261022/records/stage104-f59-family-source.md。
+
+阶段108 F59：Android与KMP新增独立明文内层流，绑定显式Long总量、原顺序与三摘要；读取须由外层独立认证的预期回执，所有内容在最终EOF及未来外层认证关闭前均为惰性暂存。未接SAF、加密容器、旧格式、激活或Host；iOS当前只有小向量独立验证器。详见[阶段档案](plans/android-alignment-20261022/records/stage108-f59-inner-framing.md)。
+
+阶段110 F59：源端现有冻结与认证日志产出独立惰性代际清单，保留 child 缺失、空、有记录及退役分块原证据。共享清单对实际遍历数量、现存字节与全部描述符分别限额；源指针只做审计，旧 graph JSON 保持，未增加外层认证、文件发布或激活。详见[阶段档案](plans/android-alignment-20261022/records/stage110-f59-typed-family-inventory.md)。
+
+### iOS backlog integration (2026-11-05)
+
+iOS resolves suggestion source kinds through the Agent adapter while EasyWork keeps `thread/suggestion/read` and the runtime-version contract. The native reading DTO bridge remains in `EasyWorkReading.swift`; identity-only Swift consumers do not acquire reading or MobileCore dependencies. EasyWork migration restores inert original records, requires re-pairing before remote access, and preserves the destination installation identity and notification authorization. It does not replay imported commands. iOS-only copy lives in the disjoint `IOSNative.strings` table. Shared `Localizable.strings` wins existing keys; its missing-key fallback consults the iOS table without changing Android generated resources.
+
+2026-11-06 Android P7：迁移 Frozen 在原锁与 channel 关闭成功后释放登记。原关闭异常保留同一 owner、token 和首错，后续只观察原关闭结果并阻止新 writer/freeze；范围为进程内协调门，持久化恢复与认证迁移容器另验。见[阶段114](plans/android-alignment-20261022/records/stage114-p7-frozen-close.md)。
+
+2026-11-06 Android P7：普通录音、inbox和F59共用的 Gate 在最后 writer 原句柄关闭成功后才释放登记；任务完成和关闭完成保持各自证明。Frozen 与 writer 使用同一一次性关闭状态，失败阻止新 record，保留首次打开的严格/普通端口。见[阶段115](plans/android-alignment-20261022/records/stage115-p7-last-writer-close.md)。
+
+Codex 实时父会话使用正式 `subAgentActivity.agentThreadId` 与既有协作工具接收者记录分别识别明确的子线程。重复活动更新稳定的独立卡片，已有工具卡片继续负责其显式子线程。关联只供读取，保存内容刷新不赋予子 owner 控制。见[阶段123](plans/android-alignment-20261022/records/stage123-c2-codex-live-parent-and-copy.md)。
+
+2026-11-08 F03/F06/F57/F63。双端私有直连地址支持专用 `*.mesh.51easyai.com` 电脑名，候选归为 VPN 并沿用稳定顺序。地址仅提供路径，实际读取仍核对配对证书指纹、完整 Host/workspace/runtime 目标与桌面公钥。远程 issuer、已有 grant 与已提交操作保持各自原身份；新路径的原生及真实网络结果见[阶段126](plans/android-alignment-20261022/records/stage126-c2-new-domain-and-android-permissions.md)。

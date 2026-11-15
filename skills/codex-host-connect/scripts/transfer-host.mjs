@@ -7,7 +7,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import https from 'node:https';
 
-const MAX_BYTES = 20 * 1024 * 1024;
 const uuid = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const requireValue = (value, code) => {
@@ -114,14 +113,14 @@ async function sourceBytes(path) {
   try {
     const stat = await file.stat();
     requireValue(
-      stat.isFile() && stat.size > 0 && stat.size <= MAX_BYTES,
+      stat.isFile() && Number.isSafeInteger(stat.size) && stat.size > 0,
       'FILE_SIZE_OUT_OF_RANGE',
     );
     const parts = [];
     let size = 0;
     for await (const part of file.createReadStream({ autoClose: false })) {
       size += part.length;
-      requireValue(size <= MAX_BYTES, 'FILE_SIZE_OUT_OF_RANGE');
+      requireValue(size <= stat.size, 'SOURCE_CHANGED_DURING_READ');
       parts.push(part);
     }
     requireValue(size > 0 && size === stat.size, 'SOURCE_CHANGED_DURING_READ');
@@ -144,10 +143,10 @@ function validateManifest(file) {
       !/[. ]$/.test(file.name) &&
       !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(file.name) &&
       typeof file.mediaType === 'string' &&
+      Buffer.byteLength(file.mediaType) <= 128 &&
       /^[\w.+-]+\/[\w.+-]+$/.test(file.mediaType) &&
       Number.isSafeInteger(file.sizeBytes) &&
       file.sizeBytes > 0 &&
-      file.sizeBytes <= MAX_BYTES &&
       typeof file.sha256 === 'string' &&
       /^[a-f0-9]{64}$/.test(file.sha256),
     'INVALID_FILE_MANIFEST',
@@ -371,7 +370,9 @@ export async function main(args = process.argv.slice(2), options = {}) {
     };
     await writePrivate(receiptPath, JSON.stringify(result, null, 2) + '\n');
     if (receipt?.phase === 'completed') await rm(contentPath, { force: true });
-    (options.output ?? console.log)(JSON.stringify(result));
+    const text = JSON.stringify(result);
+    requireValue(Buffer.byteLength(text) + 1 <= 16 * 1024, 'CONTEXT_OUTPUT_TOO_LARGE');
+    (options.output ?? console.log)(text);
     return receipt?.phase === 'completed' ? 0 : 2;
   };
   const checkedReceipt = (response) => {
@@ -383,10 +384,27 @@ export async function main(args = process.argv.slice(2), options = {}) {
         ['prepared', 'completed'].includes(receipt.phase) &&
         typeof receipt.destinationPath === 'string' &&
         receipt.destinationPath.length > 0 &&
-        typeof receipt.createdAt === 'string',
+        Buffer.byteLength(receipt.destinationPath) <= 4096 &&
+        typeof receipt.createdAt === 'string' &&
+        Buffer.byteLength(receipt.createdAt) <= 64,
       'TRANSFER_RECEIPT_MISMATCH',
     );
-    return receipt;
+    // A receipt is metadata, never an arbitrary response/body passthrough.
+    return Object.fromEntries(
+      [
+        'hostId',
+        'id',
+        'name',
+        'mediaType',
+        'sizeBytes',
+        'sha256',
+        'phase',
+        'destinationPath',
+        'createdAt',
+      ]
+        .filter((key) => receipt[key] !== undefined)
+        .map((key) => [key, receipt[key]]),
+    );
   };
   const query = '/v1/file-transfers?' + new URLSearchParams({ hostId: host.hostId, id });
   try {

@@ -1,5 +1,7 @@
 # 开发指南
 
+2026-10-29 Host 诊断与只读恢复的字段、轮转、抑制、私有权限、关闭屏障及逐平台故障验收见[专项指南](host-reconnect-diagnostics.md)。先保存具体 503 分类／诊断 ID，未知写入查原回执；不得以增加 timeout、反复重启原 Codex 或重新发送输入代替诊断。
+
 长历史性能续验见 [2026-10-24 专项](research/history-thermal-20261024.md)。`thermal-ios-comparison.mjs --cpu-profile --work-profile` 同时采集相同设备、安装路径和PID的CPU栈、Power Profiler及数值帧；`thermal-ios-results.py <本轮目录>` 只统计正式窗口中的完整手势和移动帧，保留导航/预热累计值但不混为正式最大帧。纯滚动要求24个实测手势；`testThermalMixedInteractionDEV` 与 `--mixed-targets <私有目标元数据文件>` 另要求三客户端17个具名交互步骤、22个历史手势与三次不同的在途回复。远端参数从既有私有清单读取，仅通过 `xcodebuild(1)` 的 `TEST_RUNNER_<VAR>` 内存环境传给Runner，不复制至xctestrun；驱动不导出远端既有消息正文。每轮使用新目录与原始不可变输入标识，模型原owner、轮次和无重放另核对，未知结果不能重新提交。该混合用例需人类授权所选其他客户端，不能因为脚本可用而自动联系远端Agent。
 
 混合交互可用 `--native-only --work-profile` 按普通 XCTest 路径启动 App，核对准确安装路径和 PID，采集进程 CPU、唤醒、逻辑写入及移动帧；该模式没有 Instruments 功耗数据，不能从 CPU 换算瓦特或电池消耗。完整流程缺少 END 或任何步骤时，标准解析器必须拒绝通过。另作已完成公共操作段的数值对照时，须用原 BEGIN 与实际最后共同步骤结束时间，核对目标、步骤、手势及驱动指纹，单列范围，并保留完整流程失败，不改写原始日志。
@@ -36,6 +38,10 @@ Windows GUI launcher、后台 helper、保留任务生命周期的迁移、逐�
 
 完整 Android 原生版本与 KMP 公共核心的实施见[开发计划](plans/android-native.md)。早期计划阶段尚无 Android 工程、Gradle Wrapper 或安卓验收命令；下述阶段已建立对应工程，计划中的 `pnpm build:android` 等入口建立后再加入本指南的可执行命令表。JS 工作空间继续只使用 pnpm，Android／KMP 使用固定版本 Gradle Wrapper，iOS 保留 Xcode。任一端功能变更需更新[双端清单](product/mobile-parity.md)、[UI 状态](design/mobile-parity.md)和[逐平台验收](acceptance/mobile-parity.md)；KMP 接入后的 iOS 回归是交付必需项。
 
+Android严格发布后交接使用 `python3 scripts/mobile/android-postpointer-handoff.py <admission.json> <private-output-parent>`，仅收两个位置参数；先准入准确SDK、独占安装及source guard。v2保留原direct限定语义；v3另绑定实际Controller方法及Documents精确目录身份。一次首次交接后，必须独立确认原PID退出才准入一次cold只读；未知结果停止，不安装/清数据/停止App或重放。Controller完成、worker join与物理FD关闭分别取证。原typed回执留私有目录；本工具不是Host服务。[阶段66](plans/android-alignment-20261022/records/stage66-p7-strict-first-prepare.md)与[阶段68](plans/android-alignment-20261022/records/stage68-p7-controller-strict-restore.md)保留各自指纹，完整UI、自然故障、非空资料完整迁移及物理DEV另验。
+
+P9 scoped bootstrap只建立正常Storage的独占scope/key/write准入，不能替代自然OS/SystemUI。public producer必须匹配当前NativePublicProcessNaturalOsProducerTest契约，observer ready前拒绝时不启动producer或点击；命令exit0不覆盖typed failed。API33跨UID进程可见性实际拒绝与API36启动阻塞见[阶段67档案](plans/android-alignment-20261022/records/stage67-p9-bootstrap-public-visibility.md)，不得通过升权或放宽guard改写结果。
+
 ## 工具版本
 
 本机工具、SDK、模拟器及 USB 真机调试的实际准备记录见[移动开发环境](mobile-development-environment.md)。`pnpm check:mobile-env` 为已实现的工具盘点入口，独立环境样例与产品工程分别记录。
@@ -60,6 +66,8 @@ Windows GUI launcher、后台 helper、保留任务生命周期的迁移、逐�
 3. 目标电脑先保存程序、差异与私有配置，核对包摘要后更新稳定程序和 SKILL。保留 Host ID、密钥、项目根目录、Node、服务路径、端口及既有配置。完整接入按 [Trace 流程](../skills/codex-host-connect/references/desktop-suggestions.md) 简要解释手机建议同步与本机保存范围，macOS 和原生 x64 Windows 默认使用各自持久环境工具配置 Trace 及 Host 观察器，不逐项追加记录授权；已有匹配配置复用，用户明确关闭或仅本次诊断时保留。持久环境就绪后由用户择机正常退出并从原图标重开，只有本次诊断才用独立等待器。必要时只重启本产品 Host，不强退原 Codex；当前进程、新 Trace、手机效果与注销恢复分别记证。Windows 实现及本机验收范围见 [Windows Trace](windows-native-trace.md)，不把源码或其他电脑通过写成当前目标全通过。默认核对当前用户登录自启，用户明确关闭时除外。
 4. 逐机核对回环与 HTTPS 身份、实际 owner、创建与主动打开，并记录真实原生客户端和模型任务的结果。使用原 Node 运行 `scripts/verify-host-runtime.mjs --entry <正式 Host dist/runtime-entry.js> --bundle <统一包 bundle.json>`，核对实际 ESM 解析到的直接及传递依赖指纹；检查嵌套 `dist/node_modules`，不能把工作区目录摘要当作正式进程已加载证明；工具核对解析到的磁盘文件，变更后仍核对必要重启后的 PID、入口与原环境。客户端可由有 Xcode 的开发电脑配合验收，桌面 owner 和执行证据仍须在各目标独立核对。
 
+Windows 已有受保护 Host 可使用[同源增量升级入口](windows-host-regular-upgrade.md)：在本机独立、干净的冻结检出中安装自身依赖并从空 `dist` 编译，再冻结 `windows-host-regular-runtime-v1` 闭包，按 manifest SHA-256 发布。它用于 Windows 本机程序升级，保留原身份、私有配置、端口与 Task 定义；不声称生成完整 Skill ZIP，不取代同一次 macOS／Windows 联合分发的统一包要求，也不把 Windows 验收升级为 macOS 通过。
+
 冻结目录必须先执行 `pnpm install --frozen-lockfile`，建立自身的 `node_modules`，再编译六组件；不得链接或借用其他工作区的 `node_modules`。若依赖状态核验触发自动安装或共享模块目录重建确认，保留该次失败场景，从新的独立冻结目录重新安装，不得为绕过确认设置 `CI`、修改 `confirmModulesPurge` 或强行通过共享目录核验。
 
 打包器在暂存和生成指纹前，要求五个实际分发的运行组件中，平铺 `dist/*.js` 与当前非声明 `src/*.ts` 的发射文件名完整对应。发现无源码的孤儿或缺失项立即拒绝；保留旧产物，从新的冻结源码、空 `dist` 重建，不静默过滤文件或改写指纹来制造一致。该清单检查不证明同名 JS 字节来自当前源码，仍须执行上述干净冻结构建。`pnpm check:skill` 包含真实打包边界回归：合法发射可生成包，注入无源 JS 后不得生成 ZIP 或摘要文件。
@@ -67,6 +75,8 @@ Windows GUI launcher、后台 helper、保留任务生命周期的迁移、逐�
 发现指纹不一致时，先核对其他已授权部署的任务、包摘要和源码差异。正在验证的新修复必须保留，不为匹配旧 `bundle.json` 回滚；各现场分别记录实际指纹及归属，统一源码和产物完成后再复核，不能将不同版本写成同包通过。
 
 不分发 `.local`、`.env`、令牌、真实聊天、用户附件或某台电脑的通过证明。旧证明仅在其目标身份、桌面版本和实际运行 Adapter 指纹仍匹配时复用；不匹配时将相应真实验收结果标为待复验；独立桥接能力仍按本机私有配置、实际身份、私有权限和真实运行时就绪判断；Codex 应用版本只记录验收环境，不作为配置或启动条件，不因报告缺失／过期关闭正式新建／打开。部署成功、编译通过、fixture 通过和逐机真实验收分别记录。
+
+Task Hub 冻结构建按其独立锁定 pnpm 版本安装开发依赖，再以 `NODE_ENV=production` 编译分发用网页；不能把开发模式的 JSX 源文件路径带入公开包。构建完成后独立检查实际 Web 产物中的机器路径，保留原源码及锁摘要，重新计算完整 payload 指纹；不直接修改旧压缩包或 manifest 来掩盖差异。该构建检查不代表 Task Hub 服务或业务验收通过。
 
 首次接入、增加电脑、修复和升级默认完成 [SKILL 完整功能清单](../skills/codex-host-connect/references/full-functions.md)，包括桥接生命周期独立性、项目内/空项目/无项目新建、未加载主动打开和正式手机入口；只有用户明确缩小范围时才交付子集。已实现但未开放的能力先定位修复，不能通过缩小清单排除。普通安装不要求目标电脑具备 Xcode、iPhone 在场或测试报告，正式独立桥接默认省略 `validationOnly`，保留用户明确选择的验证专用配置。安装配置、能力启用与真实 DEV 验收分别记录；各项仍须实际执行并记为本次通过、匹配复用、失败、未验收和未实现，只有所有适用必验项通过且正式能力可用时才报告完整实测通过。仅更新 SKILL/文档不改变运行 Adapter 指纹，应保持程序、私有配置和证明，核对文档摘要并复用匹配证据，不触发无关服务重启或模型任务。
 
@@ -838,3 +848,9 @@ iOS对照SidebarDrawer.updateInteraction：过渡期间panelSurface禁用交互�
 `thermal-ios-comparison.mjs`对准确独立App、签名产物、物理设备和当前安装路径取证；使用私有`--fixture`，不上传连接凭据或原对话。`--native-only --work-profile`只允许`testThermalMixedInteractionDEV`和`testThermalStreamingHistorySwitchDEV`；其他场景须Instruments启动。`--cpu-profile --work-profile`记录准确PID栈；持续回复原生测试支持`THERMAL_EXTERNAL_LAUNCH`，防止采样期间二次启动App。完整混合为3客户端、17步、22手势、3次400行原输入；严格实际切离时序失败保留，800行旧历史+600行新原回复的补充场景独立核对原owner运行区间。仅具名专用性能对话可输入；未知结果先核对、不重放，远端已有业务对话只读。
 
 CPU百分比是单核等价；帧间隔不是系统hitch，充电不能用于电池放电结论。公开报告只含指标与摘要，私有XCTest界面记录留本机。详见[完整对照与负向结果](research/mobile-performance-cpu-20261025.md)。
+
+超快模式专项：先 `pnpm build`，为独立模拟器设置 `IOS_SIMULATOR_ID`、`GENERATION_ULTRAFAST=1`，运行 `node scripts/generation-settings-desktop-ios-acceptance.mjs`。隔离工作树可用 `GENERATION_PROJECT_ROOT` 指定真实已保存项目的根目录，`GENERATION_ACCEPTANCE_DIRECTORY` 将私有记录保存到树外。核对两条 ultrafast 首条（含重启与项目继承）、快速与标准切回，以及原 owner 的唯一输入和实际 serviceTier；不支持的模型由辅助 IPC 边界拒绝。模拟器不代替真机或其他 Host 部署，见[本轮验收](acceptance/host-ultrafast-20261028.md)。
+
+生成设置的原生测试已通过、仅独立核对需要恢复时，使用 `GENERATION_VERIFY_DIRECTORY=<original-run-directory> GENERATION_PROJECT_ROOT=<saved-project-root> node scripts/generation-settings-desktop-ios-acceptance.mjs`。该入口保留原报告，要求相同 Adapter／原生源码／断言与准确模拟器证据，只查询原 owner 和回执，不再次启动 UI 测试或提交模型输入；标准速度接受桌面规范化的 null，未知档位保持拒绝。
+
+协调客户端私有目录的tlsPin为sha256与certificatePath嵌套对象，只接受一张公有自签PEM和精确DER SHA256。先验证源码/真实TLS与完整包，再安装本机客户端，核对目标Host/desktop-runtime和实际workspace后新建专用对话。证书不加入全局信任；标准HTTPS无pin路径保持原行为。源码包的既有声音向量按固定路径及字节指纹登记，未知音频/源码仍拒绝。

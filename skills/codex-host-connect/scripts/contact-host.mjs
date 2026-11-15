@@ -1,10 +1,10 @@
 import { parseArgs } from 'node:util';
-import { readFile, writeFile, rename, mkdir, lstat, chmod } from 'node:fs/promises';
+import { open, readFile, writeFile, rename, mkdir, lstat, chmod } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import https from 'node:https';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, X509Certificate } from 'node:crypto';
 import { createGunzip } from 'node:zlib';
 
 const fail = (code) => {
@@ -16,6 +16,133 @@ const requireValue = (value, code) => {
   if (!value) fail(code);
 };
 const digest = (value) => createHash('sha256').update(value).digest('hex');
+const pinnedTlsOptions = async (pin) => {
+  if (pin === undefined) return {};
+  requireValue(
+    pin !== null &&
+      typeof pin === 'object' &&
+      typeof pin.sha256 === 'string' &&
+      /^[a-fA-F0-9]{64}$/.test(pin.sha256) &&
+      typeof pin.certificatePath === 'string' &&
+      isAbsolute(pin.certificatePath),
+    'INVALID_TLS_PIN',
+  );
+  const stat = await lstat(pin.certificatePath);
+  requireValue(
+    stat.isFile() && !stat.isSymbolicLink() && stat.size <= 65536,
+    'INVALID_TLS_PIN_CERTIFICATE',
+  );
+  const pem = await readFile(pin.certificatePath, 'utf8');
+  let certificate;
+  try {
+    requireValue(
+      /^\s*-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*$/.test(
+        pem,
+      ),
+      'INVALID_TLS_PIN_CERTIFICATE',
+    );
+    certificate = new X509Certificate(pem);
+    const now = Date.now();
+    // This directory contract supplies one self-signed leaf as its own trust anchor.
+    // OpenSSL need not verify a trust anchor's self-signature, so check it explicitly.
+    requireValue(
+      certificate.subject === certificate.issuer &&
+        certificate.verify(certificate.publicKey) &&
+        Date.parse(certificate.validFrom) <= now &&
+        now <= Date.parse(certificate.validTo),
+      'INVALID_TLS_PIN_CERTIFICATE',
+    );
+  } catch {
+    fail('INVALID_TLS_PIN_CERTIFICATE');
+  }
+  const expected = pin.sha256.toLowerCase();
+  requireValue(digest(certificate.raw) === expected, 'TLS_PIN_CERTIFICATE_MISMATCH');
+  return {
+    ca: pem,
+    rejectUnauthorized: true,
+    // A fresh agent prevents cross-Host reuse and resumed TLS sessions skipping the leaf check.
+    agent: false,
+    checkServerIdentity: (_hostname, peer) => {
+      if (!Buffer.isBuffer(peer.raw) || digest(peer.raw) !== expected) {
+        const error = new Error('TLS_PIN_MISMATCH');
+        error.code = 'TLS_PIN_MISMATCH';
+        return error;
+      }
+      // TLS has already verified the chain, signatures and validity. Only this exact
+      // leaf replaces DNS/IP name matching, including explicitly pinned leaves without SAN.
+    },
+  };
+};
+export const CONTEXT_LIMITS = Object.freeze({
+  messageBytes: 8 * 1024,
+  outputBytes: 16 * 1024,
+  responseBytes: 8 * 1024 * 1024,
+});
+// Catch continuous and whitespace-wrapped Base64/Base64url/hex file bodies.
+// Short hashes, UUIDs and ordinary prose are valid coordination metadata.
+const hasEncodedPayload = (text) =>
+  /data:[^\s,]*;base64,/i.test(text) ||
+  [...text.matchAll(/[A-Za-z0-9+/_-]{32,}={0,2}(?:\s+[A-Za-z0-9+/_-]{32,}={0,2})*/g)].some(
+    ([block]) => block.replace(/\s/g, '').length >= 256,
+  );
+const validateTaskText = (text) => {
+  requireValue(typeof text === 'string' && text.trim(), 'INVALID_TASK_TEXT');
+  requireValue(
+    Buffer.byteLength(text) <= CONTEXT_LIMITS.messageBytes,
+    'TASK_TEXT_TOO_LARGE_USE_FILE_TRANSFER',
+  );
+  requireValue(!hasEncodedPayload(text), 'ENCODED_PAYLOAD_USE_FILE_TRANSFER');
+  requireValue(
+    ![...text].some((char) => {
+      const code = char.charCodeAt(0);
+      return (code < 32 && ![9, 10, 13].includes(code)) || code === 127;
+    }),
+    'BINARY_TASK_TEXT',
+  );
+};
+async function readTaskText(path, maximum) {
+  const file = await open(path, 'r');
+  try {
+    requireValue((await file.stat()).isFile(), 'REGULAR_TASK_FILE_REQUIRED');
+    // A bounded read also covers a file growing after stat; never load a large artifact.
+    const bytes = Buffer.alloc(maximum + 1);
+    let size = 0;
+    while (size < bytes.length) {
+      const part = await file.read(bytes, size, bytes.length - size, null);
+      if (!part.bytesRead) break;
+      size += part.bytesRead;
+    }
+    requireValue(size <= maximum, 'TASK_TEXT_TOO_LARGE_USE_FILE_TRANSFER');
+    try {
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+        bytes.subarray(0, size),
+      );
+    } catch {
+      fail('INVALID_TASK_TEXT_UTF8');
+    }
+  } finally {
+    await file.close();
+  }
+}
+// Never echo arbitrary error objects, model metadata or encoded content from a Host.
+const contextValue = (value, secrets, depth = 0) => {
+  if (typeof value === 'string') {
+    if (secrets.some((secret) => value.includes(secret))) return '[credential omitted]';
+    if (hasEncodedPayload(value)) return '[encoded content omitted]';
+    return Buffer.byteLength(value) > 512 ? '[oversized field omitted]' : value;
+  }
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (depth >= 4) return '[nested details omitted]';
+  if (Array.isArray(value))
+    return value.slice(0, 50).map((item) => contextValue(item, secrets, depth + 1));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 32)
+        .map(([key, item]) => [key, contextValue(item, secrets, depth + 1)]),
+    );
+  return undefined;
+};
 const privatePath = async (path, directory = false) => {
   const stat = await lstat(path);
   requireValue(
@@ -45,17 +172,42 @@ const summary = (value) =>
       'phase',
       'turnId',
       'effort',
+      'mode',
+      'expectedTurnId',
+      'queueSource',
+      'queuePresent',
+      'canExecuteNow',
+      'queueDisposition',
       'status',
       'error',
       'detached',
     ]
       .filter((key) => value?.[key] !== undefined)
-      .map((key) => [key, value[key]]),
+      .map((key) => [
+        key,
+        key === 'error'
+          ? typeof value[key] === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(value[key])
+            ? value[key]
+            : 'REMOTE_ERROR_DETAILS_OMITTED'
+          : ['string', 'boolean', 'number'].includes(typeof value[key]) || value[key] === null
+            ? value[key]
+            : '[details omitted]',
+      ]),
   );
 
 export async function main(args = process.argv.slice(2), options = {}) {
   const root = options.directory ?? join(homedir(), '.config', 'agent-hub');
-  const output = options.output ?? console.log;
+  const writeOutput = options.output ?? console.log;
+  let secrets = [];
+  const serialize = (value) => JSON.stringify(contextValue(value, secrets));
+  const output = (text) => {
+    const bounded = serialize(JSON.parse(text));
+    requireValue(
+      Buffer.byteLength(bounded) + 1 <= CONTEXT_LIMITS.outputBytes,
+      'CONTEXT_OUTPUT_TOO_LARGE',
+    );
+    writeOutput(bounded);
+  };
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
@@ -67,14 +219,20 @@ export async function main(args = process.argv.slice(2), options = {}) {
       'text-file': { type: 'string' },
       'project-id': { type: 'string' },
       'no-suitable-reason': { type: 'string' },
-      effort: { type: 'string', default: 'xhigh' },
+      effort: { type: 'string' },
+      'permission-mode': { type: 'string' },
+      mode: { type: 'string', default: 'auto' },
+      'expected-turn-id': { type: 'string' },
+      'queued-message-id': { type: 'string' },
+      limit: { type: 'string', default: '20' },
+      offset: { type: 'string', default: '0' },
       help: { type: 'boolean' },
     },
   });
   const command = positionals[0];
   if (values.help) {
-    output(
-      'probe|workspace|history|send|receipt|open|open-status|create|create-status|create-submit --host-id ID [--thread-id ID] [--operation-id ID] [--text-file PATH] [--effort xhigh]',
+    writeOutput(
+      'probe|workspace|history|queue|send|queue-execute|receipt|open|open-status|create|create-status|create-submit --host-id ID [--thread-id ID] [--operation-id ID] [--text-file PATH] [--mode auto|next-turn|queue|steer] [--expected-turn-id ID] [--queued-message-id ID] [--effort xhigh (send/create default; forbidden for steer)] [--permission-mode read-only|guardian-approvals|full-access (send/create default: full-access; forbidden for steer)] [--limit 1..50] [--offset N]; queue-execute uses a NEW operation ID and the ORIGINAL queued-message-id; text <=8192 UTF-8 bytes; files: transfer-host.mjs',
     );
     return;
   }
@@ -84,7 +242,9 @@ export async function main(args = process.argv.slice(2), options = {}) {
         'probe',
         'workspace',
         'history',
+        'queue',
         'send',
+        'queue-execute',
         'receipt',
         'open',
         'open-status',
@@ -94,6 +254,44 @@ export async function main(args = process.argv.slice(2), options = {}) {
       ].includes(command),
     'UNKNOWN_NAMED_OPERATION',
   );
+  requireValue(['auto', 'next-turn', 'queue', 'steer'].includes(values.mode), 'INVALID_SEND_MODE');
+  requireValue(command === 'send' || values.mode === 'auto', 'MODE_ONLY_FOR_SEND');
+  requireValue(
+    values['expected-turn-id'] === undefined ||
+      ((command === 'queue-execute' || (command === 'send' && values.mode === 'steer')) &&
+        values['expected-turn-id'].trim()),
+    'EXPECTED_TURN_ONLY_FOR_IMMEDIATE_INPUT',
+  );
+  requireValue(
+    command === 'queue-execute' || values['queued-message-id'] === undefined,
+    'QUEUED_MESSAGE_ONLY_FOR_QUEUE_EXECUTE',
+  );
+  if (command === 'queue-execute') {
+    requireValue(values['queued-message-id']?.trim(), 'ORIGINAL_QUEUED_MESSAGE_ID_REQUIRED');
+    requireValue(
+      values['text-file'] === undefined &&
+        values.effort === undefined &&
+        values['permission-mode'] === undefined,
+      'QUEUE_EXECUTE_REUSES_ORIGINAL_INPUT',
+    );
+  }
+  if (command === 'send' && values.mode === 'steer') {
+    requireValue(values['expected-turn-id']?.trim(), 'EXPECTED_TURN_ID_REQUIRED');
+    requireValue(
+      values.effort === undefined && values['permission-mode'] === undefined,
+      'STEER_CANNOT_CHANGE_GENERATION_SETTINGS',
+    );
+  }
+  requireValue(
+    values['permission-mode'] === undefined || ['send', 'create'].includes(command),
+    'PERMISSION_MODE_ONLY_FOR_NEW_INPUT',
+  );
+  const permissionMode = values['permission-mode'] ?? 'full-access';
+  requireValue(
+    ['read-only', 'guardian-approvals', 'full-access'].includes(permissionMode),
+    'INVALID_PERMISSION_MODE',
+  );
+  const effort = values.effort ?? 'xhigh';
   requireValue(values['host-id'], 'EXPLICIT_HOST_ID_REQUIRED');
   await privatePath(root, true);
   const registryPath = join(root, 'hosts.json');
@@ -102,6 +300,19 @@ export async function main(args = process.argv.slice(2), options = {}) {
   requireValue(
     registry.schemaVersion === 1 && Array.isArray(registry.hosts),
     'INCOMPATIBLE_REGISTRY',
+  );
+  secrets = registry.hosts
+    .map((item) => item.clientKey)
+    .filter((key) => typeof key === 'string' && key.length > 0);
+  const limit = Number(values.limit),
+    offset = Number(values.offset);
+  requireValue(
+    Number.isSafeInteger(limit) &&
+      limit >= 1 &&
+      limit <= 50 &&
+      Number.isSafeInteger(offset) &&
+      offset >= 0,
+    'INVALID_CATALOG_PAGE',
   );
   const matches = registry.hosts.filter((host) => host.hostId === values['host-id']);
   requireValue(matches.length === 1, 'HOST_ID_NOT_UNIQUE_OR_UNKNOWN');
@@ -120,23 +331,29 @@ export async function main(args = process.argv.slice(2), options = {}) {
       endpoint.pathname === '/',
     'HTTPS_ROOT_REQUIRED',
   );
+  const tlsOptions = await pinnedTlsOptions(host.tlsPin);
   const request =
     options.transport ??
     ((path, body, authenticated = true) =>
       new Promise((resolve, reject) => {
         const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
         let stream;
-        const networkFailure = () => {
+        let settled = false;
+        const transportFailure = (code) => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
-          const error = new Error('NETWORK_OUTCOME_UNKNOWN');
-          error.code = 'NETWORK_OUTCOME_UNKNOWN';
+          const error = new Error(code);
+          error.code = code;
           reject(error);
           stream?.destroy();
           request.destroy();
         };
+        const networkFailure = () => transportFailure('NETWORK_OUTCOME_UNKNOWN');
         const request = https.request(
           new URL(path, endpoint),
           {
+            ...tlsOptions,
             method: bytes === undefined ? 'GET' : 'POST',
             headers: {
               'Accept-Encoding': 'gzip',
@@ -150,11 +367,26 @@ export async function main(args = process.argv.slice(2), options = {}) {
             let text = '';
             const gzip = response.headers['content-encoding']?.trim().toLowerCase() === 'gzip';
             stream = gzip ? createGunzip() : response;
+            let wireBytes = 0,
+              decodedBytes = 0;
+            response.on('data', (part) => {
+              wireBytes += Buffer.byteLength(part);
+              if (wireBytes > CONTEXT_LIMITS.responseBytes)
+                transportFailure('HOST_RESPONSE_TOO_LARGE');
+            });
             stream.setEncoding('utf8');
             stream.on('data', (part) => {
+              if (settled) return;
+              decodedBytes += Buffer.byteLength(part);
+              if (decodedBytes > CONTEXT_LIMITS.responseBytes) {
+                transportFailure('HOST_RESPONSE_TOO_LARGE');
+                return;
+              }
               text += part;
             });
             stream.on('end', () => {
+              if (settled) return;
+              settled = true;
               clearTimeout(timer);
               let value = null;
               try {
@@ -177,6 +409,7 @@ export async function main(args = process.argv.slice(2), options = {}) {
         request.end(bytes);
       }));
   const threadId = values['thread-id'] ?? host.coordinationThreadId;
+  if (command === 'queue-execute') requireValue(values['thread-id'], 'EXPLICIT_THREAD_ID_REQUIRED');
   if (!['probe', 'workspace', 'create', 'create-status', 'create-submit'].includes(command))
     requireValue(
       typeof threadId === 'string' && threadId.length > 0,
@@ -184,9 +417,16 @@ export async function main(args = process.argv.slice(2), options = {}) {
     );
   const operationId = values['operation-id'];
   if (
-    ['send', 'receipt', 'open', 'open-status', 'create', 'create-status', 'create-submit'].includes(
-      command,
-    )
+    [
+      'send',
+      'queue-execute',
+      'receipt',
+      'open',
+      'open-status',
+      'create',
+      'create-status',
+      'create-submit',
+    ].includes(command)
   )
     requireValue(
       typeof operationId === 'string' && /^[a-zA-Z0-9_-]{8,100}$/.test(operationId),
@@ -232,18 +472,12 @@ export async function main(args = process.argv.slice(2), options = {}) {
   if (command === 'send' || command === 'create') {
     requireValue(values['text-file'], 'PRIVATE_TEXT_FILE_REQUIRED');
     requireValue(
-      ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(values.effort),
+      ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort),
       'INVALID_EFFORT',
-    );
-    text = await readFile(values['text-file'], 'utf8');
-    requireValue(text.trim().length > 0 && text.length <= 100000, 'INVALID_TASK_TEXT');
-    requireValue(
-      !registry.hosts.some((item) => item.clientKey && text.includes(item.clientKey)),
-      'CREDENTIAL_IN_TASK_TEXT',
     );
   }
   let ledgerPath, saved;
-  if (['send', 'open', 'create', 'create-submit'].includes(command)) {
+  if (['send', 'queue-execute', 'open', 'create', 'create-submit'].includes(command)) {
     const directory = join(root, 'operations');
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if (process.platform !== 'win32') await chmod(directory, 0o700);
@@ -255,6 +489,12 @@ export async function main(args = process.argv.slice(2), options = {}) {
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
+    if (command === 'send' || command === 'create') {
+      // Old immutable intents remain queryable under the previous 100k-character limit.
+      text = await readTaskText(values['text-file'], saved ? 400000 : CONTEXT_LIMITS.messageBytes);
+      if (!saved) validateTaskText(text);
+      requireValue(!secrets.some((secret) => text.includes(secret)), 'CREDENTIAL_IN_TASK_TEXT');
+    }
     if (command === 'create-submit')
       requireValue(
         saved?.kind === 'create' && saved.hostId === host.hostId,
@@ -265,7 +505,9 @@ export async function main(args = process.argv.slice(2), options = {}) {
         saved.hostId === host.hostId &&
           (command === 'create-submit' ||
             (saved.textSha256 === digest(text) &&
-              saved.payload.effort === values.effort &&
+              saved.payload.effort === effort &&
+              (values['permission-mode'] === undefined ||
+                saved.payload.permissionMode === permissionMode) &&
               saved.payload.projectId === (values['project-id'] ?? null))),
         'OPERATION_ID_REUSED_WITH_DIFFERENT_INPUT',
       );
@@ -304,18 +546,34 @@ export async function main(args = process.argv.slice(2), options = {}) {
           saved.hostId === host.hostId &&
           saved.threadId === threadId &&
           (command !== 'send' ||
-            (saved.textSha256 === digest(text) && saved.payload.effort === values.effort)),
+            (saved.textSha256 === digest(text) &&
+              saved.payload.effort === (values.mode === 'steer' ? undefined : effort) &&
+              (values['permission-mode'] === undefined ||
+                saved.payload.permissionMode === permissionMode) &&
+              (saved.requestedMode ?? 'auto') === values.mode &&
+              saved.payload.expectedTurnId === values['expected-turn-id'])) &&
+          (command !== 'queue-execute' ||
+            (saved.payload.clientMessageId === values['queued-message-id'] &&
+              saved.payload.expectedTurnId === values['expected-turn-id'])),
         'OPERATION_ID_REUSED_WITH_DIFFERENT_INPUT',
       );
       const path =
-        command === 'send'
-          ? '/v1/receipts?' + new URLSearchParams({ hostId: host.hostId, id: operationId })
+        command === 'send' || command === 'queue-execute'
+          ? '/v1/receipts?' +
+            new URLSearchParams({
+              hostId: host.hostId,
+              id: command === 'queue-execute' ? saved.payload.clientMessageId : operationId,
+            })
           : '/v1/desktop/open-status?' +
             new URLSearchParams({ hostId: host.hostId, threadId, id: operationId });
       const response = await request(path);
       if (response.http === 200)
         requireValue(
-          response.value.hostId === host.hostId && response.value.threadId === threadId,
+          response.value.hostId === host.hostId &&
+            response.value.threadId === threadId &&
+            (!['send', 'queue-execute'].includes(command) ||
+              response.value.clientMessageId ===
+                (command === 'queue-execute' ? saved.payload.clientMessageId : operationId)),
           'RECEIPT_TARGET_MISMATCH',
         );
       saved.latestReceipt = { http: response.http, result: summary(response.value) };
@@ -327,6 +585,9 @@ export async function main(args = process.argv.slice(2), options = {}) {
           operationId,
           hostId: host.hostId,
           threadId,
+          ...(command === 'queue-execute'
+            ? { queuedMessageId: saved.payload.clientMessageId, actionOutcome: 'query-only' }
+            : {}),
           queriedExistingOperation: true,
           replayed: false,
           ...saved.latestReceipt,
@@ -334,6 +595,14 @@ export async function main(args = process.argv.slice(2), options = {}) {
       );
       return;
     }
+  }
+  // Resuming a never-submitted prepared creation crosses the write boundary now.
+  if (command === 'create-submit') {
+    validateTaskText(saved.payload.text);
+    requireValue(
+      !secrets.some((secret) => saved.payload.text.includes(secret)),
+      'CREDENTIAL_IN_TASK_TEXT',
+    );
   }
   const health = await request('/healthz');
   requireValue(
@@ -364,25 +633,47 @@ export async function main(args = process.argv.slice(2), options = {}) {
     return;
   }
   if (command === 'workspace') {
-    output(
-      JSON.stringify({
-        operation: command,
-        hostId: host.hostId,
-        connectionMode: workspace.value.connectionMode,
-        projects: workspace.value.projects.map((project) => ({
-          id: project.id,
-          name: project.name,
-        })),
-        threads: workspace.value.threads.map((thread) => ({
-          id: thread.id,
-          title: thread.title,
-          projectId: thread.projectId,
-          projectIds: thread.projectIds,
-          state: thread.state,
-          archived: thread.archived ?? thread.isArchived ?? null,
-        })),
-      }),
-    );
+    const projects = workspace.value.projects;
+    const threads = values['project-id']
+      ? workspace.value.threads.filter(
+          (thread) =>
+            thread.projectId === values['project-id'] ||
+            thread.projectIds?.includes(values['project-id']),
+        )
+      : workspace.value.threads;
+    const page = {
+      operation: command,
+      hostId: host.hostId,
+      connectionMode: workspace.value.connectionMode,
+      offset,
+      totalProjects: projects.length,
+      totalThreads: threads.length,
+      projects: projects.slice(offset, offset + limit).map((project) => ({
+        id: project.id,
+        name: project.name,
+      })),
+      threads: threads.slice(offset, offset + limit).map((thread) => ({
+        id: thread.id,
+        title: thread.title,
+        projectId: thread.projectId,
+        projectIds: thread.projectIds,
+        state: thread.state,
+        archived: thread.archived ?? thread.isArchived ?? null,
+      })),
+    };
+    const updateOffsets = () => {
+      page.nextProjectOffset =
+        offset + page.projects.length < projects.length ? offset + page.projects.length : null;
+      page.nextThreadOffset =
+        offset + page.threads.length < threads.length ? offset + page.threads.length : null;
+    };
+    updateOffsets();
+    // JSON escaping and multibyte names count toward the complete output budget.
+    while (Buffer.byteLength(serialize(page)) + 1 > CONTEXT_LIMITS.outputBytes) {
+      (page.threads.length >= page.projects.length ? page.threads : page.projects).pop();
+      updateOffsets();
+    }
+    output(JSON.stringify(page));
     return;
   }
   if (command === 'create' || command === 'create-submit') {
@@ -408,7 +699,8 @@ export async function main(args = process.argv.slice(2), options = {}) {
         projectId,
         text,
         attachments: [],
-        effort: values.effort,
+        effort,
+        permissionMode,
       };
       saved = {
         kind: 'create',
@@ -519,13 +811,98 @@ export async function main(args = process.argv.slice(2), options = {}) {
         canControl: runtime?.canControl,
         state: runtime?.state,
         turnId: runtime?.turnId,
-        generationSettings: runtime?.generationSettings,
+        generationSettings: runtime?.generationSettings
+          ? Object.fromEntries(
+              ['model', 'effort', 'permissionMode', 'serviceTier', 'speed']
+                .filter((key) => runtime.generationSettings[key] !== undefined)
+                .map((key) => [key, runtime.generationSettings[key]]),
+            )
+          : undefined,
       }),
     );
     return;
   }
-  if (command === 'send')
+  if (command === 'queue') {
+    const receipts = (runtime?.receipts ?? []).filter(
+      (item) => item.state === 'queued' || (item.queueSource === 'native' && item.queuePresent),
+    );
+    requireValue(
+      receipts.every((item) => item.hostId === host.hostId && item.threadId === threadId),
+      'QUEUE_TARGET_MISMATCH',
+    );
+    const items = receipts.slice(offset, offset + limit).map((item, index) => ({
+      position: offset + index + 1,
+      ...summary(item),
+      ...(typeof item.text === 'string' ? { textSha256: digest(item.text) } : {}),
+    }));
+    const page = {
+      operation: command,
+      hostId: host.hostId,
+      threadId,
+      ready: history.value.ready,
+      canControl: runtime?.canControl,
+      state: runtime?.state,
+      turnId: runtime?.turnId,
+      offset,
+      total: receipts.length,
+      items,
+      nextOffset: null,
+    };
+    const updateOffset = () => {
+      page.nextOffset = offset + items.length < receipts.length ? offset + items.length : null;
+    };
+    updateOffset();
+    while (Buffer.byteLength(serialize(page)) + 1 > CONTEXT_LIMITS.outputBytes) {
+      items.pop();
+      updateOffset();
+    }
+    output(JSON.stringify(page));
+    return;
+  }
+  if (command === 'send' || command === 'queue-execute')
     requireValue(history.value.ready && runtime?.canControl, 'VERIFIED_ORIGINAL_OWNER_REQUIRED');
+  const capabilities = history.value.capabilities ?? workspace.value.capabilities;
+  const mode =
+    values.mode === 'auto' ? (runtime?.state === 'idle' ? 'next-turn' : 'queue') : values.mode;
+  if (command === 'send') {
+    requireValue(capabilities.includes('reply'), 'REPLY_UNAVAILABLE');
+    if (mode === 'queue') requireValue(capabilities.includes('queue'), 'NATIVE_QUEUE_UNAVAILABLE');
+    if (mode === 'next-turn')
+      requireValue(runtime.state === 'idle' && !runtime.turnId, 'IDLE_THREAD_REQUIRED');
+    if (mode === 'steer') {
+      requireValue(capabilities.includes('steer'), 'STEER_UNAVAILABLE');
+      requireValue(
+        runtime.state === 'running' && runtime.turnId === values['expected-turn-id'],
+        'CURRENT_TURN_MISMATCH',
+      );
+    }
+  }
+  if (command === 'queue-execute') {
+    requireValue(capabilities.includes('queue:execute'), 'QUEUE_EXECUTE_UNAVAILABLE');
+    requireValue(
+      runtime.state === 'idle' || runtime.state === 'running',
+      'QUEUE_EXECUTE_REQUIRES_IDLE_OR_RUNNING',
+    );
+    requireValue(
+      runtime.state === 'running'
+        ? runtime.turnId && runtime.turnId === values['expected-turn-id']
+        : !runtime.turnId && values['expected-turn-id'] === undefined,
+      'CURRENT_TURN_MISMATCH',
+    );
+    const item = runtime.receipts?.find(
+      (item) => item.clientMessageId === values['queued-message-id'],
+    );
+    requireValue(
+      item?.hostId === host.hostId &&
+        item.threadId === threadId &&
+        item.state === 'queued' &&
+        item.queueSource === 'native' &&
+        item.queuePresent === true &&
+        item.canExecuteNow === true &&
+        !item.queueSyncError,
+      'EXECUTABLE_ORIGINAL_QUEUE_ITEM_REQUIRED',
+    );
+  }
   if (command === 'open')
     requireValue(
       workspace.value.capabilities.includes('desktop:open'),
@@ -539,10 +916,19 @@ export async function main(args = process.argv.slice(2), options = {}) {
           clientMessageId: operationId,
           text,
           attachmentIds: [],
-          mode: runtime.state === 'idle' ? 'next-turn' : 'queue',
-          effort: values.effort,
+          mode,
+          ...(mode === 'steer'
+            ? { expectedTurnId: values['expected-turn-id'] }
+            : { effort, permissionMode }),
         }
-      : { hostId: host.hostId, threadId, clientOperationId: operationId };
+      : command === 'queue-execute'
+        ? {
+            hostId: host.hostId,
+            threadId,
+            clientMessageId: values['queued-message-id'],
+            ...(values['expected-turn-id'] ? { expectedTurnId: values['expected-turn-id'] } : {}),
+          }
+        : { hostId: host.hostId, threadId, clientOperationId: operationId };
   saved = {
     kind: command,
     hostId: host.hostId,
@@ -550,6 +936,7 @@ export async function main(args = process.argv.slice(2), options = {}) {
     operationId,
     ...(text === undefined ? {} : { textSha256: digest(text) }),
     payload,
+    ...(command === 'send' ? { requestedMode: values.mode } : {}),
     status: 'intent-saved',
     createdAt: new Date().toISOString(),
   };
@@ -557,16 +944,27 @@ export async function main(args = process.argv.slice(2), options = {}) {
   await writeFile(ledgerPath, JSON.stringify(saved, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
   try {
     const response = await request(
-      command === 'send' ? '/v1/replies' : '/v1/desktop/open',
+      command === 'send'
+        ? '/v1/replies'
+        : command === 'queue-execute'
+          ? '/v1/queue/execute'
+          : '/v1/desktop/open',
       payload,
     );
-    if (response.http === 200)
+    if (response.http === 200 && command !== 'queue-execute')
       requireValue(
         response.value.hostId === host.hostId && response.value.threadId === threadId,
         'SUBMISSION_TARGET_MISMATCH',
       );
-    saved.response = { http: response.http, result: summary(response.value) };
-    saved.status = response.http === 200 ? 'submitted' : 'query-before-retry';
+    saved.response = {
+      http: response.http,
+      result:
+        command === 'queue-execute' ? { ok: response.value?.ok === true } : summary(response.value),
+    };
+    saved.status =
+      response.http === 200 && (command !== 'queue-execute' || response.value?.ok === true)
+        ? 'submitted'
+        : 'query-before-retry';
   } catch {
     saved.status = 'uncertain-query-required';
   }
@@ -578,6 +976,7 @@ export async function main(args = process.argv.slice(2), options = {}) {
       operationId,
       hostId: host.hostId,
       threadId,
+      ...(command === 'queue-execute' ? { queuedMessageId: values['queued-message-id'] } : {}),
       status: saved.status,
       ...saved.response,
       replayed: false,

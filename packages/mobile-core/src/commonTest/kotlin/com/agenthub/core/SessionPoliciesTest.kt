@@ -6,13 +6,20 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 
 class SessionPoliciesTest {
-    @Test fun conversationGenerationDisplayNeverUsesDraftOrCatalogueDefaults() {
+    @Test fun composerPreviewsNextInputAndFallsBackToOwnerOnlyWithoutAnOverride() {
         val actual = SessionPolicies.generationDisplay(true,"draft-model","low","owner-model","xhigh")
-        assertEquals("owner-model",actual.model)
-        assertEquals("xhigh",actual.effort)
+        assertEquals("draft-model",actual.model)
+        assertEquals("low",actual.effort)
         val unavailable = SessionPolicies.generationDisplay(true,"draft-model","low",null,null)
-        assertNull(unavailable.model)
-        assertNull(unavailable.effort)
+        assertEquals("draft-model",unavailable.model)
+        assertEquals("low",unavailable.effort)
+        val reset = SessionPolicies.generationDisplay(true,null,null,"owner-model","xhigh")
+        assertEquals("owner-model",reset.model)
+        assertEquals("xhigh",reset.effort)
+        val effortOnly = SessionPolicies.generationDisplay(true,null,"low","owner-model","xhigh")
+        assertEquals("owner-model",effortOnly.model)
+        assertEquals("low",effortOnly.effort)
+        assertNull(SessionPolicies.generationDisplay(true,null,null,null,null).model)
         assertNull(SessionPolicies.generationDisplay(true,null,null,"owner-model",null).effort)
         val newDraft = SessionPolicies.generationDisplay(false,"draft-model","low",null,null)
         assertEquals("draft-model",newDraft.model)
@@ -48,15 +55,24 @@ class SessionPoliciesTest {
         }
         val changed = SessionPolicies.changeModel("xhigh", "fast", listOf("low"), "low", listOf("standard"))
         assertEquals("low", changed.effort); assertEquals("standard", changed.speed)
+        assertNull(SessionPolicies.changeModel(null, "fast", emptyList(), null, emptyList()).speed)
+        assertNull(SessionPolicies.changeModel(null, "ultrafast", emptyList(), null, listOf("fast")).speed)
+        assertEquals("fast", SessionPolicies.changeModel(null, "fast", emptyList(), null, listOf("fast")).speed)
+        assertNull(SessionPolicies.changeModel(null, null, emptyList(), null, listOf("fast")).speed)
     }
 
     @Test fun runIdentityFinalFragmentsAndToolWindows() {
         for (entry in vectors.getValue("toolPresentation").jsonArray) {
             val test=entry.jsonObject
             val messages=test.getValue("messages").jsonArray.map { it.jsonObject.let { m -> TimelineMessage(m.text("id")!!,m.text("role")!!,m.text("text")!!,m.text("kind"),m.text("status"),m.text("runId"),m.text("replyPhase"),m.text("replyMessageId")) } }
+            val localized=test["locale"]?.jsonPrimitive?.content=="en"
+            val native=object: ToolPresentationText {
+                override val english=localized
+                override fun text(key: String)=vectors["toolPresentationCopy"]?.jsonObject?.get("en")?.jsonObject?.get(key)?.jsonPrimitive?.content ?: key
+            }
             val actual=when(test.text("operation")) {
-                "summary" -> ToolPresentation.summary(messages)
-                "title" -> ToolPresentation.title(messages.single(),test.flag("flag"))
+                "summary" -> if(localized)ToolPresentation.localizedSummary(messages,native) else ToolPresentation.summary(messages)
+                "title" -> if(localized)ToolPresentation.localizedTitle(messages.single(),test.flag("flag"),native) else ToolPresentation.title(messages.single(),test.flag("flag"))
                 "compaction" -> ToolPresentation.compaction(test.text("value"),test.flag("flag"))
                 "style" -> ToolPresentation.style(test.text("value")).let { "${it.category}|${it.verb}|${it.detailTitle}" }
                 "status" -> ToolPresentation.status(test.text("value"))

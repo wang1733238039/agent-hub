@@ -23,6 +23,7 @@ import ts from 'typescript';
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const source = join(repository, 'packages/codex-adapter/src');
 const names = [
+  'diagnostic-events',
   'windows-process',
   'windows-trace-diagnostics',
   'desktop-private-state-native',
@@ -33,6 +34,9 @@ const names = [
   'desktop-suggestion-worker-limits',
   'desktop-suggestion-observer',
   'desktop-prediction-trace',
+  'desktop-suggestion-store',
+  'desktop-native-suggestion-channel',
+  'desktop-native-sample-platform',
 ];
 const modes = [
   'normal',
@@ -588,10 +592,17 @@ export const installWindowsTraceBackend=value=>{backend=value};
 export const inspectWindowsPipe=()=>({pid:123,startedAtUnixMs:1,executable:'synthetic'});
 export const windowsTraceNativeExecutable=()=>fileURLToPath(new URL('./child.mjs',import.meta.url));
 export const inspectWindowsTraceInstance=()=>backend.inspect();
+// Native result capture is disabled in this legacy transport fixture.
+export const inspectWindowsInstallation=()=>{throw Error('Native result capture not provided by this fixture')};
+export const windowsSuggestionProducerIdentity=()=>{throw Error('Native result capture not provided by this fixture')};
+export const windowsPowerShellEnvironment=()=>{throw Error('Native result capture not provided by this fixture')};
 export const windowsTraceInstanceReady=()=>true;
 export const windowsTraceSnapshot=(...args)=>backend.snapshot(...args);
 export const windowsTraceSnapshotBatchAvailable=()=>backend?.snapshotMany!==undefined;
 export const windowsTraceSnapshotMany=(...args)=>backend.snapshotMany(...args);
+import {mkdirSync,openSync,writeFileSync,renameSync} from 'node:fs';
+export const makePrivateDirectorySync=path=>mkdirSync(path,{recursive:true,mode:0o700});
+export {openSync as openPrivateFileSync,writeFileSync as writePrivateFileSync,renameSync as renamePrivateFileSync};
 export const assertPrivateFile=()=>{};
 export const protectWindowsStateDirectory=()=>{};
 export const protectWindowsStateFile=()=>{};

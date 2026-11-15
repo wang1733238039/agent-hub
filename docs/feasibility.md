@@ -1,5 +1,71 @@
 # 技术可行性与 PoC 验收
 
+2026-11-08 F69：Windows Responses 转发已退役。回环监听缺失时，原桌面和 CLI 的模型请求都失败。当前本机桌面包对应的 CLI `0.167.0-alpha.3.2` 静态协议未发现只读已有灰字的接口。Windows 手机端暂停这条建议来源，恢复条件是原桌面和 CLI 在 Host 离线时仍正常使用，并能通过独立来源取得对应建议。[历史验证](acceptance/windows-response-suggestions-20261104.md)
+
+2026-11-04 F69 Host 接入：用户明确前台只读确认属于技术验证，生产采集不依赖 UI。Windows 新增显式启用的 Responses 转发通道，保存原生成正文、response ID 和准确来源聊天／轮；读取沿用原 owner／最新完成轮校验。macOS 原通道保持。实现、独立辅助检查和本次真实 Host 验收分列于[接入记录](acceptance/windows-response-suggestions-20261104.md)，不把此前 PoC 直接计为本实现通过，也不将网络候选声称为已验证安全后显示状态。
+
+2026-11-04 F69 第四轮：用户将范围缩为前台聊天后，**“透明转发＋前台只读确认”取得真实原生灰字正样本，技术可行性通过**。原桌面自然发起预测，真实认证压缩 WS 取得候选全文、来源聊天／轮与 response ID；37 字候选与人类截图、独立原窗口观察逐字一致。本地 Windows OCR 仅移除识别插入空白后也匹配。原 App、正常启动入口与正式 Host 未修改或重启，临时官方 URL 配置已恢复；UIA 本次没有暴露灰字正文。常驻自动采集、转发故障直连、任意已运行聊天接管、后台覆盖与手机验收尚未通过，详见[前台真实验收](research/windows-suggestion-independent.md#2026-11-04-第四轮前台原生灰字的真实正样本)。
+
+2026-11-04 F69 第三轮结论：Windows 可复用 Mac 历史 Trace 机制，但当前 `thread/sample` 不能仅靠 Trace 取全文。透明 Responses 转发的九批真实 CLI／假模型实验通过：按原 App 参数结构调用 CLI，HTTP 与 WS 可从实际出站元数据关联并发 sample 的候选正文、来源轮和 response ID，观察 Worker 关闭／崩溃／阻塞不影响本批转发；官方 `openai_base_url` 在隔离假 API key 的 WS 场景走通。这是协议级证据，尚不证明自然原桌面生成及最终灰字：安全后的 Finished 遥测虽带唯一 response ID，却无已验证的可靠本地导出及全后台补发保证。转发器仍是新增依赖，真实 ChatGPT 路由、原桌面与手机验收未通过；用户确认必须原生灰字，不接受 Host 另行生成。未修改原 App、启动方式或正式配置，详见[第三轮判定与证据](research/windows-suggestion-independent.md#2026-11-04-第三轮透明转发与原生灰字的最终判定)。
+
+2026-11-04 F69 第二轮：同一官方 Windows CLI 的独立假模型实验证实，普通轮次与旧式 prediction fork 可以留下完整 Trace；当前 `thread/sample` 则原 RPC 有全文、外层 Trace 无正文，HTTP/SSE 和 WS 都复现。原始诊断日志可以见到正文，但两来源并发、错序、分块实验未取得可与来源 Trace 绑定的共同标识；默认日志数据库也没有 sample 全文。原生灰字覆盖所有后台聊天的可部署方案仍未通过，原 App、启动方式与正式 Host 保持，详见[第二轮实验](research/windows-suggestion-independent.md#2026-11-04-第二轮windows-trace-与后台采集实验)。
+
+2026-11-04 F69 Windows 建议采集恢复研究：本机 Codex `26.1029.7803.0`／CLI `0.166.0-alpha.6` 的原编辑器取字及请求分支隔离验证通过；现有请求在缓存未命中时仍生成预测，未找到独立 Host 可用的只读已有建议出口。正式 Host 健康与工作区查询通过，但未声明建议能力；有限 Trace 盘点及对应版本源码不能提供本次完整自然建议与唯一安全绑定。生产实现、手机全文与采用／撤销均未新增通过，详见[新版可行性复核](research/windows-suggestion-independent.md#2026-11-04新版-windows-的可行性复核)。
+
+2026-11-05 Android F59：独立互传与具名严格密文端口已接入开发分支并通过静态独审，增加9项直接调用生产文件端口的Native测试源码；尚未编译/执行，不能据此宣称持久性故障、系统选择器、界面或真实Host/手机通过。已有Android完整回归和SDK仅绑定此前a496c47a；本次新源码需新指纹验收。容量、portable原件/journal及24域完整迁移仍开放，详见[阶段94](plans/android-alignment-20261022/records/stage94-f59-strict-storage.md)。iOS A6及任务/项目管理暂停范围保持。
+
+2026-11-04 F69 本机部署候选：在正式 R11 对应的规范提交上叠加空日志候选计数修复和 macOS 私有诊断日志，保留正式 Host 已有诊断、恢复和原生 owner 规则。空文件每次复查，增长后从零读取，已跟踪截断仍拒绝；日志记录生命周期、固定原因、阶段、心跳和结果状态。iOS／Android 共用 Host 来源规则，UI／草稿语义保持，Android 建议 UI 与 A6 状态不变。源码、辅助检查、实际部署与建议来源验收分别记录。
+
+2026-11-04 F34／F36：按最新交互要求，输入区立即预览下一轮草稿模型／推理／速度，未覆盖字段回落到准确 owner 已知值；设置页“电脑当前设置”继续只读显示真实运行参数。iOS／Android 共用 KMP 展示规则，沿用原目标隔离、持久化和实际发送边界，选择本身不写入电脑任务。此修订取代 2026-10-26 的输入区只显示当前 owner 设计；历史验收不自动升级，见[本轮记录](acceptance/next-turn-generation-display-20261104.md)。
+
+2026-11-03 F59／F19／F32：移除独立文件互传与聊天资源下载预览的 20 MiB 固定上限。新 Codex Host 的文件目录以 `maxFileBytes: null` 表示未配置大小上限，iOS 兼容旧 Host 的有限值；Host、电脑发送 CLI 与 iOS／Android 下载不再按 20 MiB 拒绝。仍验证准确目标、原消息授权、普通文件、不可变长度和 SHA-256，未知传输只查询原回执。大文件仍受可用存储、内存、网络及系统格式支持影响；Markdown／HTML 渲染预算不改变下载与分享能力。双端影响、辅助检查、物理设备与真实桌面证据分列于[专项记录](acceptance/file-size-limits-20261103.md)。
+
+2026-11-01 F69 目标继续：完整保留 Windows 原桌面建议采集，先证明独立于 Codex 启动的只读数据源，再开发并实机验证。固定上游代码发现既有 Trace 的完整响应可能先于 sample 清理保存，但原机来源及安全决定的一对一关联仍缺，不能放宽取消守卫。当前 Windows 入口拒绝连接，本轮未开发或部署新采集器；详见[独立采集可行性研究](research/windows-suggestion-independent.md)。
+
+2026-11-01 F03／F69 Windows 启动安全：停用会接管原 Codex 后端的全局建议采集垫片安装。旧安装仅解除有本产品私有清单证明且仍指向原 launcher.exe 的 HKCU CODEX_CLI_PATH，保留其他覆盖、私有配置、身份和运行中的进程；config.json 损坏、旧源码摘要或应用路径失效不阻断恢复。iOS／Android 共用此 Windows Host 限制，UI、macOS 路径及 A6 暂停范围保持；Windows 被动结果采集暂不可安装，真实桌面与手机验收分别记于[启动安全记录](acceptance/windows-codex-startup-safety-20261101.md)。
+
+2026-10-31 F02/F03：EasyWork发现候选显示电脑名、系统用户名及地址，读取验证后的/host可选computer元数据并兼容旧name；名称不作授权目标。旧Host缺自动直连声明时明确提示扫码并提供入口，不盲目POST或绕过原配对。桌面自动直连/VPN历史增量同步至EasyWork源码，保留较新TLS；两端源码、辅助检查、实体iPhone、真实Electron/模型和实际部署分别记于docs/acceptance/easywork-discovery-20261031.md，A6暂停保持。
+
+2026-11-01 F19／F32 可视化：已增加 Codex visualize 引用的手机文件投影和 iOS 独立 HTML 沙箱容器，真实模型、原 Electron owner、下载与物理 iPhone XCTest 按[专项记录](acceptance/visualization-20261101.md)分别核对，不以编译替代真机交互。原电脑文件需仍可读取；相对资源、Host API、任意外网和桌面窗口专属组件不保证可运行，Android HTML 容器待实施，A6 保持暂停。
+
+2026-10-31 F69：真实时钟辅助诊断已证明，Windows 逐次原生进程读取可使空闲 tick 约十一秒，触发现有六秒租期失效。R11 当前为实现候选：原通信先转发，固定采集 Worker 复用真实原 owner 绑定的持久 C# scope，沿用私有根与 vendor-log 的独立权限检查，并在最终原子发布前重验原阶段期限。完整检查、Windows 冷热耗时、逐机原进程链、真实模型建议与手机采用/撤销、对应 Trace 回收尚须按新指纹验证，见 [本轮记录](acceptance/host-native-suggestions-20261031.md)。R10 的 iPhone Windows 发现与连接已单独通过，不能升级为建议通过；Android 与 A6 状态保持。
+
+2026-10-29 诊断与重连候选修复了同步错误日志、Windows Duplex 早期取消和关闭中初始化的代码风险；尚未据此唯一确认迁移现场的 503／ABORT_ERR 根因。Windows、手机和模型恢复仍未验收，Mac 只读真实结果与合成辅助结果分别见[专项验收](research/host-reconnect-diagnostics-20261029.md)。
+
+Android 原录音文件识别已接入固定模型的 Vosk/JNA 实现，准确目的地持久化、原件保持与 typed/framed 迁移已有限定原生证据；真实下载、JNI/声学、进程死亡和完整 UI/真机仍需独立验收。iOS 既有 SFSpeech 仅在服务支持时要求 on-device，不将其视为相同离线保证；任务/项目管理与 A6 保持暂停。详见[总表](plans/android-alignment-20261022/progress.md)。
+
+## 2026-10-29 F74 Host 模型代理
+
+图像产品代理增加固定生成／编辑操作、OpenAI 请求格式和参数偏好适配，默认独立启用；原始图片头核对有效尺寸与编码，最终图片 SSE 不伪造局部预览。当前仅声明 gpt-image-2，n=1；辅助与真实结果见[图像验收](acceptance/host-images-proxy-20261029.md)。历史直连研究未实现原生 2K，不能宣称参数等价或所有平台通过。
+
+已实现默认关闭的独立代理、私有 Key／TLS、模型允许清单、原始 Responses SSE、非流式完成对象、Chat 转换和不重放回执。十三组辅助回归覆盖关闭零副作用、鉴权及输入、分片 UTF-8／原字节、协议和用量、断流／重启未知结果、原 ID 不变、上游错误／并发、写入者互斥、已退出写入者恢复、配置准备保留关闭状态、固定授权／目标、可选监听失败不影响原 Host 及 Chat 结束后立即断开不丢完成回执。
+
+产品包已在本机显式启用；Demo Linux 经 Tailscale 验证原始 Responses 上下游字节一致，后台容器 TLS 校验及 ai/chat 真实模型调用本次通过。构建、十三组专项回归、现有检查分段完成及初次失败均分别保留，见[专项验收](acceptance/host-responses-proxy-20261029.md)。旧研究脚本不作为本产品证明。iOS、Android、Windows 不新增真实通过，A6 暂停范围保持。
+
+2026-10-29 Android 通知恢复 v2 源码已接到可选前台 monitor：完整原意图先落盘、未知只查原 ID，独立关闭与显式缺口接受保持各自收据，待 Host 确认事件不推进游标。JVM 辅助与原生编译分列；共享 UI／迁移入口和真实 DEV 尚待集成负责人验收。iOS v1 与供应商承诺不变，见[Android 候选与交接](plans/android-alignment-20261022/parallel/p9-notifications/recovery-v2-android.md)。
+
+2026-10-26 F69 Windows 准备阶段候选：时间过滤后的新鲜目录按最多八项重新组成前缀和配置载荷批次，避免原目录分组中剩余单项反复逐项读取。每个批次至多八项，仅使用本请求的新鲜收据，过滤掉的 manifest 及每个目录、文件和最终 commit 守卫完整保留；原 4/7/8 秒预算、原 owner、权限、内容与六秒租期不变。辅助回归对照同一实际文件系统上的 scalar 原生接口，准备/提交的完整路径及读取长度多重集和全部收据相等；稀疏场景由 17 个 scalar 调用降到仅根目录 1 个，后变为合格的排除项仍拒绝 commit。当前是源码候选，尚未由本次 Windows 原生或手机验收证明收益。macOS 路径和双端 UI 不变，Android 无新增通过，A6 继续暂停。
+
+2026-10-26 F69 真机续验：人类确认 UI 自动化设置及正常重启后，独立物理 iPhone 15 Pro Max 对指定 MacBook 与 M5 的 V7 正式 Host 完成 A→B→A→B 灰字/全文、采用/撤销及冷启动；原 owner 来源和用户输入集合保持。测试表单未切换失败、测试 helper 局部重选及新旧 App 二进制分别留证；新 App SHA256 为 9d393fe796e94bc007323e70bcfb610ba4e75b6f6b2e006ac5287702b1208e11，两台分别 154.647/118.129 秒通过。Windows V7 正式 prepare 仍耗尽 4 秒，当前候选未部署；这些 Mac 通过不升级 Windows、Android 或完整产品状态。见专项连接修复记录，A6 保持暂停。
+
+2026-10-26 F03／F17：逐机复核发现 desktop open 的只读尾部仍强制发布完整状态头。现在该路径同步执行相同的真实 writer／完整磁盘头／权限及完整内容校验，只有已成功同步的相同字节可复用；任何变化（包括回执）仍在返回前完整发布并同步。若存在待补偿的命令提交，读路径也必须执行原强制同步，不能清除未落实的提交门禁。新增实际 RuntimeSession.open 的合成原 owner 回归覆盖重复打开、相同长度正文/状态、变更标题及待提交命令。iOS／Android 共用 Host，UI、草稿和未知操作不重放规则保持，真机与逐机结果另记，A6继续暂停。
+
+2026-10-26 F03／F17／F69：Host 只读目录变更改为合并后台保存；准确原 owner 的完整消息投影逐字段相等时保留历史引用，正文、附件、状态或 ID 变化仍更新。后台状态仅在真实写入者／完整磁盘头连续、实际权限合格且完整序列化字节等于本进程已同步落盘的头时跳过重复发布；命令显式保存仍每次执行文件及适用平台目录同步，任何新写失败均撤销该可复用证明。故障、未知操作与回执边界保持；iOS／Android 共用 Host，未改变 UI 或草稿规则。辅助检查、各机延迟与物理手机结果分别登记，Android 不新增通过，A6 保持暂停。
+
+2026-10-26 Windows 连接恢复：原桌面更新后，运行中的 Host 在每次重连重新核对当前管道 owner、用户／登录会话、相邻协议 archive 与可信 CLI，复用启动阶段同一有界发现实现；不写入正式配置，不改 Host 身份，不重放未知输入。旧只读 metadata 进程须确认退出与 stdio 关闭后才能切换 CLI；辅助边界与实际 Windows 原生结果分别登记。iOS／Android 共用 Host 恢复，UI 和草稿规则不变；物理手机 XCTest 启用自动化超时仍为未通过。
+
+Windows 自动重连更新的可信 CLI 选择同时供新建、分叉、队列和项目管理的下一条元数据连接使用，避免长生命周期辅助对象继续使用失效安装路径。路径提供者仅在 Adapter 内部，逐次要求固定绝对路径，不开放客户端可选命令或方法；原零 Turn 准备、确认退出、原 owner 执行及未知输入不重放边界保持。当前候选的辅助检查和实际 Windows 结果分别登记，不升级手机或 Android 验收状态。
+
+Windows 原生 helper 的暖启动将目录保护、逻辑 binary 和物理 binary 的现有私有权限校验合并到一次 PowerShell 进程中执行，每个新 isolate 仍重新完成全部检查，不复用跨请求授权。校验后再次核对实际路径，失败不填充本进程缓存；冷编译和私有临时文件发布边界保持。此改动减少启动进程数，不能据此宣称原生建议、读取时延或手机验收已通过，实际结果单列。
+
+2026-10-26 F69 Windows 原生批次候选：小项上限由8增为64，仍按原48KiB请求、256KiB响应估计、每项16KiB和100000字符命令行上限规划，原生最多8项并发；每个原始Snapshot的完整新鲜打开、前后路径/身份/ACL/内容核验均保持，失败整批拒绝且不重放。原750ms单批与4/7/8秒读取预算不变；不增加权限或跨请求缓存。真实Windows单次计时四组摘要相同，但不包含正式传输，不能据此断言根因或收益；候选实际部署和手机结果仍待验。iOS／Android UI不变，Android无新增通过，A6暂停。
+
+2026-10-28 Android PAR1：文件流式链路已在API26的48MiB堆走通满额WAV及原候选冷恢复。手机独立阅读/逐事件查询与普通通知原回执为窄模块，实际页面/认证事件接线和全部子存储继续开发；Android新文件封套尚不与iOS互通。限定原生辅助结果和真实DEV/系统送达分列，见[当前分工](plans/android-alignment-20261022/parallel/README.md)。
+
+2026-10-28 通知恢复 v2：已加入可选具名收据、持久订阅墓碑和有界 feed 的源码候选及独立 Node 边界。兼容 v1/iOS wire，未知旧写不重放；丢失原历史只返回明确缺口，复位需独立接受记录。辅助检查、Android 接线、真实 Host／手机／模型和正式部署分别记证，不将本机 fixture 当真实通过。见[候选与契约边界](plans/android-alignment-20261022/parallel/p9-notifications/recovery-v2-server.md)。
+
+2026-10-28 Windows 安装兼容性：按用户要求移除桌面与 CLI 的 Publisher／签名文案／Store 包身份门禁；同一管道句柄、当前用户与登录会话、准确路径／摘要及真实 IPC 方法检查继续执行。私有状态 bootstrap 与常驻 worker 共用文件句柄实现，只读所有者与 DACL、只写受保护 DACL，保留 SACL，不提权或接管他人文件。源码与辅助检查不代表目标 Windows／手机功能通过，见[专项记录](acceptance/windows-install-20261028.md)。
+
 内置 Markdown 与可注册原生预览器；iPhone 真实原桌面文件核心阅读闭环通过，Android 编译及共享规则通过，完整双端与正式发布待验
 
 2026-10-26 F34：现有对话底部模型／强度只展示准确原 owner 设置；模型目录默认值和手机未发送覆盖项不得冒充实际值。未取得时显示同步中／跟随电脑，设置面板区分电脑当前设置与下次发送。iOS／Android 共用 KMP 展示选择规则；Host 小体积具名只读查询即使完整快照不可用也返回当前参数，不授予执行控制。源码、辅助检查、iPhone 真实验收与未验收平台分别登记于 acceptance/thread-model-settings-20261026.md，A6 保持暂停。
@@ -492,3 +558,58 @@ Mac Mini 回收增量已合入规范源码：独立桥接按本机私有配置�
 ### 2026-10-24 超过回执尾页的未知记录
 
 2026-10-24 P4-4n.3共享Host修复：585ddac先提交推送后，新增35条后续完成回执的真实Adapter投影反例；旧Host明确失败于最早未知回执丢失。queueReceipts保留同聊天所有uncertain，普通completed仍最近30、原生队列原ID去重和目标过滤保持。读取不推断接受、改变原状态或重发输入；原owner正向证据规则不改。相同新增反例在修复后通过，含旧未知/普通完成有界/错聊天排除/零新增wire命令。Android与iOS自动共享Host结果，端侧UI和领域Schema未改；当前原生辅助、32Turn真实只读与新队列整例回归、完整根检查的准确结果见P4-stage进度及验收台账，不能把synthetic未知元数据当自然丢ACK或真实模型输入。正式Host未部署。 UI05/UI06沿用iOS/Android历史未知折叠提示、独立草稿及原ID查询；完整主题/字体/AX、真实自然丢ACK旧未知和全部双端验收保持各自范围。
+
+2026-10-26 Android P7-1b的本地文件收件箱、显式准确草稿导入及固定ID恢复已实现；独立来源APK真实系统路由/只读授权在真机与API26/API37有界通过，实际原桌面目标侧仅GET/本地准备，未验新增文件的模型混合发送。进程死亡/冷接收、完整Provider/权限及后续照片/语音/存储/阅读仍待验；不将iOS或合成Host结果提升为Android完整交付。
+
+2026-10-26 Android P7-2a的系统只选图入口、本地PNG/JPEG/EXIF准备已有限定实现：三环境系统打开/取消与原目标本地准备分别核对。正向系统照片返回、模型读取、相机和最近图片仍待后续，不据此声明完整附件功能交付。
+
+2026-10-26 P7图片输入：API37系统图片与真实模型像素读取已有一次受控结果，真机/API26系统正向选择及完整图片发送仍待验；新手机/API26/API37对同一原回复的当前共享Host冷读修复通过。历史来源和原owner的重复占位只在完成轮、原正文和全部注册附件版本一致时替换，读取历史不构成运行时控制证明。完整P7、iOS/Windows当前矩阵及原待验项继续开放，见[检查点](acceptance/mobile-evidence/android-alignment-P7.json#photoModelAndColdHistoryCheckpoint)。
+
+I4 Android将13节点/F72源码纳入对照，已有受控资源路由保持。当前模型/强度分离获得限定Native/原owner只读结果；新Markdown阅读入口和图片预览/多选仍需实施验收。既有iOS真机证明不升级，iOS A6继续暂停，见Android阶段档案。
+
+## 2026-10-29 额度来源验证
+
+本机独立 DEV Host 已通过原 Codex 只读元数据通道读取真实 account/rateLimits/read，当前 Pro 来源返回 7 天窗口和 credits，未返回 5 小时窗口；这只证明该环境实际返回形态，不将套餐名称推广为所有 Pro 账号的永久限制规则。适配器按实际时长识别窗口，余额保留精确字符串。
+
+EasyWork 原桌面已有账户摘要余额服务，标准额度适配器及固定桥接已接入；真实原 Electron 和手机双通道未验收。共享向量与双端构建属于辅助证据，物理 iPhone 自动化初始化超时不证明产品业务失败或成功。详见 [F73 记录](acceptance/agent-usage-20261028.md)。
+Android系统迁移入口和真实运行时交接已接入候选，完成catalog增量及实际IO跟踪/一次性发布边界；验收仍区分辅助编译、13项原生准备、真实SAF/DEV。超过8MiB的文本帧、EasyWork fence/孤立candidate归档及iOS互操作仍开放，不将入口实现记为完整P7。
+
+P7大文本帧按当前父线13文件精确SHA接入，排除并保留Main/Session/coordinator/voice当前接线。62.4MB文本在48MiB JVM堆的5个实际源码hash完全匹配，可匹配复用辅助结果（JSON/ICU shim限制保留）；6原生仅编译准备。当前API26低堆、API37/OEM、实际系统picker及DEV另验；EasyWork fence/孤立candidate存档仍开放。
+
+Android EasyWork残留/孤立credential只读归档实现已接入，包含无grant fence、撤销中/已确认和OIDC历史；不能据此宣称活动业务完整迁移、跨端互通、登录或当前授权有效。8项原生准备仅编译，父当前候选验证与真实DEV未完成。
+
+Android P7活动EasyWork业务图与实际owner退出已形成待原生候选：保客户端/草稿/附件/历史和原不可变操作，原授权只读归档、显式重新配对；热6/冷2/IO5/生命周期1尚未在父候选运行。P8组合UI5和P9既有key store5也仅准备；JVM/编译、实际系统/网络、物理多端和真实DEV分别留证，当前不能宣称完整P7/A5/自然OS通知已通过。iOS原凭据迁移策略与跨格式仍待专门对齐，A6保持暂停。
+
+### 2026-10-30：更新路径漂移的目录恢复缺口
+
+已定位的调用链是 `/v1/workspace → DesktopWorkspaceView → 独立 CodexHistoryReader → 启动环境 CODEX_EXECUTABLE`。既有 worker 子启动刷新和主 DesktopRuntime 重连发现并未更新该独立 reader；其首次 spawn 失败也不会触发主 reader 的断连通知，因而主 IPC 可持续 ready 而目录每次 502。手工重启刷新环境只能临时消除这条差异。
+
+本次候选让全部目录 reader 共享 runtime 的可信安装发现、并发预算与有界退避；目录只读限次重试和准确 503／degraded 已实现。不同 owner 切换、旧进程退出未确认、无可信 CLI、协议不匹配均保持拒绝，不以版本白名单或重放未知写入恢复。Windows 原生信任与在途更新实测由来源 Windows 独立执行；macOS 辅助测试不升级其通过状态。网络域名／tailnet／Serve 故障属于另一层，本次不修改。
+
+### 冻结 R2 Host 能力的规范集成（2026-10-30）
+
+已在 PR74 将冻结 R2 的 Node Host／Adapter／Protocol 及 Native 观察、精简存储、锚定退役和必要脚本集成到主线，保留原 main 业务、私有对象创建租约及 Windows 旧缓存边界。Host 只读 Git/v1 与子任务观察代码保留；iOS／Android 页面及 R4/R5 活动 WIP 不导入。
+
+同一运行指纹的本机真实桌面 IPC／CLI 目录读取及辅助 reader 退出后后台恢复已通过，主 reader、IPC 和原桌面连续；仅证明 macOS 只读集成。Windows Native、旧布局、真实旧路径发现与 reader 恢复以及实际安装更新分别待来源独立验收，不能由 Mac、语义编译或 fixture 替代。
+
+2026-10-31 F03／F31／F32：增加正式 Windows 启动的具名只读预检与独占 scheduled envelope，保留原 Worker 环境白名单；有界日志分类不输出 stderr／凭据。PR81 五组件和核心 Native 输入保持；来源完整 legacy／reader 辅助已通过，正式启动两处拒绝仍需按真实上下文诊断，不计正式升级通过。iOS／Android UI 和未知操作不重放规则不变，A6保持暂停。见[入口与证据边界](acceptance/windows-formal-startup-preflight-20261031.md)。
+
+2026-10-31：来源 PR82 交互及独立 scheduled 八步预检通过，但 launcher EXE／payload 与失败正式启动不同，正式原因仍未知。已补常驻 Native 具体拒绝原因丢失的固定分类，不放宽 owner/DACL；新 Native/cache 及精确拒绝需复验，未变 legacy/reader 场景按输入复用。正式生命周期仅来源 Root 控制，见[诊断与回滚门禁](acceptance/windows-formal-startup-preflight-20261031.md#pr82-实测之后的最小证据修复)。
+
+Android 已实现“audio 已认证写入、row manifest 未提交”窗口的惰性双原件投影：相等的 raw/audio 通过明确 catalog v2 分别归档和计 quota，既有 v1 继续严格读取；保存及只读复制原件不赋予目的设备录音恢复、seal、上传或重试权限。mixed catalog、多原件/低堆、真实 seal 中断、冷进程、完整 UI 与物理 DEV 仍须分别验收，不能据合成状态或 warm 迁移宣称完整 P7。该 Android 证据形成时，iOS EncryptedMigration.Payload 尚未包含 PendingVoiceStore 音频及 metadata；Android 格式不能充当 iOS 实现或跨端互通证明。
+
+2026-11-02 阶段61：iOS可选惰性原件已接入既有container；空原件保留v1，非空Envelope/Payload v2采用独立AAD并拒绝未知/重复字段，旧reader显式拒绝。完整ownership/content journal在copy前fsync，64MiB/128文件共同预检；完整cold场景可恢复，partial/unknown/missing journal/link/conflict保留阻断，既有finalized不补journal，只有原journal完整byteproof的exact duplicate可清。业务失败恢复原业务状态，已有效发布原件保留计quota/可再导出，不授予自动恢复或发送许可。iOS SDK本次通过、macOS四源CLI精确匹配复用，尚不证明Payload/SessionStore运行态、双端Native/DEV、真实I/O崩溃、完整UI/物理或整包互通，见[阶段61档案](plans/android-alignment-20261022/records/stage61-p7-voice-originals.md)。
+
+Windows regular Host recovery P1 has a separate protected-helper/checkpoint preparation candidate. Local parser, C# compilation and synthetic boundaries are auxiliary evidence only. Native Windows compilation, lease controls and capsule preparation remain to be validated; Limited Scheduler positive/negative/containment gates, formal activation/rollback, old-operation retirement and authenticated LAN/owner acceptance are not implemented or passed by this stage. No system Restart is authorized by preparation. See [the recovery contract](windows-host-regular-recovery.md).
+
+Windows P1 preparation now has a native receipt, including new helper identity, sharing controls and unchanged original anchors; its elevated execution is not Limited proof. P2 implements a new isolated native Scheduler/resource/Job verification candidate. Mac parsing, C# compilation and pure checks remain auxiliary; Windows P2, formal activation/rollback, old pending disposition and LAN/owner acceptance are pending. No Restart is authorized. See [the recovery contract](windows-host-regular-recovery.md).
+
+The subsequent Windows P2 launch failed its non-administrator prerequisite on a UAC-disabled installation. Its synthetic fixtures were closed by a bound reconciliation entry without changing the formal Task or original state. A separately frozen Node/Host runtime passed eight read-only startup checks through a real Scheduler task; the worker was high-integrity, not Limited. The local continuation now implements a sealed preparation, a post-Restart identity-bound marker archive and fixed Task replacement/rollback candidate. These paths, actual Host operation and authenticated peer connectivity remain unverified until exercised; no system Restart has been authorized. The original desktop workflow and both mobile clients' wire/UI contracts are unchanged. See [the recovery contract](windows-host-regular-recovery.md).
+
+2026-11-03 regular Host integration: the Windows delivery reports one no-restart activation using the reviewed legacy synthetic-test scope while retaining its original pending/unknown state. The maintaining Mac independently verified original certificate-pinned LAN and Tailscale authentication and the exact Host/desktop-runtime workspace. The running Windows artifact is retained; this source integration does not deploy it, change UAC/AppData ACLs or resume suggestions. Native rollback, login/restart autostart and mobile DEV are not upgraded by this peer read. Stage-specific failures above remain unchanged. See [the integrated evidence](acceptance/windows-regular-host-recovery-20261103.md).
+
+阶段98 F59迁移域：Android唯一journal decoder与流式graph已调用KMP惰性描述符规则，独立闭合Schema只定义子域，不开放新的Host端点或发送权限。当前未接Export/Activation，旧整包F59拒绝与v4限额保持；strict源freeze/generation/FD/库存/barrier、独立大容量流式封包与目的端惰性publication及iOS接线继续实现。JVM6/Node3和普通Android编译是辅助，真实字节源、系统/界面/手机及跨端未验。见docs/plans/android-alignment-20261022/records/stage98-f59-portable-domain.md。
+
+阶段101 F59源：NativeSessionStorage窄入口要求实际Session/raw Frozen及准确当前generation，既有key-only解码、固定目录FD/单record读取和全cipher摘要，终态缺失要求真实fsync-close/双目录barrier；close未知保留owner。当前只支持单child、无export/activation接线，old-generation family/新容器/惰性发布/iOS与完整验收继续，旧整包拒绝保持。普通编译和8方法源码/独立940输入SDK资格不等于运行通过。见docs/plans/android-alignment-20261022/records/stage101-f59-readonly-source.md。
+
+阶段104 F59 family：实际root与全部受限retained generation按代严格只读/独立graph，保留UNKNOWN/原receipt，目录存在不授予lineage或激活权。仅新增内部source入口，旧整包F59拒绝和Host/传输边界不变；新SDK/15项Native、认证容器/目的端/iOS仍待验。见docs/plans/android-alignment-20261022/records/stage104-f59-family-source.md。

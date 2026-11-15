@@ -1,5 +1,39 @@
 # 应用协议与领域契约
 
+2026-11-04 F69：Windows 原桌面 Responses 采集沿用建议只读契约 `source=native-trace` 与 `validity=native-version`，可附 `provenance:{kind:"responses-forwarder",responseId,desktopDisplay:"unobserved"}`。这是原生成网络记录的来源标识，不能等同于当前桌面显示或原安全判定。来源仍绑定完整机器目标、原 owner 和准确最新完成轮，读取不生成；旧客户端可忽略新增可选字段。macOS 原安全后 native-sample 契约未修改，详见[专项记录](acceptance/windows-response-suggestions-20261104.md)。
+
+2026-11-03 F59／F19／F32：移除独立文件互传与聊天资源下载预览的 20 MiB 固定上限。新 Codex Host 的文件目录以 `maxFileBytes: null` 表示未配置大小上限，iOS 兼容旧 Host 的有限值；Host、电脑发送 CLI 与 iOS／Android 下载不再按 20 MiB 拒绝。仍验证准确目标、原消息授权、普通文件、不可变长度和 SHA-256，未知传输只查询原回执。大文件仍受可用存储、内存、网络及系统格式支持影响；Markdown／HTML 渲染预算不改变下载与分享能力。双端影响、辅助检查、物理设备与真实桌面证据分列于[专项记录](acceptance/file-size-limits-20261103.md)。
+
+2026-10-29 Host 错误响应追加 code／requestId／diagnosticId 和 X-Agent-Hub-Diagnostic-Id；healthz 的 runtime 分别报告 ready／bridge／reader／提交门禁，原 persistence 保留。字段为向后兼容追加，200 不表示聊天原 owner 可控；具体 Schema、分类与限制见[诊断指南](host-reconnect-diagnostics.md)。
+
+## F74：可选模型代理 HTTP 边界
+
+独立端口仅在人类明确要求后启用，全部操作要求独立 Bearer Key，拒绝浏览器 Origin。不复用手机 Host Key，不开放上游 URL、方法、认证头或任意本机方法透传。
+
+| 方法 | 路径                   | 语义                                           |
+| ---- | ---------------------- | ---------------------------------------------- |
+| GET  | /healthz               | 监听状态，不证明上游模型可用                   |
+| GET  | /v1/models             | OpenAI 格式的配置允许清单，不保证授权          |
+| POST | /v1/responses          | 固定 Codex 推理；原始 SSE 或完成 Response 对象 |
+| POST | /v1/chat/completions   | Chat 协议转换，不执行本机工具                  |
+| POST | /v1/images/generations | 单独启用的图像生成，OpenAI JSON／最终图片 SSE  |
+| POST | /v1/images/edits       | JSON 引用或 SDK multipart 编辑，OpenAI 返回    |
+| GET  | /v1/requests/:id       | 原操作阶段、摘要、字节数和提交次数，不重放正文 |
+
+图像路由需要显式图像允许清单，当前仅 `gpt-image-2`、`n=1`、Base64 和最终图片流。尺寸、质量、背景、编码与保真等转为提示词偏好，响应只报告实际结果；详见[图像协议说明](host-images-proxy.md)。
+
+`Idempotency-Key` 或 `X-Client-Request-Id` 为 8–128 字符的字母、数字、下划线、连字符；两者同时存在必须相等。省略时生成新 ID，通过 `X-Request-Id` 返回；调用方须禁止网络自动重试。已接受 ID 重复返回 409，成功、失败和未知均不再次提交。
+
+模型在显式允许清单内。Responses 接受文字或完整输入数组，上游固定 `store=false`、HTTP SSE；拒绝 previous_response_id、持久 conversation 和 background。system 项转换为 developer，缺少 instructions 时补空字符串，不注入系统任务。Chat 从 system／developer 提取 instructions，转换助手 function_call 和 tool 结果。
+
+请求超限 413、并发满 429、未授权 401、未知路径 404。上游 HTTP 拒绝保留适用状态码，错误正文替换成固定代理错误，不复制认证信息、Cookie 或传输头。流中错误、断连、重启及缺少完成事件均不重试。回执阶段为 prepared、submitting、streaming、completed、failed、outcome-unknown；未知不等于取消远端。
+
+2026-10-29 Android 通知恢复 v2 源码已接到可选前台 monitor：完整原意图先落盘、未知只查原 ID，独立关闭与显式缺口接受保持各自收据，待 Host 确认事件不推进游标。JVM 辅助与原生编译分列；共享 UI／迁移入口和真实 DEV 尚待集成负责人验收。iOS v1 与供应商承诺不变，见[Android 候选与交接](plans/android-alignment-20261022/parallel/p9-notifications/recovery-v2-android.md)。
+
+## 可选通知恢复 v2 源码候选（2026-10-28）
+
+新增封闭契约 `notification-recovery-v2`，独立于原通知 v1 与 Codex JSON-RPC。固定 `/v1/notifications/recovery-v2/capabilities`、`operations`（POST 提交／GET 原 ID 查询）、`feed`；现有鉴权与完整目标校验保持。v2 意图包含原 ID、device／target／真实公钥／完整偏好／订阅代次和规范 JSON 摘要，Host 先落盘再应用，旧 unknown 只查原记录。缺席设备撤销持久封住迟到旧注册；分页有稳定 epoch、连续序号、高水位和明确缺口，复位另有完整意图与缺口接受记录。v1/iOS wire 不变；Android v2 与真实场景仍待后续接线验收，无供应商投递承诺。详见[源码与复位边界](plans/android-alignment-20261022/parallel/p9-notifications/recovery-v2-server.md)。
+
 ## Host Key 首次授权
 
 实现、辅助检查、真实桌面与实体手机结果见[首次授权验收](codex-host-key-authorization.md)。
@@ -128,3 +162,46 @@ P3-5b 已实现：workspaceManagementRequest/Operation 严格有序ID、1..100�
 本项新增2条，P4累计20、总33条已消费输入均不重放。只关闭本次请求批准权限回退缺陷；前项命令终态、原CLI读取失败、完整异步/审批/跨端抢答/其他权限预设及复杂配置和F34/F35/F41/F42/F46/F58仍开放。iOS共用修复后的Host规则，未新增iOS原生真实验收或更新正式服务；Windows未验收。6张原App/dialog独有窗口图已查看，仅作局部状态证据，完整视觉P6继续。继续队列/追加/停止/恢复；蜂窝/VPN与人工归档待验收，任务/项目管理暂缓，A6/P7暂停、P9依赖保持。
 
 升级区分历史免密设备凭据与已通过 Host Key 授权的凭据：旧免密绑定缺少 `hostKeyAuthorized` 时不再通过鉴权，用户可在原连接失败后点“使用 Host Key 重新授权”，输入一次后沿用原设备密钥与凭据，保存连接和草稿不清空。原 Host Key 手动／二维码连接及新版已授权设备照常重连。
+
+P5-2移动建议读取使用`codex-mobile-http-v1.schema.json`中的`desktopSuggestionResponse`与可选`runtime.suggestionSourceTurnId`。Codex的具名GET继续绑定机器/聊天/来源轮次及既有鉴权/证书；EasyWork的`thread/suggestion/read`在已鉴权加密会话中映射同一响应投影，保持其账号约束。Android读取预算为八秒，接收体有界，超时可恢复，原消费者取消保持取消。响应匹配不授予命令权限或自动采用；Android会话读取器与界面仍在P5-3接通。
+
+## 已实现：usage v1 只读额度
+
+领域定义为 `packages/protocol/src/usage.ts`，对应 `schemas/usage-v1.schema.json`。Codex Host 接受鉴权 GET `/v1/usage?target=<JSON>`，仅允许一个 target 查询项，目标只含 agentId、hostId、workspaceId、runtimeId；不包含账号字段和 threadId。错误目标为 409，非法请求为 400，认证失败为 401；来源暂不可用用 200 的领域 unavailable 表示。响应禁止 HTTP 缓存。
+
+版本化响应包含独立 requestId、完整机器目标及 ok 快照／unavailable 原因。余额、窗口、总量和扩展指标分开，多个 bucket 不相加；余额／数量用规范十进制字符串，百分比仅表示已用比例。来源有效期、partial 和无限／缺失／零值分别表示。旧账号元数据不成为 Codex 连接或命令门槛。
+
+EasyWork 在原有严格认证会话中增加固定 `usage/read`，参数为 schemaVersion=1、四字段目标及 requestId。桥接只组装原桌面的权威账户服务，不增加 shell、URL 或任意 RPC 透传。来源凭据留在桌面。当前实现与验收范围见 [F73 记录](acceptance/agent-usage-20261028.md)。
+Android EasyWork canonical对象成员名与String值使用相同编码路径，统一移除可选slash转义，按现有非数字协议键与iOS/Node逐字节对齐；数值/通用RFC8785不新增承诺。解密仍认证原JWE protected段，未知原intent/raw SHA不重算，不接受重序列化替代或自动重放。新向量/Android原生门槛见phase10-canonical档案。
+
+本轮Android登记关闭修正仅恢复原operation ID及原授权下的查询，不增加命令或wire字段；未知撤销不宣称已取消，不分配替代operation或重放原操作。
+
+Android本地迁移payload/candidate4采用text descriptor和raw UTF8 frame；envelope2与root storage3不变。严格长度/SHA/前缀、顺序、closed schema、完整图和EOF；每text8MiB、合计raw192MiB、1024条上限不放宽，pending .new/.bak拒绝而不恢复。1/2/3继续读，同ID结果核对不重stage，替换须明确动作；不宣称iOS跨格式互操作。
+
+Android迁移payload4新增migration-easywork-archives-v1 catalog和migration-easywork-original-v1惰性别名。catalog闭合绑定原安装context、原名/role/字节数/SHA256，最多16安装/每安装1024原件、catalog512KiB，并受文本8MiB/总192MiB/输出1024额度。未知major、不完整引用、pending文件拒绝；envelope2/root3不变，不定义iOS互通。传入DPoP系统私钥不导出，授权原文只在加密归档内，不进入活动目标/credentialRef/重放。
+
+### 工作区元数据恢复状态（2026-10-30）
+
+原桌面 Host 的鉴权 `/healthz` 增加 `workspaceCatalog`：`state` 为 `not-read`、`ready` 或 `unavailable`，`retryAfterMs` 为非负的本地退避剩余毫秒。尚未读取不等于成功；reader 已断开时不报告目录 ready。目录不可用或主 runtime 未就绪时 `status=degraded`，HTTP 200 仅表示 Host 存活，原有 runtime 诊断仍独立返回。
+
+`GET /v1/workspace` 的元数据失败返回 503 与具体 `CODEX_READER_*`／`WINDOWS_*` 原因码，无法归类时为 `DESKTOP_CATALOG_UNAVAILABLE`。响应不包含安装路径、原始错误 payload 或凭据。客户端沿用连接与草稿，稍后重试读取；此约定不授权回复、新建、审批、停止或聊天管理写操作重试，也不改变未知操作的原 ID／指纹。
+
+## 冻结 R2 的 Host 只读契约
+
+2026-10-30 F75：Git>=2.31 时 Host 声明 `project-git.status.v1` 和 `project-git.files.v1`。鉴权 `GET /v1/project-git` 必须携带 projectId 与四字段机器 target；refresh=1 显式刷新（1秒内合并）。`GET /v1/project-git/files` 另绑定 snapshotId、worktreeId 和分页 cursor，失效返回409。两路只读，不接受任意路径，最大响应128KiB；文件页最多100项和100KiB。Schema 为 `packages/protocol/schemas/project-git-v1.schema.json`。upstream、publish、baseline 独立，未知含原因，不补零；远端状态仅依据本地引用。Codex账号不参与机器隔离。
+
+Codex 子任务沿用既有消息 text／kind／status／detail，展示 kind=subAgent；来源仅为准确父会话 collabAgentToolCall.receiverThreadIds。调用完成不等于子任务完成；独立原 owner 可用时观察其快照，否则只读 thread/read 明确标为最近保存输出，状态仍来自父会话报告。不开放新的执行方法，不重放模型输入。本轮保留当前 main 移动端及 EasyWork 实现，F75 原生页面不在本次 Host 集成范围。
+
+## 建议存储与原始证据（2026-10-30）
+
+HTTP 建议领域契约保持 schemaVersion=1，原生 Trace schema 1/2 的差异封装在 Adapter。每会话最新建议的精简存储保留原机器目标、来源 Thread/Turn、预测执行、请求时间、请求/响应证据摘要及状态；不暴露原始模型上下文。原生 sample 取消、失败、空结果或无法消歧均不回退旧建议。读取已保存正文仍须完成准确原 owner、来源轮次、目标、文件快照和新请求证据核对，缓存本身不能刷新六秒租期。
+
+## Codex 被动结果与原生建议接口（2026-10-30，候选）
+
+复用现有只读建议领域响应 source=native-trace、validity=native-version；不扩展远端方法透传。native-trace 的来源证据扩展为原桌面现有执行流的配对观察记录，保留既有 native-version 能力与领域响应；不将内部结果伪装为上游原始 Trace 文件。正文必须来自原生请求配对结果并经原桌面安全判定放行；同一目标/线程/完成轮、摘要、producer 与读取提交边界均须连续有效。无结果、抑制、取消或新请求均返回空建议；保存的上一条不冒充当前建议。手机刷新不生成请求或自动发送。
+
+## iOS / EasyWork 本任务主线整合（2026-11-05）
+
+仅整合 iOS 与 EasyWork 的协议、数据、权限及执行差异。原清单保留75项范围、51项对接/16项纯手机免重验/8项排除及14条补充；68个限定场景通过与21项Native失败均按原指纹保留，整项通过数不据此扩大。详见 [原清单](acceptance/codex-easywork-feature-matrix.md)。
+
+本批包含完整目标的 usage/read、project/git/status/files、原回执与队列恢复及问题元数据；旧桌面未准入项仅读，未知输入不重发。isSecret只控制输入遮罩，回答仍按正常工具结果和会话留存。本批优先保留主线现有读取目标、建议接口、启动、附件和迁移行为；Android源码及纯手机端重复验收不开展。合并后的检查与真实DEV结果另回填，不将旧指纹通过当作新主线全量通过。

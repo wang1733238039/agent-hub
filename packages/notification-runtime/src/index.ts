@@ -6,73 +6,51 @@ export type {
   NotificationPreferences,
   RuntimeTarget,
 } from '@codex-manage/protocol';
-import {
-  createCipheriv,
-  createHash,
-  createPrivateKey,
-  createPublicKey,
-  diffieHellman,
-  generateKeyPairSync,
-  hkdfSync,
-  randomBytes,
-} from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
+  sealNotification,
+  notificationSenderPublicKey,
+  validateNotificationKey,
+} from './notification-crypto.js';
+import { registrationIdentity, preferenceIdentity } from './notification-registration-identity.js';
+export { sealNotification, notificationPublicKey } from './notification-crypto.js';
+import {
   notificationTargetKey,
+  parseNotificationRegistration,
   type NotificationEvent,
   type NotificationRegistration,
   type NotificationStatus,
   type NotificationEnvelope,
   type NotificationPreferences,
   type RuntimeTarget,
+  parseNotificationEvent,
+  type NotificationIntentV2,
+  type NotificationFeedQueryV2,
 } from '@codex-manage/protocol';
 import type { NotificationObservation } from './observer.js';
 import { acquireNotificationState, writeNotificationState } from './state-file.js';
+import {
+  NotificationRecoveryV2,
+  NotificationRecoveryError,
+  createRecoveryV2,
+  appendRecoveryV2,
+  validateRecoveryV2,
+  recoveryHash,
+  intentHash,
+  originalObservationHashV2,
+  type RecoveryStateV2,
+} from './recovery-v2.js';
+export { NotificationRecoveryError } from './recovery-v2.js';
 
-export function notificationPublicKey(raw: string) {
-  return createPublicKey({
-    key: Buffer.concat([
-      Buffer.from('302a300506032b656e032100', 'hex'),
-      Buffer.from(raw, 'base64'),
-    ]),
-    format: 'der',
-    type: 'spki',
-  });
-}
-export function sealNotification(
-  event: NotificationEvent,
-  bindingId: string,
-  privateKey: string,
-  recipient: string,
-): Pick<NotificationEnvelope, 'nonce' | 'ciphertext' | 'tag'> {
-  const shared = diffieHellman({
-    privateKey: createPrivateKey(privateKey),
-    publicKey: notificationPublicKey(recipient),
-  });
-  const key = Buffer.from(
-    hkdfSync(
-      'sha256',
-      shared,
-      Buffer.from(bindingId),
-      Buffer.from('codex-manage/notifications/v1'),
-      32,
-    ),
-  );
-  const nonce = randomBytes(12),
-    cipher = createCipheriv('aes-256-gcm', key, nonce);
-  cipher.setAAD(Buffer.from(event.id));
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(event), 'utf8'), cipher.final()]);
-  return {
-    nonce: nonce.toString('base64'),
-    ciphertext: ciphertext.toString('base64'),
-    tag: cipher.getAuthTag().toString('base64'),
-  };
-}
 interface Device {
+  remoteRevocationPending?: boolean;
   registration: NotificationRegistration;
   ownerId?: string;
   subscriptionGeneration?: number;
+  pendingRegistration?: boolean;
+  pendingPushRevocation?: boolean;
   revokedPreferencesGeneration?: number;
   bindingId?: string;
   managementToken?: string;
@@ -84,6 +62,7 @@ interface Device {
   lastDelivery?: NotificationStatus['lastDelivery'];
 }
 interface Entry {
+  sequenceV2?: number;
   event: NotificationEvent;
   active: boolean;
   deliveries: Record<string, 'pending' | 'accepted' | 'uncertain' | 'rejected'>;
@@ -91,7 +70,8 @@ interface Entry {
   cancellations?: Record<string, boolean>;
 }
 interface State {
-  version: 1;
+  version: 1 | 2;
+  recoveryV2?: RecoveryStateV2;
   target?: RuntimeTarget;
   privateKey: string;
   devices: Record<string, Device>;
@@ -102,35 +82,30 @@ interface State {
 }
 // JSON encoders may reorder object keys between requests or app launches.
 // Compare preference values without treating wire property order as a revision.
-function preferenceIdentity(preferences: NotificationPreferences): string {
-  return JSON.stringify(
-    Object.entries(preferences)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, value]) => [
-        name,
-        name === 'categorySounds'
-          ? Object.entries(preferences.categorySounds ?? {}).sort(([left], [right]) =>
-              left.localeCompare(right),
-            )
-          : value,
-      ]),
-  );
-}
 export interface NotificationPublisherOptions {
   target: RuntimeTarget;
   statePath: string;
   relayURL?: string;
   publisherToken?: string;
   protectFile?: (path: string) => void;
+  /** Host supplies its native private creator; existing objects are never adopted. */
+  createPrivateFile?: (path: string) => number;
+  makePrivateDirectory?: (path: string) => void;
 }
 /** Agent-neutral delivery boundary. It accepts domain events, never upstream RPC. */
 export class NotificationPublisher {
+  /** This declares a supported registration contract, not provider configuration or delivery. */
+  get registrationCapabilities(): readonly string[] {
+    return ['notifications:registration:fcm:v1'];
+  }
   private state: State;
   private timer: NodeJS.Timeout;
   private busy = false;
   private closed = false;
   private verified = new Map<string, number>();
   private releaseLease: () => void;
+  private recoveryFault = false;
+  private recovery?: NotificationRecoveryV2;
   constructor(private options: NotificationPublisherOptions) {
     if (options.relayURL) {
       const url = new URL(options.relayURL);
@@ -146,15 +121,20 @@ export class NotificationPublisher {
       )
         throw new Error('推送服务必须使用 HTTPS');
     }
-    mkdirSync(dirname(options.statePath), { recursive: true, mode: 0o700 });
-    this.releaseLease = acquireNotificationState(options.statePath, options.protectFile);
+    if (options.makePrivateDirectory) options.makePrivateDirectory(dirname(options.statePath));
+    else mkdirSync(dirname(options.statePath), { recursive: true, mode: 0o700 });
+    this.releaseLease = acquireNotificationState(
+      options.statePath,
+      options.protectFile,
+      options.createPrivateFile,
+    );
     try {
       if (existsSync(options.statePath)) {
         if (process.platform !== 'win32' && statSync(options.statePath).mode & 0o077)
           throw new Error('通知状态文件必须仅当前用户可读写');
         this.state = JSON.parse(readFileSync(options.statePath, 'utf8')) as State;
         if (
-          this.state.version !== 1 ||
+          ![1, 2].includes(this.state.version) ||
           !this.state.privateKey ||
           !this.state.devices ||
           !Array.isArray(this.state.entries)
@@ -170,6 +150,9 @@ export class NotificationPublisher {
         )
           throw new Error('通知状态目标不一致');
         this.state.target = options.target;
+        if (this.state.version === 2)
+          validateRecoveryV2(this.state.recoveryV2, options.target, this.state.entries);
+        else if (this.state.recoveryV2 !== undefined) throw new Error('通知恢复磁盘版本不一致');
       } else {
         const { privateKey } = generateKeyPairSync('x25519');
         this.state = {
@@ -181,6 +164,7 @@ export class NotificationPublisher {
         };
         this.save();
       }
+      if (this.state.version === 2) this.recoveryEngine().recover();
     } catch (error) {
       this.releaseLease();
       throw error;
@@ -192,7 +176,162 @@ export class NotificationPublisher {
   }
   private save() {
     if (this.closed) return;
-    writeNotificationState(this.options.statePath, this.state, this.options.protectFile);
+    if (this.recoveryFault) throw new NotificationRecoveryError(503, '通知持久化待恢复');
+    try {
+      if (this.state.version === 2) {
+        appendRecoveryV2(this.state.recoveryV2!, this.state.entries);
+        validateRecoveryV2(this.state.recoveryV2, this.options.target, this.state.entries);
+      }
+      writeNotificationState(
+        this.options.statePath,
+        this.state,
+        this.options.protectFile,
+        this.options.createPrivateFile,
+      );
+    } catch (failure) {
+      if (this.state.version === 2) this.recoveryFault = true;
+      throw failure;
+    }
+  }
+  private publishRecovery(next: State): void {
+    if (this.closed || this.recoveryFault)
+      throw new NotificationRecoveryError(503, '通知恢复服务不可用');
+    try {
+      validateRecoveryV2(next.recoveryV2, this.options.target, next.entries);
+      writeNotificationState(
+        this.options.statePath,
+        next,
+        this.options.protectFile,
+        this.options.createPrivateFile,
+      );
+      this.state = next;
+    } catch (failure) {
+      this.recoveryFault = true;
+      throw failure;
+    }
+  }
+  private assertLegacyWrite(deviceId: string): void {
+    if (this.recoveryFault) throw new NotificationRecoveryError(503, '通知持久化待恢复');
+    if (this.state.recoveryV2?.slots.some((s) => s.deviceId === deviceId))
+      throw new NotificationRecoveryError(409, '此设备通知需要原 v2 操作收据');
+  }
+  private recoveryEngine(): NotificationRecoveryV2 {
+    if (this.closed || this.recoveryFault)
+      throw new NotificationRecoveryError(503, '通知恢复服务不可用');
+    if (!this.state.recoveryV2) {
+      const next = structuredClone(this.state);
+      next.version = 2;
+      next.recoveryV2 = createRecoveryV2();
+      appendRecoveryV2(next.recoveryV2, next.entries);
+      this.publishRecovery(next);
+    }
+    this.recovery ??= new NotificationRecoveryV2({
+      target: this.options.target,
+      read: () => {
+        if (this.recoveryFault) throw new NotificationRecoveryError(503, '通知持久化待恢复');
+        return this.state.recoveryV2!;
+      },
+      device: (id) => this.state.devices[id],
+      sources: () => this.state.entries,
+      validateKey: (publicKey) => validateNotificationKey(this.state.privateKey, publicKey),
+      disposition: (id, event) => {
+        const device = this.state.devices[id],
+          entry = this.state.entries.find((e) => e.event.id === event.id);
+        if (!entry?.active) return 'inactive';
+        if (!this.current(entry)) return 'stale';
+        return device && this.allowed(device, event) ? 'eligible' : 'filtered';
+      },
+      activeIds: (id) =>
+        this.state.entries
+          .filter(
+            (e) =>
+              e.active &&
+              this.state.devices[id] &&
+              ['approval', 'question', 'plan', 'uncertain', 'paused'].includes(e.event.kind),
+          )
+          .map((e) => e.event.id),
+      commit: (recovery, apply) => {
+        const next = structuredClone(this.state);
+        next.version = 2;
+        next.recoveryV2 = recovery;
+        if (apply) {
+          const old = next.devices[apply.deviceId];
+          const registration: NotificationRegistration = {
+            version: 1,
+            deviceId: apply.deviceId,
+            target: structuredClone(apply.target),
+            publicKey: apply.publicKey,
+            preferences: structuredClone(apply.preferences),
+          };
+          const device: Device =
+            apply.kind === 'revoke'
+              ? {
+                  ...old,
+                  registration: old
+                    ? { ...old.registration, preferences: structuredClone(apply.preferences) }
+                    : registration,
+                }
+              : {
+                  registration,
+                  ...(old?.ownerId ? { ownerId: old.ownerId } : {}),
+                  error: '手机尚未取得 APNs 令牌',
+                };
+          device.subscriptionGeneration = (old?.subscriptionGeneration ?? 0) + 1;
+          const owner = recovery.slots.find((s) => s.deviceId === apply.deviceId)?.ownerId;
+          if (owner) device.ownerId = owner;
+          if (apply.kind === 'revoke') {
+            device.revokedPreferencesGeneration = Math.max(
+              old?.revokedPreferencesGeneration ?? -1,
+              old?.registration.preferences.generation ?? -1,
+              apply.preferences.generation,
+            );
+            device.remoteRevocationPending = Boolean(
+              old?.bindingId || (this.options.relayURL && this.options.publisherToken),
+            );
+            if (device.remoteRevocationPending) device.error = '远端订阅撤销待同步';
+          }
+          next.devices[apply.deviceId] = device;
+          const receipt = recovery.operations.find(
+            (o) => o.receipt.intent.operationId === apply.operationId,
+          )!.receipt;
+          receipt.status = {
+            version: 1,
+            target: this.options.target,
+            delivery: device.bindingId ? 'apns' : 'foreground-only',
+            state: !device.registration.preferences.enabled
+              ? 'disabled'
+              : device.error
+                ? 'unavailable'
+                : 'pending',
+            revision: apply.preferences.revision,
+          };
+        }
+        this.publishRecovery(next);
+        if (apply?.kind === 'revoke')
+          void Promise.resolve()
+            .then(() =>
+              this.unregisterDevice(
+                apply.deviceId,
+                next.devices[apply.deviceId]?.ownerId,
+                apply.generation,
+              ),
+            )
+            .catch(() => undefined);
+      },
+    });
+    return this.recovery;
+  }
+  recoveryCapabilities() {
+    return this.recoveryEngine().capabilities();
+  }
+  recoverySubmit(value: unknown, ownerId?: string) {
+    return this.recoveryEngine().submit(value, ownerId);
+  }
+  recoveryReceipt(deviceId: string, operationId: string, epoch: string, ownerId?: string) {
+    return this.recoveryEngine().query(deviceId, operationId, epoch, ownerId);
+  }
+  recoveryFeed(query: NotificationFeedQueryV2, ownerId?: string) {
+    return this.recoveryEngine().feed(query, ownerId);
   }
   get hasSubscribers(): boolean {
     return Object.values(this.state.devices).some(
@@ -200,10 +339,7 @@ export class NotificationPublisher {
     );
   }
   get publicKey(): string {
-    return createPublicKey(createPrivateKey(this.state.privateKey))
-      .export({ format: 'der', type: 'spki' })
-      .subarray(-32)
-      .toString('base64');
+    return notificationSenderPublicKey(this.state.privateKey);
   }
   get observations(): NotificationObservation[] {
     return Object.values(this.state.observations ?? {});
@@ -216,6 +352,7 @@ export class NotificationPublisher {
     this.save();
   }
   observeConnection(connected: boolean): void {
+    if (this.recoveryFault) throw new NotificationRecoveryError(503, '通知持久化待恢复');
     if (this.closed || this.state.connection?.connected === connected) return;
     const old = this.state.connection;
     const generation = (old?.generation ?? 0) + 1;
@@ -244,7 +381,23 @@ export class NotificationPublisher {
         device.registration.preferences.enabled &&
         !owners.includes(device.ownerId)
       )
-        await this.unregister(id, device.ownerId);
+        if (this.state.recoveryV2?.slots.some((s) => s.deviceId === id)) {
+          const slot = this.state.recoveryV2.slots.find((s) => s.deviceId === id)!;
+          const intent: NotificationIntentV2 = {
+            version: 2,
+            operationId: randomUUID(),
+            epoch: this.state.recoveryV2.epoch,
+            deviceId: id,
+            target: this.options.target,
+            publicKey: device.registration.publicKey,
+            preferences: { ...device.registration.preferences, enabled: false },
+            generation: slot.highest + 1,
+            kind: 'revoke',
+            fingerprint: '',
+          };
+          intent.fingerprint = intentHash(intent);
+          this.recoverySubmit(intent, device.ownerId);
+        } else await this.unregister(id, device.ownerId);
     }
   }
   async updatePreferences(
@@ -285,13 +438,12 @@ export class NotificationPublisher {
     ownerId?: string,
   ): Promise<NotificationStatus> {
     if (this.closed) throw new Error('通知服务已关闭');
+    registration = parseNotificationRegistration(registration);
+    this.assertLegacyWrite(registration.deviceId);
     if (notificationTargetKey(registration.target) !== notificationTargetKey(this.options.target))
       throw new Error('通知目标不一致');
     // Reject low-order keys here, before they can break asynchronous delivery.
-    diffieHellman({
-      privateKey: createPrivateKey(this.state.privateKey),
-      publicKey: notificationPublicKey(registration.publicKey),
-    });
+    validateNotificationKey(this.state.privateKey, registration.publicKey);
     const previous = this.state.devices[registration.deviceId];
     if (previous?.ownerId && previous.ownerId !== ownerId)
       throw new Error('通知设备不属于当前授权');
@@ -305,10 +457,23 @@ export class NotificationPublisher {
             preferenceIdentity(previous.registration.preferences)))
     )
       throw new Error('通知设置已变化');
+    const foregroundFallback =
+      !registration.deviceToken &&
+      Boolean(
+        previous?.pendingPushRevocation ||
+        (previous?.registration.pushProvider === 'fcm' && previous.bindingId),
+      );
     const device: Device = {
       ...previous,
       registration: structuredClone(registration),
-      subscriptionGeneration: (previous?.subscriptionGeneration ?? 0) + 1,
+      subscriptionGeneration:
+        (previous?.pendingRegistration || previous?.pendingPushRevocation) &&
+        registrationIdentity(previous.registration) === registrationIdentity(registration)
+          ? (previous.subscriptionGeneration ?? 1)
+          : (previous?.subscriptionGeneration ?? 0) + 1,
+      pendingRegistration: Boolean(registration.deviceToken),
+      pendingPushRevocation: foregroundFallback,
+      ...(registration.deviceToken || foregroundFallback ? { retryAt: Date.now() + 30000 } : {}),
       managementToken: previous?.managementToken ?? randomBytes(32).toString('base64url'),
       ...(ownerId ? { ownerId } : {}),
     };
@@ -321,6 +486,30 @@ export class NotificationPublisher {
       await this.unregister(registration.deviceId, ownerId);
       return this.status(registration.deviceId, ownerId);
     }
+    if (foregroundFallback) {
+      try {
+        await this.relay('/v1/push/unregister', {
+          hostId: this.options.target.hostId,
+          target: this.options.target,
+          deviceId: registration.deviceId,
+          generation: device.subscriptionGeneration,
+        });
+        if (this.closed || this.state.devices[registration.deviceId] !== device)
+          return this.status(registration.deviceId, ownerId);
+        delete device.bindingId;
+        delete device.managementToken;
+        delete device.pendingPushRevocation;
+        delete device.error;
+        delete device.retryAt;
+      } catch {
+        if (this.closed || this.state.devices[registration.deviceId] !== device)
+          return this.status(registration.deviceId, ownerId);
+        device.error = '后台订阅撤销待同步，当前仅前台提醒';
+        device.retryAt = Date.now() + 30000;
+        this.save();
+        return this.status(registration.deviceId, ownerId);
+      }
+    }
     if (registration.deviceToken && this.options.relayURL && this.options.publisherToken) {
       try {
         const result = await this.relay('/v1/push/register', {
@@ -328,7 +517,8 @@ export class NotificationPublisher {
           target: this.options.target,
           deviceId: registration.deviceId,
           deviceToken: registration.deviceToken,
-          environment: registration.environment,
+          ...(registration.pushProvider ? { pushProvider: registration.pushProvider } : {}),
+          ...(registration.environment ? { environment: registration.environment } : {}),
           generation: device.subscriptionGeneration,
           managementToken: device.managementToken,
         });
@@ -354,6 +544,7 @@ export class NotificationPublisher {
         device.bindingId = result.bindingId;
         device.managementToken = result.managementToken;
         device.syncedRevision = registration.preferences.revision;
+        delete device.pendingRegistration;
         delete device.error;
         delete device.invalidToken;
         delete device.retryAt;
@@ -364,14 +555,27 @@ export class NotificationPublisher {
         device.retryAt = Date.now() + 30_000;
       }
     } else {
-      device.error = registration.deviceToken ? '电脑尚未配置推送服务' : '手机尚未取得 APNs 令牌';
+      delete device.pendingRegistration;
+      device.error = registration.deviceToken ? '电脑尚未配置推送服务' : '手机尚未取得推送令牌';
     }
     this.save();
     void this.flush().catch(() => undefined);
     return this.status(registration.deviceId, ownerId);
   }
   async unregister(deviceId: string, ownerId?: string): Promise<void> {
-    if (this.closed) return;
+    this.assertLegacyWrite(deviceId);
+    return await this.unregisterDevice(deviceId, ownerId);
+  }
+  private async unregisterDevice(
+    deviceId: string,
+    ownerId?: string,
+    expectedGeneration?: number,
+  ): Promise<void> {
+    if (this.closed || this.recoveryFault) return;
+    if (expectedGeneration !== undefined) {
+      const slot = this.state.recoveryV2?.slots.find((s) => s.deviceId === deviceId);
+      if (slot?.applied !== expectedGeneration || slot.revoked !== expectedGeneration) return;
+    }
     const previous = this.state.devices[deviceId];
     if (!previous) return;
     if (previous.ownerId && previous.ownerId !== ownerId) throw new Error('通知设备不属于当前授权');
@@ -386,6 +590,8 @@ export class NotificationPublisher {
       device.registration.preferences.generation,
     );
     device.registration.preferences.enabled = false;
+    delete device.pendingRegistration;
+    delete device.pendingPushRevocation;
     this.save();
     if (device.bindingId || (this.options.relayURL && this.options.publisherToken)) {
       try {
@@ -400,6 +606,7 @@ export class NotificationPublisher {
         if (this.closed || this.state.devices[deviceId] !== device) return;
         delete device.bindingId;
         delete device.managementToken;
+        delete device.remoteRevocationPending;
         delete device.error;
       } catch {
         if (this.closed || this.state.devices[deviceId] !== device) return;
@@ -415,14 +622,27 @@ export class NotificationPublisher {
     return {
       version: 1,
       target: this.options.target,
-      delivery: device?.bindingId ? 'apns' : 'foreground-only',
+      delivery:
+        device?.bindingId && !device.pendingPushRevocation
+          ? (device.registration.pushProvider ?? 'apns')
+          : 'foreground-only',
+      ...(device?.registration.deviceToken
+        ? {
+            pushProvider: device.registration.pushProvider ?? 'apns',
+            deviceTokenSha256: createHash('sha256')
+              .update(device.registration.deviceToken)
+              .digest('hex'),
+          }
+        : {}),
       state: !device?.registration.preferences.enabled
         ? 'disabled'
         : device.error
           ? 'unavailable'
-          : device.bindingId
-            ? 'ready'
-            : 'pending',
+          : device.pendingRegistration
+            ? 'pending'
+            : device.bindingId
+              ? 'ready'
+              : 'pending',
       ...(device?.error ? { reason: device.error } : {}),
       ...(device ? { revision: device.registration.preferences.revision } : {}),
       ...(device?.bindingId
@@ -444,6 +664,19 @@ export class NotificationPublisher {
     observation?: NotificationObservation,
   ): void {
     if (!live || this.closed) return; // Loss of an owner or a reader cannot resolve a pending request.
+    if (this.recoveryFault) throw new NotificationRecoveryError(503, '通知持久化待恢复');
+    if (this.state.recoveryV2)
+      for (const event of events) {
+        parseNotificationEvent(event);
+        recoveryHash(event);
+        if (notificationTargetKey(event.target) !== notificationTargetKey(this.options.target))
+          throw new Error('通知事件目标不一致');
+        const old =
+          this.state.entries.find((e) => e.event.id === event.id) ??
+          this.state.recoveryV2.log.find((e) => e.event.id === event.id);
+        if (old && originalObservationHashV2(old.event) !== originalObservationHashV2(event))
+          throw new Error('通知原事件内容冲突');
+      }
     this.verified.set(threadId, Date.now());
     const activeKinds = ['approval', 'question', 'plan', 'uncertain', 'paused'];
     let changed = false;
@@ -477,6 +710,15 @@ export class NotificationPublisher {
       changed = true;
     }
     if (changed) {
+      // Journal every observed original before v1's independent last-512 pruning.
+      if (this.state.recoveryV2) {
+        try {
+          appendRecoveryV2(this.state.recoveryV2, this.state.entries);
+        } catch (failure) {
+          this.recoveryFault = true;
+          throw failure;
+        }
+      }
       this.state.entries = this.state.entries.filter(
         (entry, index, entries) =>
           (entry.active && activeKinds.includes(entry.event.kind)) ||
@@ -539,19 +781,34 @@ export class NotificationPublisher {
     return Date.now() - Date.parse(entry.event.occurredAt) < 600_000;
   }
   private async flush(): Promise<void> {
-    if (this.busy || this.closed) return;
+    if (this.busy || this.closed || this.recoveryFault) return;
     this.busy = true;
     try {
       for (const [id, device] of Object.entries(this.state.devices)) {
         if (this.closed) return;
-        if (!device.registration.preferences.enabled && device.bindingId) {
+        if (
+          !device.registration.preferences.enabled &&
+          (device.bindingId || device.remoteRevocationPending)
+        ) {
           if (!device.retryAt || Date.now() >= device.retryAt)
-            await this.unregister(id, device.ownerId);
+            await this.unregisterDevice(
+              id,
+              device.ownerId,
+              this.state.recoveryV2?.slots.find((s) => s.deviceId === id)?.applied,
+            );
+          continue;
+        }
+        if (
+          device.pendingPushRevocation &&
+          device.registration.preferences.enabled &&
+          (!device.retryAt || Date.now() >= device.retryAt)
+        ) {
+          await this.register(device.registration, device.ownerId);
           continue;
         }
         if (
           device.registration.preferences.enabled &&
-          device.error &&
+          (device.error || device.pendingRegistration) &&
           device.registration.deviceToken &&
           device.invalidToken !== device.registration.deviceToken &&
           this.options.relayURL &&
@@ -561,7 +818,13 @@ export class NotificationPublisher {
           await this.register(device.registration, device.ownerId);
           continue;
         }
-        if (!device.bindingId || device.error) continue;
+        if (
+          !device.bindingId ||
+          device.error ||
+          device.pendingRegistration ||
+          device.pendingPushRevocation
+        )
+          continue;
         if (Date.now() - (device.checkedAt ?? 0) > 30_000) {
           device.checkedAt = Date.now();
           try {
@@ -700,9 +963,12 @@ export class NotificationPublisher {
     }
   }
   close(): void {
-    this.save();
-    this.closed = true;
-    clearInterval(this.timer);
-    this.releaseLease();
+    try {
+      this.save();
+    } finally {
+      this.closed = true;
+      clearInterval(this.timer);
+      this.releaseLease();
+    }
   }
 }

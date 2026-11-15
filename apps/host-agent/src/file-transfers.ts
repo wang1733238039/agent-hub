@@ -1,18 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  realpath,
-  lstat,
-  link,
-} from 'node:fs/promises';
+import { open, readFile, readdir, rm, realpath, lstat, link } from 'node:fs/promises';
 import { join, resolve, extname, basename } from 'node:path';
 import {
-  FILE_TRANSFER_MAX_BYTES,
   parseFileTransferManifest,
   type FileTransferManifest,
   type FileTransferReceipt,
@@ -20,6 +9,9 @@ import {
 } from '@codex-manage/protocol';
 import {
   RuntimeError,
+  makePrivateDirectorySync,
+  openPrivateFile,
+  renamePrivateFileSync,
   protectWindowsStateDirectory,
   protectWindowsStateFile,
   assertPrivateFile,
@@ -37,10 +29,21 @@ export class FileTransfers {
     this.records = join(stateDirectory, 'file-transfers');
   }
   private async directory(path: string) {
-    await mkdir(path, { recursive: true, mode: 0o700 });
-    if (!(await lstat(path)).isDirectory() || (await realpath(path)) !== resolve(path))
-      throw new RuntimeError(409, '文件接收目录已变化或包含符号链接，请在电脑上检查');
-    protectWindowsStateDirectory(path);
+    try {
+      makePrivateDirectorySync(path);
+      if (!(await lstat(path)).isDirectory() || (await realpath(path)) !== resolve(path))
+        throw new RuntimeError(409, '文件接收目录已变化或包含符号链接，请在电脑上检查');
+      protectWindowsStateDirectory(path);
+    } catch (error) {
+      // Windows can reject a reparse point before the portable lstat check.
+      // Keep that refusal and the same transfer-level conflict contract.
+      if ((error as { code?: string }).code === 'UNSAFE_WINDOWS_PRIVATE_STATE')
+        throw Object.assign(
+          new RuntimeError(409, '文件接收目录已变化或包含符号链接，请在电脑上检查'),
+          { cause: error },
+        );
+      throw error;
+    }
   }
   private recordPath(id: string) {
     if (!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id))
@@ -59,7 +62,7 @@ export class FileTransfers {
     await this.directory(this.records);
     const destination = this.recordPath(receipt.id),
       temporary = destination + '.' + randomUUID();
-    const file = await open(temporary, 'wx', 0o600);
+    const file = await openPrivateFile(temporary, 'wx', 0o600);
     try {
       await file.writeFile(JSON.stringify(receipt));
       await file.sync();
@@ -68,7 +71,7 @@ export class FileTransfers {
     }
     protectWindowsStateFile(temporary);
     try {
-      await rename(temporary, destination);
+      renamePrivateFileSync(temporary, destination);
       await this.syncDirectory(this.records);
     } finally {
       await rm(temporary, { force: true });
@@ -125,7 +128,7 @@ export class FileTransfers {
     return {
       hostId: this.hostId,
       destinationDirectory: this.destinationDirectory,
-      maxFileBytes: FILE_TRANSFER_MAX_BYTES,
+      maxFileBytes: null,
       files,
     };
   }
@@ -228,7 +231,7 @@ export class FileTransfers {
       await this.directory(stagingDirectory);
       const staging = join(stagingDirectory, id + '.partial');
       await rm(staging, { force: true });
-      const file = await open(staging, 'wx', 0o600);
+      const file = await openPrivateFile(staging, 'wx', 0o600);
       protectWindowsStateFile(staging);
       try {
         let size = 0;

@@ -1,5 +1,37 @@
 import Foundation
+import MobileCore
 import os
+
+#if DEBUG
+/// One original synthetic prepare response can be withheld locally after its
+/// authentication. This never changes transport, receipts, IDs or file bytes.
+actor EasyWorkFilePrepareReconciliationFault {
+  static let shared = EasyWorkFilePrepareReconciliationFault()
+  struct Witness: Sendable { let consumed: Bool; let recovered: Bool; let operationId: String? }
+  private var target: EasyWorkTarget?
+  private var operationId: String?
+  private var consumed = false
+  private var receiptRecovered = false
+  func arm(caseId: String, target: EasyWorkTarget, operationId: String) throws {
+    guard Bundle.main.bundleIdentifier == "com.easyai.agenthub.easyworkacceptance",
+      ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+      ProcessInfo.processInfo.environment["EASYWORK_HOSTED_NATIVE_CASE"] == caseId,
+      UUID(uuidString: caseId) != nil, operationId.hasPrefix("file-prepare-"),
+      UUID(uuidString: String(operationId.dropFirst("file-prepare-".count))) != nil,
+      self.operationId == nil else { throw HostServiceError.invalidResponse }
+    self.target = target; self.operationId = operationId
+  }
+  func consume(target: EasyWorkTarget, method: String, id: String) -> Bool {
+    guard !consumed, self.target == target, method == "resource/upload", operationId == id else { return false }
+    consumed = true
+    return true
+  }
+  func recovered(target: EasyWorkTarget, operationId: String) {
+    if consumed, self.target == target, self.operationId == operationId { receiptRecovered = true }
+  }
+  func witness() -> Witness { Witness(consumed: consumed, recovered: receiptRecovered, operationId: operationId) }
+}
+#endif
 
 struct AgentTransportOptions: Sendable {
   let candidate: AgentConnectionCandidate
@@ -18,7 +50,7 @@ actor AgentTransportRegistry {
         guard let binding = options.authorizationBinding, var components = URLComponents(string: options.candidate.endpoint) else { throw HostServiceError.invalidResponse }
         components.path = "/channel"; components.query = nil; components.fragment = nil
         guard let url = components.url else { throw HostServiceError.invalidResponse }
-        headers = try await EasyWorkDeviceAuthorization.shared.headers(ref: ref, binding: binding, method: "GET", url: url)
+        headers = try await EasyWorkDeviceAuthorization.shared.headers(ref: ref, binding: binding, method: "GET", url: url, lanCandidate: options.candidate)
       }
       return try LANAgentTransport(candidate: options.candidate, bindingId: options.bindingId, headers: headers)
     },
@@ -39,6 +71,9 @@ actor EasyWorkSessions {
   private var preparing: Set<String> = []
   func session(_ client: Client) async throws -> EasyWorkRemoteSession {
     try Task.checkCancellation()
+    guard client.migrationNeedsVerification != true else {
+      throw HostServiceError.message(L10n.tr("迁移的 EasyWork 连接需要重新配对，请先核对电脑身份。"))
+    }
     guard let connection = client.agentConnection else { throw HostServiceError.invalidResponse }
     // Closing a previous actor yields. Serialize the transition so concurrent
     // sends and subscriptions cannot create two consumers of one Relay mailbox.
@@ -70,8 +105,13 @@ actor EasyWorkSessions {
     if let (_, session) = sessions.removeValue(forKey: clientId) { await session.close() }
   }
 }
-/// Wake subscriptions on actual frames, disconnects or their single deadline.
-/// Keeping the revision closes the gap between inspecting state and suspending.
+/// An authenticated provider rejection is distinct from transport failure.
+struct EasyWorkRemoteRejection: LocalizedError, Sendable {
+  let code: String?
+  let message: String
+  var errorDescription: String? { message }
+}
+
 actor EasyWorkEventSignal {
   private var revision: UInt64 = 0
   private var waiters: [UUID: (CheckedContinuation<Void, Error>, Task<Void, Never>)] = [:]
@@ -108,9 +148,16 @@ actor EasyWorkEventSignal {
 
 /// Owns request correlation, encryption and recovery; transports only carry frames.
 actor EasyWorkRemoteSession {
+  // This projection is session-local; only this iOS provider consumes the new
+  // shared parser. Existing Android call sites and production rules are unchanged.
+  private let subagents = SubagentProjection()
+  func subagentActivities(_ snapshot: Data, threadId: String) -> [SubagentActivity] {
+    subagents.project(snapshotJson: String(decoding: snapshot, as: UTF8.self), threadId: threadId)
+  }
   let target: EasyWorkTarget
   private(set) var connection: AgentConnection
   private let credential: EasyWorkCredential
+  var mobileDeviceId: String { credential.binding.mobileDeviceId }
   private var transport: (any AgentTransport)?
   private var crypto: EasyWorkEnvelopeCrypto?
   private var sequence = 1
@@ -118,6 +165,9 @@ actor EasyWorkRemoteSession {
   private var keyConfirmed = false
   private var receiveTask: Task<Void, Never>?
   private var responses: [String: [String: Any]] = [:]
+  #if DEBUG
+  private var fileCompletionFaultConsumed = false
+  #endif
   private var pendingRequestIds: Set<String> = []
   private var events: [[String: Any]] = []
   private var threadSequences: [String: Int] = [:]
@@ -137,11 +187,13 @@ actor EasyWorkRemoteSession {
   private var connecting = false
   private var closed = false
   private static let readMethods: Set<String> = [
-    "runtime/context", "runtime/summary", "project/list", "thread/list", "thread/search",
+    "usage/read", "runtime/context", "runtime/summary", "project/list", "thread/list", "thread/search",
     "thread/read", "thread/history", "thread/sync", "thread/subscribe", "thread/unsubscribe",
+    "thread/suggestion/read",
+    "thread/fork-options", "thread/fork-status", "workspace/manage-status", "thread/read-state", "thread/read-state-list",
     "model/list", "queue/list", "queue/status",
     "filesystem/access-status", "filesystem/roots", "filesystem/list-directories", "filesystem/list-entries",
-    "voice/readiness", "resource/read", "resource/download", "resource/resolve", "resource/transfer-list",
+    "voice/readiness", "voice/status", "resource/read", "resource/download", "resource/resolve", "resource/transfer-list",
     "resource/upload-status", "command/status",
     "notification/status", "notification/events",
   ]
@@ -178,6 +230,7 @@ actor EasyWorkRemoteSession {
     receiveTask?.cancel(); receiveTask = nil; transport = nil; crypto = nil; keyConfirmed = false
     threadSyncs.removeAll(); threadSyncOrder.removeAll()
     await eventSignal.signal()
+    subagents.clear()
     await previous?.close()
   }
   private func connect(excluding: String? = nil) async throws {
@@ -238,6 +291,7 @@ actor EasyWorkRemoteSession {
     diagnostic("handshake-timeout", attemptEpoch)
     lastError = HostServiceError.unavailable
     receiveTask?.cancel(); receiveTask = nil; transport = nil; crypto = nil
+    subagents.clear()
     await route.close()
   }
   private func publish(_ payload: [String: Any]) async throws {
@@ -286,6 +340,7 @@ actor EasyWorkRemoteSession {
             guard let payload = message["payload"] as? [String: Any], let threadId = payload["threadId"] as? String, let cursor = message["sequence"] as? Int, cursor >= 0 else { throw HostServiceError.invalidResponse }
             threadSequences[threadId] = max(threadSequences[threadId] ?? 0, cursor)
             await eventSignal.signal()
+            subagents.accept(eventJson: String(decoding: try easyWorkJSON(payload), as: UTF8.self))
             events.append(message); eventSequence += 1
             if events.count > 512 { events.removeFirst(events.count - 512) }
           }
@@ -308,6 +363,28 @@ actor EasyWorkRemoteSession {
   nonisolated func request(_ method: String, _ params: [String: Any], id: String = UUID().uuidString) async throws -> Data {
     try await requestData(method, params: easyWorkJSON(params), id: id)
   }
+  nonisolated static func verifiedWriteResult(_ record: [String: Any], target: EasyWorkTarget,
+      mobileDeviceId: String, operationId: String, method: String, params: [String: Any]) throws -> Data {
+    guard ["completed", "failed"].contains(record["state"] as? String ?? "") else {
+      throw HostServiceError.message(L10n.tr("操作结果仍不确定，请查询状态并核对桌面结果。"))
+    }
+    let expectedHash = HostService.hash(try easyWorkJSON(["target": target.dictionary, "method": method, "params": params]))
+    guard record["operationId"] as? String == operationId, record["method"] as? String == method,
+      record["deviceId"] as? String == mobileDeviceId, record["requestHash"] as? String == expectedHash,
+      let savedTarget = record["target"] as? [String: Any],
+      try easyWorkJSON(savedTarget) == easyWorkJSON(target.dictionary),
+      let response = record["response"] as? [String: Any], response["protocolVersion"] as? Int == 2,
+      response["kind"] as? String == "response", let ok = response["ok"] as? Bool,
+      ok == (record["state"] as? String == "completed") else {
+      throw HostServiceError.invalidResponse
+    }
+    guard ok else {
+      let error = response["error"] as? [String: Any]
+      throw EasyWorkRemoteRejection(code: error?["code"] as? String,
+        message: error?["message"] as? String ?? L10n.tr("请求被拒绝"))
+    }
+    return try easyWorkJSON(response["result"] ?? NSNull())
+  }
   private func requestData(_ method: String, params: Data, id: String) async throws -> Data {
     diagnostic("request", method)
     guard pendingRequestIds.insert(id).inserted else { throw HostServiceError.message(L10n.tr("同一操作正在等待 Host 回执")) }
@@ -329,7 +406,32 @@ actor EasyWorkRemoteSession {
         while responses[id] == nil && lastError == nil && !closed && Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
         guard !closed else { throw CancellationError() }
         if let response = responses.removeValue(forKey: id) {
-          guard response["ok"] as? Bool == true else { let error = response["error"] as? [String: Any]; throw HostServiceError.message(error?["message"] as? String ?? L10n.tr("请求被拒绝")) }
+          guard response["ok"] as? Bool == true else {
+            let error = response["error"] as? [String: Any]
+            let message = error?["message"] as? String ?? L10n.tr("请求被拒绝")
+            if error?["code"] as? String == "stale_read_position" { throw HostServiceError.rejected(409, message) }
+            // An authenticated absence is the explicit query result that lets
+            // the file UI offer uploading the same saved intent again.
+            if method == "resource/upload-status", error?["code"] as? String == "transfer_not_found" {
+              throw HostServiceError.rejected(404, message)
+            }
+            throw EasyWorkRemoteRejection(code: error?["code"] as? String, message: message)
+          }
+          #if DEBUG
+          if await EasyWorkFilePrepareReconciliationFault.shared.consume(target: target, method: method, id: id) {
+            throw URLError(.networkConnectionLost)
+          }
+          // The authentic completion has arrived; fail only its local delivery.
+          // Crypto verification, acknowledgement and the Desktop receipt stay intact.
+          if !fileCompletionFaultConsumed, method == "resource/upload-complete", id.hasPrefix("file-complete-"),
+            Bundle.main.bundleIdentifier == "com.easyai.agenthub.easyworkacceptance",
+            ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+            ProcessInfo.processInfo.arguments.contains("-easywork-local-dev"),
+            ProcessInfo.processInfo.environment["EASYWORK_DROP_FILE_COMPLETION_ONCE"] == "1" {
+            fileCompletionFaultConsumed = true
+            throw HostServiceError.message("验收注入：完成回执未交付，原文件已保留，请查询结果。")
+          }
+          #endif
           return try easyWorkJSON(response["result"] ?? NSNull())
         }
         diagnostic("request-timeout", method)
@@ -337,8 +439,12 @@ actor EasyWorkRemoteSession {
       } catch {
         diagnostic("request-error", "\(method):\((error as NSError).domain):\((error as NSError).code)")
         if closed || Task.isCancelled { throw CancellationError() }
+        // Management recovery validates the saved original in its adapter and never republishes.
+        if method == "thread/manage" || method == "workspace/manage" || method == "thread/acknowledge-read" { throw error }
         if let failure = (error as? EasyWorkDeviceAuthorizationFailure) ?? (lastError as? EasyWorkDeviceAuthorizationFailure) { throw failure }
+        if error is EasyWorkRemoteRejection { throw error }
         if case HostServiceError.message = error { throw error }
+        if method == "resource/upload-status", case HostServiceError.rejected(404, _) = error { throw error }
         // A Relay can stay online while the Host restarts. A request timeout must
         // invalidate the old handshake even when the user selected only one path.
         // The retry keeps the original operation ID; Host receipts decide whether
@@ -349,7 +455,7 @@ actor EasyWorkRemoteSession {
           else { try await connect() }
           if !Self.readMethods.contains(method) && !Self.subscriptionMethods.contains(method) {
             let values = try easyWorkObject(params)
-            let operationId = values["clientRequestId"] as? String ?? values["operationId"] as? String ?? values["guidanceId"] as? String ?? id
+            let operationId = values["clientOperationId"] as? String ?? values["clientRequestId"] as? String ?? values["operationId"] as? String ?? values["guidanceId"] as? String ?? id
             let status = try await self.request("command/status", ["commandId": operationId])
             let value = try JSONSerialization.jsonObject(with: status, options: [.fragmentsAllowed])
             if ["turn/start", "turn/steer", "plan/action"].contains(method) {
@@ -357,11 +463,17 @@ actor EasyWorkRemoteSession {
               // an exact not-written proof and cannot authorize another publish.
               throw HostServiceError.message(L10n.tr("原消息结果待核对，仅查询原操作 ID；没有重新提交。"))
             }
-            if let record = value as? [String: Any], ["submitting", "uncertain"].contains(record["state"] as? String ?? "") {
+            guard let record = value as? [String: Any] else {
               throw HostServiceError.message(L10n.tr("操作结果仍不确定，请查询状态并核对桌面结果。"))
             }
-            // Retry with the same contents after reconciliation. The Host still
-            // checks the payload hash and returns its original canonical receipt.
+            // Adopt only the authenticated original receipt. A missing or
+            // uncertain result never authorizes another write publication.
+            let recovered = try Self.verifiedWriteResult(record, target: target, mobileDeviceId: mobileDeviceId,
+              operationId: operationId, method: method, params: values)
+            #if DEBUG
+            await EasyWorkFilePrepareReconciliationFault.shared.recovered(target: target, operationId: operationId)
+            #endif
+            return recovered
           }
         } else { throw error }
       }

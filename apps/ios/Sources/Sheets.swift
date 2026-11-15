@@ -17,6 +17,7 @@ struct ClientPickerView: View {
                                 Image(systemName: "laptopcomputer").font(.title3)
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(client.name)
+                                    ClientUsageSummary(client: client, target: store.mobileReadingTarget(client))
                                     Text(store.sourceLabel(for: client))
                                         .font(.caption).foregroundStyle(Palette.secondary)
                                     let running = store.runningConversationCount(for: client).map { $0.formatted() } ?? "—"
@@ -413,6 +414,20 @@ struct ProjectPickerView: View {
                         }.foregroundStyle(Color.primary).accessibilityIdentifier("choose-projectless")
                     }
                 }
+                if !store.recentProjects.isEmpty {
+                    Section {
+                        ForEach(store.recentProjects) { project in
+                            Button {
+                                store.newConversation(in: project)
+                            } label: {
+                                Label(project.name, systemImage: "clock")
+                            }.foregroundStyle(Color.primary).accessibilityIdentifier(
+                                "choose-recent-project-\(project.id)")
+                        }
+                    } header: {
+                        Text(L10n.tr("最近使用"))
+                    }
+                }
                 Section {
                     ForEach(store.projects) { project in
                         Button {
@@ -665,6 +680,7 @@ struct SettingsView: View {
                         ForEach(Appearance.allCases, id: \.self) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.navigationLink)
+                    .id(appLanguage)
                     .accessibilityIdentifier("appearance-picker").onChange(
                         of: store.saved.appearance
                     ) { _, _ in store.persist() }
@@ -680,6 +696,7 @@ struct SettingsView: View {
                             Text(language.title).tag(language.rawValue)
                         }
                     }
+                    .id(appLanguage)
                     .accessibilityIdentifier("language-picker")
                 } footer: {
                     Text(L10n.tr("跟随系统，或选择中文和英文。更改会立即生效。"))
@@ -689,6 +706,7 @@ struct SettingsView: View {
                         ForEach(VoiceTranscriptionPreference.allCases, id: \.self) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.navigationLink)
+                    .id(appLanguage)
                     .accessibilityIdentifier("voice-transcription-picker")
                 } header: {
                     Text(L10n.tr("语音输入"))
@@ -700,7 +718,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("notification-settings")
                     NavigationLink { AISharingSettingsView(store: store) } label: { Label(L10n.tr("AI 数据共享"), systemImage: "hand.raised") }
                         .accessibilityIdentifier("ai-sharing-settings")
-                    NavigationLink { EncryptedMigrationView(store: store) } label: { Label(L10n.tr("安全迁移"), systemImage: "lock.doc") }
+                    NavigationLink { EncryptedMigrationView(store: store) } label: { Label(L10n.tr("安全迁移"), systemImage: "lock.doc") }.accessibilityIdentifier("settings-migration")
                 }
                 Section {
                     Toggle(L10n.tr("界面示例"), isOn: Binding(
@@ -731,7 +749,7 @@ struct SettingsView: View {
             }.navigationTitle(L10n.tr("设置")).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button(L10n.tr("完成")) { store.sheet = nil }
+                        Button(L10n.tr("完成")) { store.sheet = nil }.accessibilityIdentifier("settings-done")
                     }
                 }
         }.onAppear {
@@ -752,9 +770,11 @@ struct AISharingPermissionView: View {
                         LabeledContent("Agent", value: request.agentName)
                         LabeledContent(L10n.tr("模型"), value: request.modelName)
                     }
-                    Section(L10n.tr("第三方 AI 如何处理内容")) {
+                    Section(L10n.tr(request.scope.model == "codex-dictation" && request.scope.target.agentId == "easywork" ? "语音如何处理" : "第三方 AI 如何处理内容")) {
                         Text(request.scope.model == "codex-dictation"
-                          ? L10n.tr("录音结束后，原录音文件将发送至这台电脑，再使用 Codex 桌面当前 ChatGPT 账户提交给 OpenAI 的语音转写服务。手机只录音，返回的文字填入输入框，由你确认后发送。")
+                          ? (request.scope.target.agentId == "easywork"
+                            ? L10n.tr("录音结束后，原录音文件将发送至这台电脑，由 EasyWork 的本地语音识别处理。返回的文字只填入输入框，由你确认后发送。")
+                            : L10n.tr("录音结束后，原录音文件将发送至这台电脑，再使用 Codex 桌面当前 ChatGPT 账户提交给 OpenAI 的语音转写服务。手机只录音，返回的文字填入输入框，由你确认后发送。"))
                           : L10n.tr("你的文字、图片、文件、问题回答及相关对话上下文将发送至这台电脑，并由电脑端实际配置的第三方 AI 服务处理，用于生成回复、分析附件和执行任务。"))
                         Text(L10n.tr("模型名称不一定代表服务商；请在电脑端确认实际服务商、数据保留、训练用途和处理地区。切换电脑或模型后需要重新允许。选择跟随电脑时，你允许使用该电脑的当前 AI 配置。"))
                         Text(L10n.tr("只发送你有权分享的内容。连接加密不影响 AI 服务读取已发送内容。你可以在设置中撤回许可；撤回不删除已经发送的内容，也不停止电脑上已有任务。"))
@@ -821,8 +841,8 @@ struct GenerationSettings: View {
             Form {
                 if store.selectedThreadId != nil {
                     Section(L10n.tr("电脑当前设置")) {
-                        LabeledContent(L10n.tr("模型"), value: store.displayedModelLabel)
-                        LabeledContent(L10n.tr("推理强度"), value: store.displayedEffortLabel)
+                        LabeledContent(L10n.tr("模型"), value: store.currentModelLabel).accessibilityIdentifier("current-model")
+                        LabeledContent(L10n.tr("推理强度"), value: store.currentEffortLabel).accessibilityIdentifier("current-effort")
                     }
                     Section {
                         Text(L10n.tr("以下选择用于下次发送，发送前不会修改电脑当前设置。"))
@@ -855,15 +875,19 @@ struct GenerationSettings: View {
                 }
                 if store.supportsGenerationSpeed {
                     Section(L10n.tr("速度")) {
-                        if store.availableSpeeds.contains("ultrafast") {
+                        if store.availableSpeeds.contains("ultrafast") || (store.availableSpeeds.contains("fast") && !store.availableSpeeds.contains("standard")) {
                             Picker(L10n.tr("速度模式"), selection: Binding(get: { store.selectedSpeed ?? "" }, set: { store.speed = $0 })) {
                                 Text(L10n.tr("跟随电脑")).tag("")
                                 ForEach(store.availableSpeeds, id: \.self) { Text(store.speedLabel($0)).tag($0) }
-                            }.accessibilityIdentifier("speed-picker")
+                            }.pickerStyle(.menu).accessibilityIdentifier("speed-picker")
                         } else {
-                            Toggle(L10n.tr("快速模式"), isOn: Binding(get: { store.selectedSpeed == "fast" }, set: { store.speed = $0 ? "fast" : "standard" }))
-                                .disabled(!store.availableSpeeds.contains("fast"))
-                                .accessibilityIdentifier("fast-mode-toggle")
+                            HStack {
+                                Text(L10n.tr("快速模式"))
+                                Spacer()
+                                NativeGenerationSpeedSwitch(isOn: Binding(get: { store.selectedSpeed == "fast" }, set: { store.speed = $0 ? "fast" : "standard" }))
+                                    .fixedSize()
+                                    .disabled(!store.availableSpeeds.contains("fast"))
+                            }
                         }
                         Button(L10n.tr("跟随电脑速度")) { store.speed = "" }.accessibilityIdentifier("reset-speed")
                         Text(store.availableSpeeds.contains("fast") ? L10n.tr("加快模型响应，增加用量消耗。") : L10n.tr("当前模型未提供加速模式。"))
@@ -895,5 +919,140 @@ struct GenerationSettings: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L10n.tr("完成")) { store.sheet = nil }.accessibilityIdentifier("generation-done") } }
                 .task { await store.loadModels() }
         }.presentationDetents([.large])
+    }
+}
+
+private struct NativeGenerationSpeedSwitch: UIViewRepresentable {
+    @Binding var isOn: Bool
+    @Environment(\.isEnabled) private var isEnabled
+    final class Coordinator: NSObject {
+        var value: Binding<Bool>
+        init(_ value: Binding<Bool>) { self.value = value }
+        @objc func changed(_ sender: UISwitch) { value.wrappedValue = sender.isOn }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator($isOn) }
+    func makeUIView(context: Context) -> UISwitch {
+        let control = UISwitch()
+        control.accessibilityIdentifier = "fast-mode-toggle"
+        control.accessibilityLabel = L10n.tr("快速模式")
+        control.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        return control
+    }
+    func updateUIView(_ control: UISwitch, context: Context) {
+        context.coordinator.value = $isOn
+        control.isEnabled = isEnabled
+        control.accessibilityLabel = L10n.tr("快速模式")
+        if control.isOn != isOn { control.setOn(isOn, animated: control.window != nil) }
+    }
+}
+
+/// A single native action surface with the existing SwiftUI label. Touch,
+/// assistive input and standard UIControl activation all invoke the same action.
+struct NativeContentButton<Content: View>: UIViewRepresentable {
+    let identifier: String
+    let label: String
+    var value: String? = nil
+    var selected = false
+    @ViewBuilder let content: () -> Content
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    final class Control: UIButton {
+        var hosted: (UIView & UIContentView)?
+        override var intrinsicContentSize: CGSize { hosted?.intrinsicContentSize ?? super.intrinsicContentSize }
+        override func layoutSubviews() { super.layoutSubviews();hosted?.frame=bounds }
+        override var isHighlighted: Bool { didSet { hosted?.alpha=isHighlighted ? 0.75 : 1 } }
+    }
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action=action }
+        @objc func activate(_ sender: UIButton) {
+            guard sender.isEnabled,sender.window != nil else { return }
+            action()
+        }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(action:action) }
+    func makeUIView(context: Context) -> Control {
+        // SwiftUI draws the complete row, including its selected background.
+        // A custom button avoids UIKit's system selected-state paint covering it.
+        let control=Control(type:.custom)
+        control.addTarget(context.coordinator,action:#selector(Coordinator.activate(_:)),for:.touchUpInside)
+        return control
+    }
+    func updateUIView(_ control: Control,context: Context) {
+        context.coordinator.action=action
+        control.isEnabled=isEnabled
+        control.isAccessibilityElement=true
+        control.accessibilityIdentifier=identifier
+        control.accessibilityLabel=label
+        control.accessibilityValue=value
+        control.isSelected=selected
+        if selected { control.accessibilityTraits.insert(.selected) }
+        else { control.accessibilityTraits.remove(.selected) }
+        control.accessibilityTraits.insert(.button)
+        let configuration=UIHostingConfiguration { content().allowsHitTesting(false).accessibilityHidden(true) }.margins(.all,0)
+        if let hosted=control.hosted { hosted.configuration=configuration }
+        else {
+            let hosted=configuration.makeContentView()
+            hosted.isUserInteractionEnabled=false
+            control.addSubview(hosted);control.hosted=hosted
+        }
+        control.invalidateIntrinsicContentSize()
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize,uiView: Control,context: Context) -> CGSize? {
+        let width=proposal.width ?? max(44,uiView.intrinsicContentSize.width)
+        let size=uiView.hosted?.systemLayoutSizeFitting(CGSize(width:width,height:0),withHorizontalFittingPriority:.required,verticalFittingPriority:.fittingSizeLevel) ?? .zero
+        return CGSize(width:width,height:max(44,size.height))
+    }
+}
+
+/// Standard controls keep generated-suggestion actions available to UIKit assistive input.
+/// The action remains the same local draft operation owned by the SwiftUI caller.
+struct NativeSuggestionButton: UIViewRepresentable {
+    let title: String
+    let identifier: String
+    var secondary = false
+    var filled = false
+    var symbol: String? = nil
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func activate(_ sender: UIButton) {
+            guard sender.isEnabled, sender.window != nil else { return }
+            action()
+        }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.addTarget(context.coordinator, action: #selector(Coordinator.activate(_:)), for: .touchUpInside)
+        return button
+    }
+    func updateUIView(_ button: UIButton, context: Context) {
+        context.coordinator.action = action
+        button.isEnabled = isEnabled
+        button.accessibilityIdentifier = identifier
+        button.accessibilityLabel = title
+        var configuration = filled ? UIButton.Configuration.filled() : .plain()
+        configuration.title = title
+        configuration.image = symbol.flatMap(UIImage.init(systemName:))
+        configuration.imagePadding = 4
+        configuration.baseForegroundColor = filled ? .systemBackground : secondary ? .secondaryLabel : .label
+        if filled { configuration.baseBackgroundColor = .label }
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8)
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var result = attributes
+            result.font = UIFont.preferredFont(forTextStyle: .subheadline)
+            return result
+        }
+        button.configuration = configuration
+        button.titleLabel?.adjustsFontForContentSizeCategory = true
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIButton, context: Context) -> CGSize? {
+        let intrinsic = uiView.intrinsicContentSize
+        return CGSize(width: proposal.width ?? max(44, intrinsic.width), height: max(44, intrinsic.height))
     }
 }

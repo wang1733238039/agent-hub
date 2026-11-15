@@ -1,18 +1,23 @@
+import { parseUsageTarget, usageTargetKey, usageTarget } from '@codex-manage/protocol';
 import { createServer as httpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer as httpsServer } from 'node:https';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import {
   RuntimeSession,
   appendRuntimeDiagnostic,
+  startRuntimeDiagnostics,
   NotificationObserver,
   RuntimeError,
   DesktopWorkspaceView,
   DesktopChatActions,
   DesktopTranscription,
   CreationError,
+  makePrivateDirectorySync,
+  writePrivateFileSync,
+  openPrivateFileSync,
   protectWindowsStateDirectory,
   protectWindowsStateFile,
   assertPrivateFile,
@@ -21,14 +26,26 @@ import {
   SuggestionObservationError,
   createWindowsTraceDiagnostics,
 } from '@codex-manage/codex-adapter';
-import { NotificationPublisher } from '@codex-manage/notification-runtime';
+import {
+  NotificationPublisher,
+  NotificationRecoveryError,
+} from '@codex-manage/notification-runtime';
+import { notificationRecoveryRoute } from './notification-recovery-routes.js';
 import { startDirectDiscovery } from './direct-discovery.js';
+import { DirectDiscoveryRecovery } from './direct-discovery-recovery.js';
 import { VPNPeerDirectory } from './direct-endpoints.js';
 import { PrivateConnections } from './private-connections.js';
 import { FileTransfers } from './file-transfers.js';
 import { VoiceTranscriptions } from './voice-transcriptions.js';
 import { DesktopDomSuggestions } from './desktop-dom-suggestions.js';
 import { sendReadJSON } from './read-json.js';
+import { ProjectGitService } from './project-git.js';
+import {
+  PROJECT_GIT_CAPABILITY,
+  PROJECT_GIT_FILES_CAPABILITY,
+  PROJECT_GIT_MAX_BYTES,
+  parseProjectGitId,
+} from '@codex-manage/protocol';
 import {
   parseNotificationRegistration,
   parseNotificationPreferences,
@@ -54,6 +71,22 @@ async function body(request: IncomingMessage, limit: number): Promise<Buffer> {
   }
   return Buffer.concat(parts);
 }
+const unavailableReasons: Record<string, string> = {
+  原桌面建议读取暂不可用: 'SUGGESTION_SOURCE_UNAVAILABLE',
+  'Windows 建议必须异步读取': 'SUGGESTION_ASYNC_REQUIRED',
+  'Windows 建议读取未就绪': 'SUGGESTION_WORKER_UNAVAILABLE',
+  原桌面建议准备失败: 'SUGGESTION_PREPARE_FAILED',
+  原桌面建议准备失去就绪状态: 'SUGGESTION_PREPARE_NOT_READY',
+  原桌面建议收据已变化: 'SUGGESTION_RECEIPT_CHANGED',
+  原桌面建议提交失去就绪状态: 'SUGGESTION_COMMIT_NOT_READY',
+  建议采集记录过大: 'SUGGESTION_RECORD_TOO_LARGE',
+  建议采集记录无效: 'SUGGESTION_RECORD_INVALID',
+  创建桥接已关闭: 'CREATION_BRIDGE_CLOSED',
+  '附件读取繁忙，请稍后重试': 'ATTACHMENT_READ_BUSY',
+  '电脑暂时无法读取 Codex 登录状态，请稍后重试；原录音不会提交': 'TRANSCRIPTION_AUTH_UNAVAILABLE',
+  '此 Codex 专用账户路由尚未支持 Host 转写': 'TRANSCRIPTION_ROUTE_UNSUPPORTED',
+  '电脑转写连接已关闭，原录音未提交': 'TRANSCRIPTION_CLOSED',
+};
 const text = (v: unknown): string => (typeof v === 'string' ? v : '');
 const values = (v: unknown): string[] =>
   Array.isArray(v) && v.every((entry) => typeof entry === 'string') ? (v as string[]) : [];
@@ -73,11 +106,14 @@ export async function startRuntimeServer() {
       'Set CODEX_RUNTIME_MODE explicitly to managed-runtime, shared-runtime or desktop-runtime',
     );
   const directory = resolve(process.env.HOST_AGENT_STATE_DIR ?? '.local/host-agent');
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  makePrivateDirectorySync(directory);
   protectWindowsStateDirectory(directory);
   const tokenFile = join(directory, 'access-token');
   if (!existsSync(tokenFile)) {
-    writeFileSync(tokenFile, randomBytes(32).toString('base64url'), { mode: 0o600 });
+    writePrivateFileSync(tokenFile, randomBytes(32).toString('base64url'), {
+      mode: 0o600,
+      flag: 'wx',
+    });
     protectWindowsStateFile(tokenFile);
   }
   assertPrivateFile(tokenFile);
@@ -130,6 +166,7 @@ export async function startRuntimeServer() {
     root: resolve(process.env.HOST_AGENT_ROOT ?? process.cwd()),
     name: process.env.HOST_AGENT_NAME ?? 'Codex Host',
   });
+  const diagnostics = startRuntimeDiagnostics(directory, session.hostId, mode);
   const domSuggestions = new DesktopDomSuggestions(
     session,
     mode === 'desktop-runtime' ? process.env.CODEX_DESKTOP_DOM_BRIDGE_CONFIG : undefined,
@@ -138,12 +175,17 @@ export async function startRuntimeServer() {
     await session.connect();
   } catch (error) {
     session.close();
+    void diagnostics.close();
     throw error;
   }
   const suggestionObserver = new DesktopSuggestionObserver({
     directory,
     target: () => session.readingTarget(),
     enabled: mode === 'desktop-runtime' && process.env.CODEX_DESKTOP_SUGGESTION_OBSERVER === '1',
+    traceRetention: process.env.CODEX_DESKTOP_TRACE_RETENTION === '1',
+    ...(process.env.CODEX_DESKTOP_NATIVE_SUGGESTIONS_CONFIG
+      ? { nativeSuggestionsConfig: resolve(process.env.CODEX_DESKTOP_NATIVE_SUGGESTIONS_CONFIG) }
+      : {}),
     ...(process.env.CODEX_DESKTOP_SUGGESTION_TRACE_ROOT
       ? { traceRoot: resolve(process.env.CODEX_DESKTOP_SUGGESTION_TRACE_ROOT) }
       : {}),
@@ -170,7 +212,7 @@ export async function startRuntimeServer() {
               : dirname(
                   dirname(process.env.CODEX_SOCKET ?? join(homedir(), '.codex', 'ipc', 'ipc.sock')),
                 )),
-          process.env.CODEX_EXECUTABLE,
+          () => session.desktopMetadataExecutable(),
         )
       : undefined;
   const voice = new VoiceTranscriptions(
@@ -183,7 +225,7 @@ export async function startRuntimeServer() {
         principal: null,
       }),
       transcribe: async () => {
-        throw new RuntimeError(503, '原桌面转写不可用');
+        throw new RuntimeError(503, '原桌面转写不可用', 'DESKTOP_TRANSCRIPTION_UNAVAILABLE');
       },
     },
   );
@@ -208,7 +250,9 @@ export async function startRuntimeServer() {
       ? new DesktopChatActions(
           join(directory, 'chat-actions'),
           session.hostId,
-          process.env.CODEX_EXECUTABLE ?? 'codex',
+          mode === 'desktop-runtime'
+            ? () => session.desktopMetadataExecutable()
+            : (process.env.CODEX_EXECUTABLE ?? 'codex'),
           process.env.CODEX_HOME ??
             (process.platform === 'win32'
               ? join(homedir(), '.codex')
@@ -233,9 +277,24 @@ export async function startRuntimeServer() {
   void voice.prune().catch(() => {});
   if (process.env.HOST_NOTIFICATION_PUBLISHER_TOKEN_FILE)
     assertPrivateFile(process.env.HOST_NOTIFICATION_PUBLISHER_TOKEN_FILE);
+  const notificationStatePath = join(directory, 'notifications.json');
+  const notificationFile = <T>(path: string, operation: () => T): T => {
+    try {
+      return operation();
+    } catch (error) {
+      if (error instanceof Error)
+        Object.assign(error, {
+          privateStateRole:
+            path === notificationStatePath + '.lock'
+              ? 'notification-lock'
+              : 'notification-snapshot',
+        });
+      throw error;
+    }
+  };
   const notifications = new NotificationPublisher({
     target: session.notificationTarget(),
-    statePath: join(directory, 'notifications.json'),
+    statePath: notificationStatePath,
     ...(process.env.HOST_NOTIFICATION_RELAY_URL
       ? { relayURL: process.env.HOST_NOTIFICATION_RELAY_URL }
       : {}),
@@ -247,7 +306,9 @@ export async function startRuntimeServer() {
           ).trim(),
         }
       : {}),
-    protectFile: protectWindowsStateFile,
+    protectFile: (path) => notificationFile(path, () => protectWindowsStateFile(path)),
+    createPrivateFile: (path) => notificationFile(path, () => openPrivateFileSync(path, 'wx')),
+    makePrivateDirectory: makePrivateDirectorySync,
   });
   const observer = new NotificationObserver(
     session.notificationTarget(),
@@ -297,6 +358,36 @@ export async function startRuntimeServer() {
   let direct: Awaited<ReturnType<typeof startDirectDiscovery>> | undefined;
   const vpnDirectory = new VPNPeerDirectory();
   const privateConnections = new PrivateConnections(directory);
+  const projectGitAvailable = await ProjectGitService.supported();
+  let gitBaselines: Record<string, string> = {};
+  if (process.env.HOST_AGENT_GIT_BASELINES_FILE) {
+    const path = resolve(process.env.HOST_AGENT_GIT_BASELINES_FILE);
+    assertPrivateFile(path);
+    const bytes = readFileSync(path);
+    if (bytes.length > 65536) throw new Error('Git baseline configuration too large');
+    const parsed: unknown = JSON.parse(bytes.toString('utf8'));
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      Object.keys(parsed).length > 128 ||
+      Object.entries(parsed).some(
+        ([id, ref]) =>
+          !/^[a-f0-9]{32}$/.test(id) ||
+          typeof ref !== 'string' ||
+          !/^refs\/(heads|remotes)\/[\w./-]+$/.test(ref),
+      )
+    )
+      throw new Error('Invalid Git baseline configuration');
+    gitBaselines = parsed as Record<string, string>;
+  }
+  const projectGit = new ProjectGitService({
+    secret: token,
+    baselines: gitBaselines,
+    ...(mode === 'desktop-runtime'
+      ? {}
+      : { allowedRoots: [resolve(process.env.HOST_AGENT_ROOT ?? process.cwd()), directory] }),
+  });
   const httpsEndpoints = parseCodexSystemEndpoints(process.env.HOST_AGENT_HTTPS_ENDPOINTS);
   // Every response that replaces the client's capabilities must include current
   // Host-owned readiness, including collector and trace-directory changes.
@@ -310,6 +401,7 @@ export async function startRuntimeServer() {
       'notifications',
       'files:upload',
       'commands:target-bound:v1',
+      ...(projectGitAvailable ? [PROJECT_GIT_CAPABILITY, PROJECT_GIT_FILES_CAPABILITY] : []),
     ]),
   ];
   let fencedSuggestionPending = false;
@@ -317,7 +409,17 @@ export async function startRuntimeServer() {
   const handler = async (request: IncomingMessage, response: ServerResponse) => {
     const requestStartedAt = performance.now();
     const requestId = randomUUID();
+    response.setHeader('X-Agent-Hub-Diagnostic-Id', requestId);
+    // Diagnostics still retain a safe pathname when auth/origin rejects before
+    // routing; raw query bytes never enter the event schema.
+    let diagnosticPathname = '/other';
+    try {
+      diagnosticPathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+    } catch {
+      /* Invalid target retains only a fixed label. */
+    }
     let requestURL: URL | undefined;
+    let operationId: string | undefined;
     try {
       if (request.headers.origin) throw new RuntimeError(403, '不接受浏览器跨域请求');
       const supplied = Buffer.from((request.headers.authorization ?? '').replace(/^Bearer /, ''));
@@ -336,6 +438,96 @@ export async function startRuntimeServer() {
         throw new RuntimeError(400, '无效请求地址', 'INVALID_REQUEST_TARGET');
       }
       const url = requestURL;
+      if (url.pathname === '/v1/project-git' || url.pathname === '/v1/project-git/files') {
+        if (request.method !== 'GET') {
+          response.setHeader('Allow', 'GET');
+          throw new RuntimeError(405, 'Git 状态仅支持只读查询');
+        }
+        if (!projectGitAvailable) throw new RuntimeError(501, '此电脑尚未提供 Git 状态查询');
+        const filePage = url.pathname.endsWith('/files');
+        const keys = [
+          'target',
+          'projectId',
+          'hostId',
+          ...(filePage ? ['worktreeId', 'snapshotId', 'cursor'] : ['refresh']),
+        ];
+        if (
+          [...url.searchParams.keys()].some(
+            (key) => !keys.includes(key) || url.searchParams.getAll(key).length !== 1,
+          ) ||
+          url.searchParams.getAll('target').length !== 1 ||
+          (url.searchParams.has('hostId') && url.searchParams.get('hostId') !== session.hostId)
+        )
+          throw new RuntimeError(400, 'Git 查询必须指定完整机器与项目目标');
+        let target, projectId;
+        try {
+          const raw = url.searchParams.get('target')!;
+          if (raw.length > 8192) throw new Error('target');
+          target = parseUsageTarget(JSON.parse(raw));
+          projectId = parseProjectGitId(url.searchParams.get('projectId'));
+        } catch {
+          throw new RuntimeError(400, '无效 Git 查询目标');
+        }
+        const currentKey = usageTargetKey(usageTarget(session.readingTarget()));
+        if (usageTargetKey(target) !== currentKey)
+          throw new RuntimeError(409, '运行目标已变化，请刷新连接');
+        const catalog = workspaceView ? await workspaceView.workspace() : await session.workspace();
+        const project = catalog.projects.find(
+          (project) => project.id === projectId && project.hostId === session.hostId,
+        );
+        if (!project) throw new RuntimeError(404, '当前电脑没有此项目');
+        let value;
+        if (filePage) {
+          let tree, snapshot;
+          try {
+            tree = parseProjectGitId(url.searchParams.get('worktreeId'));
+            snapshot = parseProjectGitId(url.searchParams.get('snapshotId'));
+          } catch {
+            throw new RuntimeError(400, '无效工作区快照');
+          }
+          value = projectGit.files(
+            projectId,
+            project.roots,
+            target,
+            tree,
+            snapshot,
+            url.searchParams.get('cursor'),
+          );
+        } else {
+          if (url.searchParams.has('refresh') && url.searchParams.get('refresh') !== '1')
+            throw new RuntimeError(400, '无效刷新参数');
+          value = await projectGit.read(
+            projectId,
+            project.roots,
+            target,
+            url.searchParams.get('refresh') === '1',
+          );
+        }
+        if (currentKey !== usageTargetKey(usageTarget(session.readingTarget())))
+          throw new RuntimeError(409, '运行目标已变化，请刷新连接');
+        if (Buffer.byteLength(JSON.stringify(value)) > PROJECT_GIT_MAX_BYTES)
+          throw new RuntimeError(413, '仓库摘要过大，请缩小项目范围');
+        json(response, 200, value);
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/usage') {
+        response.setHeader('Cache-Control', 'no-store');
+        if (
+          [...url.searchParams.keys()].some((key) => key !== 'target') ||
+          url.searchParams.getAll('target').length !== 1
+        )
+          throw new RuntimeError(400, '额度读取必须指定完整运行目标');
+        let target;
+        try {
+          target = parseUsageTarget(JSON.parse(url.searchParams.get('target')!));
+        } catch {
+          throw new RuntimeError(400, '无效额度目标');
+        }
+        if (usageTargetKey(target) !== usageTargetKey(usageTarget(session.readingTarget())))
+          throw new RuntimeError(409, '运行目标已变化，请刷新连接');
+        json(response, 200, await session.usage(requestId));
+        return;
+      }
       const scopedTarget = url.searchParams.get('target');
       let commandTarget: ReturnType<typeof parseNotificationTarget> | undefined;
       if (scopedTarget !== null) {
@@ -395,10 +587,18 @@ export async function startRuntimeServer() {
         await session.refreshDesktopCreationAvailability();
         json(response, 200, {
           service: 'host-agent',
-          status: 'ok',
+          status:
+            !session.ready || workspaceView?.status.state === 'unavailable' ? 'degraded' : 'ok',
+          ...(workspaceView ? { workspaceCatalog: workspaceView.status } : {}),
           protocolVersion: '0.1',
           capabilities: mergeHostCapabilities(['health', ...session.capabilities]),
           persistence: session.persistenceStatus,
+          runtime: session.diagnosticStatus(),
+          diagnostics: {
+            bootId: diagnostics.bootId,
+            fingerprint: diagnostics.fingerprint,
+            ...diagnostics.status(),
+          },
         });
         return;
       }
@@ -470,16 +670,25 @@ export async function startRuntimeServer() {
       let data: Record<string, unknown> = {};
       if (request.method === 'POST' && !upload) {
         try {
-          data = JSON.parse((await body(request, 150_000)).toString('utf8')) as Record<
-            string,
-            unknown
-          >;
+          data = JSON.parse(
+            (
+              await body(
+                request,
+                url.pathname === '/v1/notifications/recovery-v2/operations' ? 300_000 : 150_000,
+              )
+            ).toString('utf8'),
+          ) as Record<string, unknown>;
         } catch (error) {
           if (error instanceof RuntimeError) throw error;
           throw new RuntimeError(400, '无效 JSON');
         }
         if (!data || typeof data !== 'object' || Array.isArray(data))
           throw new RuntimeError(400, '无效请求');
+        operationId =
+          text(data.clientMessageId) ||
+          text(data.clientOperationId) ||
+          text(data.operationId) ||
+          undefined;
         const required: Record<string, string[]> = {
           '/v1/projects': ['hostId', 'name', 'directory', 'clientOperationId'],
           '/v1/threads': ['hostId', 'clientOperationId'],
@@ -691,7 +900,8 @@ export async function startRuntimeServer() {
           ) => (diagnostic ? diagnostic.asyncPhase(phase, operation) : operation());
           const deadlineAt = requestStartedAt + 8000;
           const lifetime = new AbortController();
-          const timeoutError = () => new RuntimeError(503, '原桌面建议读取已结束或超时');
+          const timeoutError = () =>
+            new RuntimeError(503, '原桌面建议读取已结束或超时', 'SUGGESTION_READ_DEADLINE');
           const active = () => {
             if (lifetime.signal.aborted || response.destroyed || performance.now() >= deadlineAt)
               throw timeoutError();
@@ -722,15 +932,20 @@ export async function startRuntimeServer() {
           let prepared:
             Awaited<ReturnType<DesktopSuggestionObserver['prepareBoundSourceAsync']>> | undefined;
           let ownsFencedSlot = false;
+          let resumeBackground: (() => void) | undefined;
           try {
             if (suggestionObserver.usesFencedSourceRead) {
-              if (fencedSuggestionPending) throw new RuntimeError(503, '原桌面建议读取忙碌');
+              if (fencedSuggestionPending)
+                throw new RuntimeError(503, '原桌面建议读取忙碌', 'SUGGESTION_READ_BUSY');
               fencedSuggestionPending = true;
               ownsFencedSlot = true;
             }
             active();
-            suggestionObserver.assertBoundReadAvailable(target);
+            if (!suggestionObserver.usesFencedSourceRead)
+              suggestionObserver.assertBoundReadAvailable(target);
             active();
+            if (suggestionObserver.usesFencedSourceRead)
+              resumeBackground = session.deferBackgroundPersistence(lifetime.signal);
             const sourceTurnId = url.searchParams.get('sourceTurnId')!;
             const source = async () =>
               traced('source_fence', async () => {
@@ -741,6 +956,11 @@ export async function startRuntimeServer() {
             await source(); // Exact original owner and latest completed source turn.
             let confirmed;
             if (suggestionObserver.usesFencedSourceRead) {
+              // The required fresh owner IPC yields Main while background
+              // writes are held, so queued reader samples can be received.
+              // Check current readiness after that yield; never renew an old
+              // sample or issue Native work while the reader is unavailable.
+              suggestionObserver.assertBoundReadAvailable(target);
               prepared = await traced('prepare', () =>
                 within(() =>
                   suggestionObserver.prepareBoundSourceAsync(
@@ -795,6 +1015,7 @@ export async function startRuntimeServer() {
               prepared?.dispose();
             } finally {
               if (ownsFencedSlot) fencedSuggestionPending = false;
+              resumeBackground?.();
               lifetime.abort();
               clearTimeout(timer);
               response.removeListener('close', disconnected);
@@ -905,6 +1126,19 @@ export async function startRuntimeServer() {
         return;
       }
       if (url.pathname.startsWith('/v1/notifications/')) {
+        const recoveryResponse = notificationRecoveryRoute(
+          request.method,
+          url,
+          data,
+          notifications,
+          session.readingTarget(),
+        );
+        if (recoveryResponse !== undefined) {
+          json(response, 200, recoveryResponse);
+          if (request.method === 'POST') void monitor();
+          return;
+        }
+
         const keys =
           url.pathname === '/v1/notifications/register'
             ? ['hostId', 'registration']
@@ -1224,28 +1458,44 @@ export async function startRuntimeServer() {
       const status =
         error instanceof RuntimeError ||
         error instanceof CreationError ||
-        error instanceof SuggestionObservationError
+        error instanceof SuggestionObservationError ||
+        error instanceof NotificationRecoveryError
           ? error.status
           : 502;
-      const resource = requestURL?.pathname.startsWith('/v1/attachments');
       const nativeCode = (error as { code?: unknown })?.code;
+      operationId ??=
+        requestURL?.searchParams.get('clientMessageId') ??
+        requestURL?.searchParams.get('operationId') ??
+        requestURL?.searchParams.get('clientOperationId') ??
+        undefined;
       const code =
         typeof nativeCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(nativeCode)
           ? nativeCode
-          : 'HOST_REQUEST_FAILED';
+          : status === 503 && error instanceof Error && unavailableReasons[error.message]
+            ? unavailableReasons[error.message]!
+            : error instanceof SuggestionObservationError
+              ? 'SUGGESTION_OBSERVATION_UNAVAILABLE'
+              : error instanceof CreationError
+                ? 'DESKTOP_CREATION_REJECTED'
+                : error instanceof RuntimeError && status === 503
+                  ? 'HOST_SERVICE_UNAVAILABLE'
+                  : 'HOST_REQUEST_FAILED';
       appendRuntimeDiagnostic(
         directory,
         {
           scope: 'http',
           hostId: session.hostId,
           requestId,
-          route: requestURL?.pathname,
+          operationId,
+          route: diagnosticPathname,
           method: request.method,
           status,
           threadId: requestURL?.searchParams.get('threadId') ?? undefined,
           messageId: requestURL?.searchParams.get('messageId') ?? undefined,
           resourceId: requestURL?.searchParams.get('id') ?? undefined,
           elapsedMs: Math.round(performance.now() - requestStartedAt),
+          code,
+          ...session.diagnosticStatus(),
         },
         error,
       );
@@ -1257,7 +1507,9 @@ export async function startRuntimeServer() {
             error instanceof SuggestionObservationError
               ? error.message
               : `电脑请求失败（${code}），请根据诊断记录核对原因`,
-          ...(resource ? { code, requestId } : {}),
+          code,
+          requestId,
+          diagnosticId: requestId,
         });
     }
   };
@@ -1273,6 +1525,7 @@ export async function startRuntimeServer() {
     });
   } catch (error) {
     clearInterval(notificationTimer);
+    projectGit.close();
     unsubscribeNotifications();
     suggestionObserver.close();
     notifications.close();
@@ -1281,6 +1534,7 @@ export async function startRuntimeServer() {
     clearInterval(voiceExpiryTimer);
     desktopTranscription?.close();
     session.close();
+    void diagnostics.close();
     throw error;
   }
   suggestionObserver.start();
@@ -1293,33 +1547,56 @@ export async function startRuntimeServer() {
       ready: session.ready,
     }),
   );
-  if (
+  const discoveryEnabled =
     process.env.HOST_AGENT_DISCOVERY === '1' ||
-    (mode === 'desktop-runtime' && process.env.HOST_AGENT_DISCOVERY !== '0')
-  ) {
-    try {
-      direct = await startDirectDiscovery({
-        directory,
-        name: process.env.HOST_AGENT_NAME ?? 'Codex Host',
-        token,
-        target: () => session.readingTarget(),
-        handler,
-        peers: () => vpnDirectory.peers(),
-        claim: (input) => privateConnections.claim(input, session.readingTarget()),
-      });
-      console.log(
-        JSON.stringify({
-          service: 'host-agent-discovery',
-          address: direct.server.address(),
-          pagePath: direct.pagePath,
-        }),
-      );
-    } catch {
-      console.error(
-        'Host direct discovery unavailable; check private TLS files, OpenSSL and discovery port. Existing Host routes remain active.',
-      );
-    }
-  }
+    (mode === 'desktop-runtime' && process.env.HOST_AGENT_DISCOVERY !== '0');
+  const directRecovery = discoveryEnabled
+    ? new DirectDiscoveryRecovery(
+        () =>
+          startDirectDiscovery({
+            directory,
+            name: process.env.HOST_AGENT_NAME ?? 'Codex Host',
+            token,
+            target: () => session.readingTarget(),
+            handler,
+            peers: () => vpnDirectory.peers(),
+            claim: (input) => privateConnections.claim(input, session.readingTarget()),
+          }),
+        (value) => {
+          direct = value;
+          console.log(
+            JSON.stringify({
+              service: 'host-agent-discovery',
+              address: direct.server.address(),
+              pagePath: direct.pagePath,
+            }),
+          );
+        },
+        (error, attempt) => {
+          appendRuntimeDiagnostic(
+            directory,
+            {
+              scope: 'direct-discovery',
+              stage: 'startup',
+              hostId: session.readingTarget().hostId,
+              attempt,
+            },
+            error,
+          );
+          const code = (error as NodeJS.ErrnoException)?.code;
+          console.error(
+            JSON.stringify({
+              diagnostic: 'host-runtime-failure',
+              scope: 'direct-discovery',
+              stage: 'startup',
+              attempt,
+              code:
+                typeof code === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : undefined,
+            }),
+          );
+        },
+      )
+    : undefined;
   const close = () => {
     process.removeListener('SIGINT', close);
     process.removeListener('SIGTERM', close);
@@ -1327,14 +1604,18 @@ export async function startRuntimeServer() {
     let failure: unknown;
     clearInterval(voiceExpiryTimer);
     for (const dispose of [
+      () => projectGit.close(),
       unsubscribeNotifications,
       () => notifications.close(),
-      () => direct?.close(),
+      () => directRecovery?.close(),
       () => workspaceView?.close(),
       () => chatActions?.close(),
       () => desktopTranscription?.close(),
       () => suggestionObserver.close(),
       () => session.close(),
+      () => {
+        void diagnostics.close();
+      },
       () => server.close(),
       () => server.closeAllConnections(),
     ]) {
@@ -1348,5 +1629,14 @@ export async function startRuntimeServer() {
   };
   process.once('SIGINT', close);
   process.once('SIGTERM', close);
-  return { server, session, close, direct };
+  await directRecovery?.start();
+  return {
+    server,
+    session,
+    close,
+    diagnostics,
+    get direct() {
+      return direct;
+    },
+  };
 }

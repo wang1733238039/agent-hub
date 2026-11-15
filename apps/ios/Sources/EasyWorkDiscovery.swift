@@ -6,18 +6,23 @@ import SwiftUI
 import VisionKit
 
 @MainActor final class EasyWorkDiscovery: NSObject, ObservableObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
-  struct Host: Identifiable { var id: String; var name: String; var endpoint: String; var knownClientId: String? = nil; var detail: String? = nil; var deviceId: String? = nil }
+  struct Host: Identifiable {
+    var id: String; var name: String; var endpoint: String; var knownClientId: String? = nil; var detail: String? = nil; var deviceId: String? = nil
+    var address: String { URLComponents(string: endpoint).map { ($0.host ?? endpoint) + ($0.port.map { ":\($0)" } ?? "") } ?? endpoint }
+  }
   @Published var hosts: [Host] = []
   private let browser = NetServiceBrowser()
   private var services: [NetService] = []
   private var searching = false
   private var localHosts: [Host] = []
+  private var probes: [String: Task<Void, Never>] = [:]
+  private var generation = UUID()
   private var knownSubscription: AnyCancellable?
   private var vpnSubscription: AnyCancellable?
   func start() { guard !searching else { return }; searching = true; knownSubscription = EasyWorkKnownHosts.shared.$hosts.receive(on: RunLoop.main).sink { [weak self] _ in self?.rebuild() }; vpnSubscription = VPNHostDiscovery.shared.$easyworkHosts.receive(on: RunLoop.main).sink { [weak self] _ in self?.rebuild() }; rebuild(); browser.schedule(in: .main, forMode: .common); browser.delegate = self; browser.searchForServices(ofType: "_easywork-host._tcp.", inDomain: "local.") }
-  func stop() { browser.stop(); services.forEach { $0.stop() }; services.removeAll(); localHosts.removeAll(); hosts.removeAll(); knownSubscription = nil; vpnSubscription = nil; searching = false }
-  func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) { services.append(service); service.delegate = self; service.resolve(withTimeout: 5) }
-  func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) { localHosts.removeAll { $0.id == service.name }; services.removeAll { $0 == service }; rebuild() }
+  func stop() { searching = false; generation = UUID(); probes.values.forEach { $0.cancel() }; probes.removeAll(); browser.stop(); services.forEach { $0.stop() }; services.removeAll(); localHosts.removeAll(); hosts.removeAll(); knownSubscription = nil; vpnSubscription = nil }
+  func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) { guard services.count < 32, !services.contains(service) else { return }; services.append(service); service.delegate = self; service.resolve(withTimeout: 5) }
+  func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) { probes.removeValue(forKey: service.name)?.cancel(); localHosts.removeAll { $0.id == service.name }; services.removeAll { $0 == service }; rebuild() }
   func netServiceDidResolveAddress(_ sender: NetService) {
     guard searching, let resolvedHost = sender.hostName, sender.port > 0 else { return }
     // Keep Bonjour's address within the existing .local transport policy.
@@ -28,6 +33,20 @@ import VisionKit
     localHosts.append(Host(id: sender.name, name: sender.name, endpoint: endpoint, deviceId: deviceId))
     EasyWorkKnownHosts.shared.offerBonjour(endpoint: endpoint, deviceId: deviceId)
     rebuild()
+    // Public display metadata is read-only. It must not create a device binding.
+    let epoch = generation
+    probes.removeValue(forKey: sender.name)?.cancel()
+    let serviceName = sender.name
+    probes[serviceName] = Task { [weak self] in
+      guard let descriptor = try? await EasyWorkPairing.readHost(endpoint: endpoint), !Task.isCancelled,
+        let self, self.searching, self.generation == epoch,
+        deviceId == nil || descriptor.target.desktopDeviceId == deviceId,
+        let index = self.localHosts.firstIndex(where: { $0.id == serviceName && $0.endpoint == endpoint }) else { return }
+      self.localHosts[index].name = descriptor.displayName
+      self.localHosts[index].deviceId = descriptor.target.desktopDeviceId
+      self.localHosts[index].detail = descriptor.connectionMode == "automatic" ? nil : L10n.tr("需扫码配对")
+      self.rebuild()
+    }
   }
   private func rebuild() {
     guard searching else { return }
@@ -65,14 +84,23 @@ struct EasyWorkEndpointHint: Codable, Sendable {
   var networkKind: AgentConnectionCandidate.NetworkKind
 }
 struct EasyWorkHostDescriptor: Decodable, Sendable {
+  struct Computer: Decodable, Sendable { var name: String; var username: String?; var platform: String? }
   var version: Int
   var name: String
   var fingerprint: String
   var publicKey: String
   var target: EasyWorkTarget
   var connectionMode: String?
+  var deviceAuthorizationRefresh: String?
   var endpoints: [String]?
   var endpointHints: [EasyWorkEndpointHint]?
+  var computer: Computer?
+  var displayName: String {
+    if let computer {
+      return "EasyWork " + computer.name + (computer.username.flatMap { $0.isEmpty ? nil : " · " + $0 } ?? "")
+    }
+    return name.hasPrefix("EasyWork ") ? name : "EasyWork " + name
+  }
 }
 
 /// Foreground discovery and reconnects share one limit, including during path changes.
@@ -108,7 +136,7 @@ extension EasyWorkPairing {
     let mapped = isIPv6 && bytes.prefix(10).allSatisfy { $0 == 0 } && bytes[10] == 255 && bytes[11] == 255
     let mappedPrivate = mapped && (bytes[12] == 10 || bytes[12] == 127 || (bytes[12] == 100 && (64...127).contains(bytes[13])) || (bytes[12] == 172 && (16...31).contains(bytes[13])) || (bytes[12] == 192 && bytes[13] == 168) || (bytes[12] == 169 && bytes[13] == 254))
     let ipv6 = isIPv6 && (bytes.dropLast().allSatisfy { $0 == 0 } && bytes[15] == 1 || bytes[0] & 0xfe == 0xfc || bytes[0] == 0xfe && bytes[1] & 0xc0 == 0x80 || mappedPrivate)
-    guard url.scheme == "https", ipv4 || ipv6 || host == "localhost" || host.hasSuffix(".local") || host.hasSuffix(".ts.net") else { throw HostServiceError.message(L10n.tr("请填写局域网或 VPN 电脑地址")) }
+    guard url.scheme == "https", ipv4 || ipv6 || host == "localhost" || host.hasSuffix(".local") || (host.hasSuffix(".ts.net") || host.hasSuffix(".mesh.51easyai.com")) else { throw HostServiceError.message(L10n.tr("请填写局域网或 VPN 电脑地址")) }
     var normalized = URLComponents(url: url, resolvingAgainstBaseURL: false)!
     var canonicalHost = host
     if isIPv6 {
@@ -130,7 +158,7 @@ extension EasyWorkPairing {
       if result.contains(where: { $0.endpoint == normalized }) { continue }
       let hint = hints.first { (try? localEndpoint($0.endpoint).absoluteString) == normalized }
       let host = url.host ?? ""
-      let kind = hint?.networkKind ?? (host.hasSuffix(".ts.net") || host.hasPrefix("100.") || host.contains("fd7a:115c:a1e0:") ? .vpn : .unknown)
+      let kind = hint?.networkKind ?? ((host.hasSuffix(".ts.net") || host.hasSuffix(".mesh.51easyai.com")) || host.hasPrefix("100.") || host.contains("fd7a:115c:a1e0:") ? .vpn : .unknown)
       result.append(AgentConnectionCandidate(id: "direct-" + HostService.hash(Data(normalized.utf8)), transportId: "lan-wss", endpoint: normalized, peerFingerprint: fingerprint.lowercased(), networkKind: kind))
     }
     return Array(result.prefix(32))
@@ -191,7 +219,7 @@ extension EasyWorkPairing {
   static func connect(endpoint: String, name: String, offer: EasyWorkLANOffer) async throws -> (EasyWorkBinding, [AgentConnectionCandidate]) {
     let url = try localEndpoint(endpoint)
     let host = try await readHost(endpoint: endpoint, fingerprint: offer.fingerprint, target: offer.target, publicKey: offer.publicKey, timeout: 5)
-    guard host.connectionMode == "automatic" else { throw HostServiceError.message(L10n.tr("请更新电脑端后使用直接连接")) }
+    guard host.connectionMode == "automatic" else { throw HostServiceError.message(L10n.tr("这台电脑未提供自动直连，请扫描桌面配对二维码；更新 EasyWork 后可点选连接。")) }
     let identity = try EasyWorkIdentity.load()
     let configuration = URLSessionConfiguration.ephemeral
     configuration.timeoutIntervalForRequest = 15; configuration.timeoutIntervalForResource = 30
@@ -205,9 +233,10 @@ extension EasyWorkPairing {
     let candidates = try directCandidates([url.absoluteString] + (host.endpoints ?? []) + offer.endpoints, hints: (host.endpointHints ?? []) + (offer.endpointHints ?? []), fingerprint: host.fingerprint)
     return (binding, candidates)
   }
-  static func connectDiscovered(endpoint: String, name: String) async throws -> (EasyWorkBinding, [AgentConnectionCandidate]) {
+  static func connectDiscovered(endpoint: String, name: String, expectedDeviceId: String? = nil) async throws -> (EasyWorkBinding, [AgentConnectionCandidate]) {
     let host = try await readHost(endpoint: endpoint, timeout: 5)
-    guard host.connectionMode == "automatic" else { throw HostServiceError.message(L10n.tr("请更新电脑端后使用直接连接")) }
+    guard expectedDeviceId == nil || host.target.desktopDeviceId == expectedDeviceId else { throw HostServiceError.wrongHost }
+    guard host.connectionMode == "automatic" else { throw HostServiceError.message(L10n.tr("这台电脑未提供自动直连，请扫描桌面配对二维码；更新 EasyWork 后可点选连接。")) }
     let offer = EasyWorkLANOffer(endpoints: [endpoint], fingerprint: host.fingerprint, publicKey: host.publicKey, target: host.target, offerId: "", pairingCode: "", expiresAt: "", connectionMode: "automatic", endpointHints: host.endpointHints)
     return try await connect(endpoint: endpoint, name: name, offer: offer)
   }
@@ -224,7 +253,7 @@ extension EasyWorkPairing {
     var clientId: String; var candidate: AgentConnectionCandidate; var binding: EasyWorkBinding
   }
   private struct Result: Sendable {
-    var probe: Probe; var candidates: [AgentConnectionCandidate]
+    var probe: Probe; var candidates: [AgentConnectionCandidate]; var displayName: String
   }
   @Published private(set) var hosts: [Host] = []
   private weak var store: SessionStore?
@@ -269,7 +298,7 @@ extension EasyWorkPairing {
     }
     var probes: [Probe] = []
     for client in clients.sorted(by: { $0.id == store.client?.id && $1.id != store.client?.id }) {
-      guard let connection = client.agentConnection, connection.preference != .relayOnly,
+      guard client.migrationNeedsVerification != true, let connection = client.agentConnection, connection.preference != .relayOnly,
         let data = CredentialVault.token(connection.credentialRef).data(using: .utf8),
         let credential = try? JSONDecoder().decode(EasyWorkCredential.self, from: data),
         connection.target.account == credential.binding.target.account, connection.target.hostId == credential.binding.target.desktopDeviceId,
@@ -291,7 +320,7 @@ extension EasyWorkPairing {
           do {
             let host = try await EasyWorkPairing.readHost(endpoint: probe.candidate.endpoint, fingerprint: probe.candidate.peerFingerprint, target: probe.binding.target, publicKey: probe.binding.desktopPublicKey)
             let candidates = try EasyWorkPairing.directCandidates([probe.candidate.endpoint] + (host.endpoints ?? []), hints: host.endpointHints ?? [], fingerprint: host.fingerprint)
-            return Result(probe: probe, candidates: candidates)
+            return Result(probe: probe, candidates: candidates, displayName: host.displayName)
           } catch { return nil }
         }
       }
@@ -300,9 +329,10 @@ extension EasyWorkPairing {
         guard active, generation == scanGeneration, !Task.isCancelled else { group.cancelAll(); return }
         if let result, !found.contains(result.probe.clientId) {
           found.insert(result.probe.clientId)
-          if await store.updateEasyWorkCandidates(result.probe.clientId, binding: result.probe.binding, candidates: result.candidates) {
+          if await store.updateEasyWorkCandidates(result.probe.clientId, binding: result.probe.binding, candidates: result.candidates, displayName: result.displayName) {
             guard active, generation == scanGeneration, !Task.isCancelled else { group.cancelAll(); return }
             if let i = hosts.firstIndex(where: { $0.id == result.probe.clientId }) {
+              hosts[i].name = store.saved.clients.first { $0.id == result.probe.clientId }?.name ?? hosts[i].name
               hosts[i].reachable = true; hosts[i].endpoint = result.probe.candidate.endpoint
               hosts[i].networkKind = result.candidates.first?.networkKind
             }
@@ -317,7 +347,7 @@ extension EasyWorkPairing {
 }
 
 extension SessionStore {
-  func updateEasyWorkCandidates(_ clientId: String, binding: EasyWorkBinding, candidates: [AgentConnectionCandidate]) async -> Bool {
+  func updateEasyWorkCandidates(_ clientId: String, binding: EasyWorkBinding, candidates: [AgentConnectionCandidate], displayName: String? = nil) async -> Bool {
     guard let index = saved.clients.firstIndex(where: { $0.id == clientId }),
       var connection = saved.clients[index].agentConnection,
       let credential = try? JSONDecoder().decode(EasyWorkCredential.self, from: Data(CredentialVault.token(connection.credentialRef).utf8)),
@@ -328,7 +358,10 @@ extension SessionStore {
     let hints = (candidates + old).compactMap { value in value.networkKind.map { EasyWorkEndpointHint(endpoint: value.endpoint, networkKind: $0) } }
     guard let direct = try? EasyWorkPairing.directCandidates(candidates.map(\.endpoint) + old.map(\.endpoint), hints: hints, fingerprint: candidates.first?.peerFingerprint ?? "") else { return false }
     let merged = direct + connection.candidates.filter { $0.transportId != "lan-wss" }
-    if merged != connection.candidates {
+    let currentName = saved.clients[index].name
+    let refreshedName = (currentName == "EasyWork" || currentName.hasPrefix("EasyWork device-")) ? (displayName ?? currentName) : currentName
+    if merged != connection.candidates || refreshedName != currentName {
+      saved.clients[index].name = refreshedName
       connection.candidates = merged
       saved.clients[index].agentConnection = connection
       persist()

@@ -7,9 +7,81 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.SystemBarStyle
 import androidx.compose.runtime.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-class MainActivity : ComponentActivity() {
+open class MainActivity : ComponentActivity() {
+    companion object { const val P9_NOTIFICATION_COLD_HOOK = NativeChatNotificationColdStart.HOOK_VERSION }
+    private data class Ingress(val intent: android.content.Intent,val id: String)
+    private data class Retained(val session: MobileSession,val migration: NativeMigrationController,val ingress: java.util.ArrayDeque<Ingress>,val nativeRuntime: Boolean=true)
+    private var nativeRuntime=true
+    private var deferredIngress=java.util.ArrayDeque<Ingress>()
+    internal lateinit var migration: NativeMigrationController;private set
+    private var startupReady=false
+    private var started=false
+    private val migrationLifecycle=object:NativeMigrationLifecycle {
+        override val ready get()=nativeRuntime&&session.migrationReady
+        override val canImport get()=nativeRuntime&&session.migrationCanImport
+        override fun currentStorage()=session.migrationStorage
+        override suspend fun quiesce(operationId: String): NativeMigrationOwnerLease {
+            val original=session
+            var raw: NativeVoiceRawGate.Frozen?=null
+            try {
+                raw=original.freezeVoiceForMigration(operationId) // Refuse before stopping or pausing anything.
+                readNetworkMonitor.stop();original.discovery?.stop();original.easyWorkDiscovery?.stop()
+                return original.quiesceForMigration(operationId,raw)
+            }catch(failure: Throwable){
+                if(raw!=null){original.releaseVoiceForMigration(raw);original.configureChatNotifications(runtimeContext());if(started)startRuntime()}
+                drainMigrationIngress();throw failure
+            }
+        }
+        override suspend fun restore(lease: NativeMigrationOwnerLease,requiresExplicitEnrollment: Boolean) {
+            if(session.migrationStorage===lease.restoredStorage){session.resumeSelectionsAfterMigration();return}
+            check(session.migrationStorage===lease.storage)
+            // IO flag was checked before this boundary. The production coordinator also starts
+            // closed and verifies the durable preference on IO before any enrollment or recovery.
+            check(!isDestroyed&&!isChangingConfigurations)
+            check(lease.requiresExplicitEnrollment==requiresExplicitEnrollment)
+            check(session.ownsMigrationLease(lease))
+            val original=session
+            val fresh=restoreNativeMigrationSession(runtimeContext(),original,lease,
+                create={store->MobileSession(store).also {configurePrivateSession(it);it.migrationController=migration}},
+                beforeCommit={check(!isDestroyed&&!isChangingConfigurations)})
+            session=fresh
+            configureRuntime(fresh,fresh.migrationStorage,migrationRestore=true);fresh.resumeSelectionsAfterMigration();renderSession()
+            if(started)startRuntime();drainMigrationIngress()
+        }
+    }
+    private fun configureRuntime(value: MobileSession,storage: NativeSessionStorage,migrationRestore: Boolean=false) {
+        check(nativeRuntime) { "Local preference acceptance cannot enter migration runtime assembly" }
+        value.migrationController=migration
+        readNetworkMonitor=NativeReadNetworkMonitor(runtimeContext(),value::observeNetworkReadPath)
+        value.configureVoice(runtimeContext())
+        configureDiscovery(value,storage)
+        value.configureExternalInbox(runtimeContext(),migrationRestore);value.configurePhotoPicker(runtimeContext());value.configureCameraCapture(runtimeContext());value.configureDocumentPicker(runtimeContext());value.configureRecentPhotos(runtimeContext(),NativeChatNotificationColdStart.recentPhotoSource(runtimeContext(),value) ?: NativeRecentPhotos(runtimeContext()))
+        value.configureChatNotifications(runtimeContext())
+    }
+    private fun drainMigrationIngress() {
+        if(session.migrationIngressPaused)return
+        while(deferredIngress.isNotEmpty()){val original=deferredIngress.removeFirst();val next=externalOperationId
+            externalOperationId=original.id;try {receive(original.intent)}finally{externalOperationId=next}}
+    }
+    private fun startRuntime() {
+        if(session.migrationIngressPaused)return
+        session.enterForeground()
+        if(!nativeRuntime)return
+        session.bindStoredVoicePreferencesIfReady();session.bindStoredVoiceDiscardIfReady(runtimeContext())
+        readNetworkMonitor.start()
+        if(discoveryEnabled()){session.discovery?.start();session.easyWorkDiscovery?.start()}
+        else check(session.discovery==null&&session.easyWorkDiscovery==null)
+    }
     private var systemBarsDark: Boolean? = null
+    private var externalOperationId=java.util.UUID.randomUUID().toString()
+    private fun receive(intent: android.content.Intent) {
+        if(session.migrationIngressPaused){session.invalidateMigrationLease();if(deferredIngress.none {it.id==externalOperationId})deferredIngress.addLast(Ingress(android.content.Intent(intent),externalOperationId));return}
+        if(intent.action==NativeChatNotificationPlatform.ACTION) {session.chatNotifications?.receiveIntent(intent);return}
+        if(session.externalInbox?.receive(intent,externalOperationId)!=true)intent.data?.let(session::receiveLink)
+    }
     internal lateinit var readNetworkMonitor: NativeReadNetworkMonitor
         private set
     // Activity-owned native state is retained on rotation. Durable repository
@@ -18,19 +90,86 @@ class MainActivity : ComponentActivity() {
         private set
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        NativeReadAcceptanceTiming.configure(applicationContext,intent)
+        if(NativeNaturalLaunch.deferIfRequired(this,savedInstanceState!=null) { finishCreation(savedInstanceState); if(started)startRuntime() })return
+        finishCreation(savedInstanceState)
+    }
+    /** Application framework context stays intact; integrations may use a scoped installation. */
+    protected open fun runtimeContext(): android.content.Context=applicationContext
+    /** Fixed debug-fixture boundary; public intents and ordinary App builds cannot disable discovery. */
+    protected open fun runtimeDiscoveryEnabled(): Boolean=true
+    /** No replacement/factory: only the guarded private debug installation receives this hook. */
+    protected open fun configurePrivateRuntimeSession(value: MobileSession) {}
+    private fun discoveryEnabled(): Boolean {
+        val enabled=runtimeDiscoveryEnabled()
+        if(!enabled) {
+            val context=runtimeContext()
+            check(BuildConfig.DEBUG&&BuildConfig.APPLICATION_ID=="com.easyai.agenthub.android.acceptance"&&
+                packageName==BuildConfig.APPLICATION_ID&&context.packageName==BuildConfig.APPLICATION_ID&&
+                applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE!=0&&
+                context.applicationInfo.uid==android.os.Process.myUid())
+            check(context!==applicationContext&&context.applicationContext===context)
+        }
+        return enabled
+    }
+    private fun configurePrivateSession(value: MobileSession) {
+        if(discoveryEnabled())return
+        val storage=value.migrationStorage
+        configurePrivateRuntimeSession(value)
+        check(value.migrationStorage===storage&&value.discovery==null&&value.easyWorkDiscovery==null)
+    }
+    private fun configureDiscovery(value: MobileSession,storage: NativeSessionStorage) {
+        if(!discoveryEnabled()){check(value.discovery==null&&value.easyWorkDiscovery==null);return}
+        if(!NativeChatNotificationColdStart.bound(value)) {
+            value.discovery=CodexHostDiscovery(runtimeContext(),value,storage)
+            value.easyWorkDiscovery=EasyWorkDiscovery(runtimeContext(),value,storage)
+        }
+    }
+    protected class InitialSession(val session: MobileSession,val needsRestore: Boolean=true,val nativeRuntime: Boolean=true)
+    /** Debug fixtures can supply an isolated installation before the real lifecycle starts. */
+    protected open fun createInitialSession(context: android.content.Context): InitialSession {
+        NativeChatNotificationColdStart.noteDefaultStorage(context)
+        return InitialSession(MobileSession(NativeSessionStorage(context)))
+    }
+    private fun finishCreation(savedInstanceState: Bundle?) {
+        NativeReadAcceptanceTiming.configure(runtimeContext(),intent)
         @Suppress("DEPRECATION")
-        val retained = lastCustomNonConfigurationInstance as? MobileSession
-        val storage=NativeSessionStorage(applicationContext)
-        session = retained ?: MobileSession(storage)
-        readNetworkMonitor=NativeReadNetworkMonitor(applicationContext,session::observeNetworkReadPath)
-        session.configureVoice(applicationContext)
-        session.discovery = CodexHostDiscovery(applicationContext, session, storage)
-        session.easyWorkDiscovery=EasyWorkDiscovery(applicationContext,session,storage)
-        intent?.data?.let(session::receiveLink)
-        if (retained == null) session.restore()
+        val retainedState=lastCustomNonConfigurationInstance
+        val retained=(retainedState as? Retained)?.session ?: retainedState as? MobileSession
+        val cold=NativeChatNotificationColdStart.selectForActivity(runtimeContext(),intent,retained,savedInstanceState!=null)
+        migration=(retainedState as? Retained)?.migration ?: NativeMigrationController(runtimeContext())
+        val initial=if(retained==null&&cold?.session==null)createInitialSession(runtimeContext())else null
+        session=retained ?: cold?.session ?: checkNotNull(initial).session
+        nativeRuntime=(retainedState as? Retained)?.nativeRuntime ?: initial?.nativeRuntime ?: true
+        if(nativeRuntime)configurePrivateSession(session)
+        if(!nativeRuntime) {
+            // Only an independent debug acceptance subclass can request this finite UI surface.
+            check(BuildConfig.DEBUG&&BuildConfig.APPLICATION_ID=="com.easyai.agenthub.android.acceptance"&&
+                packageName==BuildConfig.APPLICATION_ID&&applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE!=0)
+            check(runtimeContext()!==applicationContext&&cold==null)
+        }
+        session.migrationController=migration
+        deferredIngress=(retainedState as? Retained)?.ingress ?: deferredIngress
+        val storage=session.migrationStorage
+        if(nativeRuntime) {
+        readNetworkMonitor=NativeReadNetworkMonitor(runtimeContext(),session::observeNetworkReadPath)
+        if(!session.migrationPaused)session.configureChatNotifications(runtimeContext())
+        session.configureVoice(runtimeContext())
+        configureDiscovery(session,storage)
+        }
+        externalOperationId=savedInstanceState?.getString("agentHubExternalOperationId")?.takeIf { value -> runCatching { java.util.UUID.fromString(value).toString()==value }.getOrDefault(false) } ?: externalOperationId
+        if(nativeRuntime) {
+        session.configureExternalInbox(runtimeContext());session.configurePhotoPicker(runtimeContext());session.configureCameraCapture(runtimeContext());session.configureDocumentPicker(runtimeContext());session.configureRecentPhotos(runtimeContext(),NativeChatNotificationColdStart.recentPhotoSource(runtimeContext(),session) ?: NativeRecentPhotos(runtimeContext()))
+        }
+        if(retained==null)intent?.let(::receive)
+        if (retained == null&&initial?.needsRestore!=false) session.restore()
         enableEdgeToEdge()
+        renderSession();migration.attach(migrationLifecycle)
+        startupReady=true;NativeNaturalLaunch.created(this)
+    }
+    private fun renderSession() {
         setContent {
+            NativeMigrationSystemHost(migration)
+            LaunchedEffect(session,session.restoring) { if(nativeRuntime){session.bindStoredVoicePreferencesIfReady();session.bindStoredVoiceDiscardIfReady(runtimeContext())} }
             AgentHubApp(session) { dark ->
                 if (systemBarsDark != dark) {
                     systemBarsDark = dark
@@ -44,9 +183,38 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent);setIntent(intent);intent.data?.let(session::receiveLink) }
-    override fun onStart() { super.onStart(); session.enterForeground();readNetworkMonitor.start(); session.discovery?.start();session.easyWorkDiscovery?.start() }
-    override fun onStop() { readNetworkMonitor.stop();session.discovery?.stop();session.easyWorkDiscovery?.stop(); session.leaveForeground(); super.onStop() }
+    internal data class AcceptanceSessionState(val session: MobileSession,val intent: android.content.Intent,val operationId: String)
+    /** Isolate acceptance storage while exercising this actual Activity/intent path unchanged. */
+    internal fun adoptSessionForAcceptance(replacement: MobileSession): AcceptanceSessionState {
+        check(packageName=="com.easyai.agenthub.android.acceptance"&&applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE!=0)
+        val old=AcceptanceSessionState(session,android.content.Intent(intent),externalOperationId)
+        activateAcceptanceSession(replacement)
+        return old
+    }
+    internal fun restoreSessionForAcceptance(previous: AcceptanceSessionState) {
+        check(packageName=="com.easyai.agenthub.android.acceptance"&&applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE!=0)
+        setIntent(android.content.Intent(previous.intent));externalOperationId=previous.operationId
+        activateAcceptanceSession(previous.session)
+    }
+    private fun activateAcceptanceSession(replacement: MobileSession) {
+        check(nativeRuntime) { "Local preference acceptance cannot replace its startup owner" }
+        check(!replacement.restoring)
+        readNetworkMonitor.stop();session.discovery?.stop();session.easyWorkDiscovery?.stop();session.leaveForeground()
+        session=replacement;session.migrationController=migration;session.configureVoice(runtimeContext());session.configureExternalInbox(runtimeContext());session.configurePhotoPicker(runtimeContext());session.configureCameraCapture(runtimeContext());session.configureDocumentPicker(runtimeContext());session.configureRecentPhotos(runtimeContext(),NativeChatNotificationColdStart.recentPhotoSource(runtimeContext(),session) ?: NativeRecentPhotos(runtimeContext()));session.configureChatNotifications(runtimeContext())
+        readNetworkMonitor=NativeReadNetworkMonitor(runtimeContext(),session::observeNetworkReadPath)
+        renderSession();session.enterForeground();session.bindStoredVoicePreferencesIfReady();session.bindStoredVoiceDiscardIfReady(runtimeContext());readNetworkMonitor.start()
+    }
+    override fun onNewIntent(intent: android.content.Intent) {
+        if(NativeNaturalLaunch.blocksIngress(this,startupReady)){super.onNewIntent(intent);NativeNaturalLaunch.rejectedIngress(this);return}
+        easyWorkConnectionAuthority(session).invalidate(); session.coverPanelNotices();
+        super.onNewIntent(intent);setIntent(intent);externalOperationId=java.util.UUID.randomUUID().toString();receive(intent);NativeChatNotificationColdStart.afterNewIntent(runtimeContext(),intent,session)
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("agentHubExternalOperationId",externalOperationId);super.onSaveInstanceState(outState)
+    }
+    override fun onStart() {super.onStart();started=true;if(startupReady)startRuntime()}
+    override fun onStop() {started=false;if(!startupReady){super.onStop();return}; if(::readNetworkMonitor.isInitialized)readNetworkMonitor.stop();session.discovery?.stop();session.easyWorkDiscovery?.stop(); session.leaveForeground(); super.onStop() }
     @Deprecated("Native retained state until the repository-backed ViewModel is introduced")
-    override fun onRetainCustomNonConfigurationInstance(): Any = session
+    override fun onRetainCustomNonConfigurationInstance(): Any? = if(NativeNaturalLaunch.canRetain(this,startupReady))Retained(session,migration,deferredIngress,nativeRuntime)else null
+    override fun onDestroy(){NativeNaturalLaunch.destroyed(this);if(startupReady)migration.detach(migrationLifecycle);super.onDestroy()}
 }

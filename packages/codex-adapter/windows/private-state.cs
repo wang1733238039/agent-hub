@@ -1,5 +1,9 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
@@ -15,57 +19,10 @@ internal static class PrivateState
     private static readonly object Gate = new object();
     private static bool executing;
 
-    // Both entry points execute exactly the same fresh kernel ACL checks.
+    // Bootstrap and both native entry points share this exact implementation.
     private static void Execute(string action, string requestedPath)
     {
-        string path = Path.GetFullPath(requestedPath);
-        if (!path.StartsWith(@"\\?\", StringComparison.Ordinal))
-            path = path.StartsWith(@"\\", StringComparison.Ordinal)
-                ? @"\\?\UNC\" + path.Substring(2)
-                : @"\\?\" + path;
-        if (action != "protect" && action != "protect-file" && action != "check")
-            throw new ArgumentException();
-        FileAttributes attributes = File.GetAttributes(path);
-        if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException();
-        bool directory = (attributes & FileAttributes.Directory) != 0;
-        SecurityIdentifier sid;
-        using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) sid = identity.User;
-        if (sid == null) throw new UnauthorizedAccessException();
-        string[] allowed = { sid.Value, "S-1-5-18", "S-1-5-32-544" };
-        if (action != "check")
-        {
-            if ((action == "protect") != directory) throw new IOException();
-            FileSystemSecurity acl = directory
-                ? (FileSystemSecurity)new DirectorySecurity()
-                : (FileSystemSecurity)new FileSecurity();
-            acl.SetOwner(sid);
-            acl.SetAccessRuleProtection(true, false);
-            foreach (string value in allowed)
-            {
-                SecurityIdentifier identity = new SecurityIdentifier(value);
-                FileSystemAccessRule rule = directory
-                    ? new FileSystemAccessRule(identity, FileSystemRights.FullControl,
-                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                        PropagationFlags.None, AccessControlType.Allow)
-                    : new FileSystemAccessRule(identity, FileSystemRights.FullControl,
-                        AccessControlType.Allow);
-                acl.AddAccessRule(rule);
-            }
-            if (directory) Directory.SetAccessControl(path, (DirectorySecurity)acl);
-            else File.SetAccessControl(path, (FileSecurity)acl);
-        }
-        FileSystemSecurity current = directory
-            ? (FileSystemSecurity)Directory.GetAccessControl(path)
-            : (FileSystemSecurity)File.GetAccessControl(path);
-        if (current.GetOwner(typeof(SecurityIdentifier)).Value != sid.Value)
-            throw new UnauthorizedAccessException();
-        foreach (FileSystemAccessRule rule in
-            current.GetAccessRules(true, true, typeof(SecurityIdentifier)))
-        {
-            if (rule.AccessControlType == AccessControlType.Allow &&
-                Array.IndexOf(allowed, rule.IdentityReference.Value) < 0)
-                throw new UnauthorizedAccessException();
-        }
+        CodexManagePrivateStateSecurity.Execute(action, requestedPath);
     }
 
     private static string ReadFrame(Stream input)
@@ -99,6 +56,35 @@ internal static class PrivateState
         return path;
     }
 
+    private static string FailureResponse(Exception error)
+    {
+        string value = "UNSAFE_WINDOWS_PRIVATE_STATE:" + error.GetType().Name;
+        // Only fixed policy refusals cross the channel. Never serialize an
+        // arbitrary exception message, target path, account or file content.
+        if (error is UnauthorizedAccessException)
+        {
+            string refusal = null;
+            switch (error.Message)
+            {
+                case "WRONG_FILE_OWNER": refusal = "owner-check"; break;
+                case "NULL_PRIVATE_DACL": refusal = "dacl-presence-check"; break;
+                case "UNKNOWN_PRIVATE_ACE": refusal = "dacl-ace-type-check"; break;
+                case "SHARED_PRIVATE_FILE": refusal = "dacl-allow-subject-check"; break;
+                case "UNPROTECTED_PRIVATE_DACL": refusal = "dacl-protection-check"; break;
+            }
+            if (refusal != null)
+            {
+                value += ":" + refusal;
+                string owner = CodexManagePrivateStateSecurity.OwnerFailureEvidence(error);
+                return owner == null ? value : value + ":" + owner;
+            }
+        }
+        string step = error.Data["CodexManage.NativeStep"] as string;
+        if (step == "normalize-path" || step == "directory-attributes" || step == "directory-parent" ||
+            step == "directory-descriptor" || step == "create-directory" || step == "directory-protect") value += ":" + step;
+        return value;
+    }
+
     private static int Serve()
     {
         Console.InputEncoding = Utf8;
@@ -118,7 +104,8 @@ internal static class PrivateState
             int id;
             if (parts.Length != 4 || !Int32.TryParse(parts[0], out id) || id <= 0 ||
                 previous == Int32.MaxValue || id != previous + 1 || parts[0] != id.ToString() ||
-                (parts[1] != "protect" && parts[1] != "protect-file" && parts[1] != "check"))
+                (parts[1] != "protect" && parts[1] != "protect-file" && parts[1] != "check" &&
+                 parts[1] != "create-directory" && parts[1] != "create-file" && parts[1] != "release-file"))
                 throw new ArgumentException();
             lock (Gate)
             {
@@ -134,12 +121,12 @@ internal static class PrivateState
                     string path = DecodePath(parts[2]), cwd = DecodePath(parts[3]);
                     // Relative paths retain the caller's current working directory.
                     Environment.CurrentDirectory = cwd;
-                    Execute(parts[1], path);
-                    response = "PRIVATE_STATE_OK";
+                    if (parts[1] == "create-file") response = CodexManagePrivateStateSecurity.CreatePrivateFileReceipt(path);
+                    else { Execute(parts[1], path); response = "PRIVATE_STATE_OK"; }
                 }
                 catch (Exception error)
                 {
-                    response = "UNSAFE_WINDOWS_PRIVATE_STATE:" + error.GetType().Name;
+                    response = FailureResponse(error);
                 }
                 lock (Gate)
                 {
@@ -159,20 +146,546 @@ internal static class PrivateState
     {
         try
         {
-            // Framework 4.6.2+ supports extended paths; older application
-            // targeting defaults must not reintroduce the 260-character limit.
-            AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
-            AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
+            System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(CodexManagePrivateStateSecurity).TypeHandle);
             if (args.Length == 1 && args[0] == "serve") return Serve();
             if (args.Length != 2) throw new ArgumentException();
-            Execute(args[0], args[1]);
-            Console.Out.WriteLine("PRIVATE_STATE_OK");
+            if (args[0] == "create-file") Console.Out.WriteLine(CodexManagePrivateStateSecurity.CreatePrivateFileReceipt(args[1]));
+            else { Execute(args[0], args[1]); Console.Out.WriteLine("PRIVATE_STATE_OK"); }
             return 0;
         }
         catch (Exception error)
         {
-            Console.Error.WriteLine("UNSAFE_WINDOWS_PRIVATE_STATE:" + error.GetType().Name);
+            Console.Error.WriteLine(FailureResponse(error));
             return 1;
+        }
+    }
+}
+
+// Loaded by the bootstrap PowerShell script and compiled into the native worker.
+// No privilege adjustment, owner takeover or SACL read/write is performed.
+public static partial class CodexManagePrivateStateSecurity
+{
+    private const uint ReadControl = 0x00020000, WriteDac = 0x00040000;
+    private const uint FileReadData = 0x00000001;
+    private const uint OwnerInformation = 1, DaclInformation = 4;
+    private const uint ProtectedDaclInformation = 0x80000000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes
+    {
+        public int Length;
+        public IntPtr Descriptor;
+        [MarshalAs(UnmanagedType.Bool)] public bool Inherit;
+    }
+    [DllImport("kernel32.dll", EntryPoint = "CreateDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateOwnedDirectory(string path, ref SecurityAttributes security);
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateOwnedFile(string path, uint access, uint share,
+        ref SecurityAttributes security, uint creation, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetFullPathNameW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern uint NativeFullPath(string path, uint length, StringBuilder buffer, IntPtr filePart);
+    [DllImport("kernel32.dll", EntryPoint = "GetFileAttributesW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern uint NativeAttributes(string path);
+
+    // PowerShell may have already cached Framework legacy path switches before
+    // Add-Type. Do not send extended paths through BCL path normalization/IO.
+    private static string FullPath(string path)
+    {
+        try
+        {
+            if (String.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0) throw new ArgumentException();
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) path = @"\\" + path.Substring(8);
+            else if (path.StartsWith(@"\\?\", StringComparison.Ordinal))
+            {
+                if (path.Length < 7 || !Char.IsLetter(path[4]) || path[5] != ':' ||
+                    (path[6] != '\\' && path[6] != '/')) throw new ArgumentException();
+                path = path.Substring(4);
+            }
+            var buffer = new StringBuilder(32768);
+            uint size = NativeFullPath(path, (uint)buffer.Capacity, buffer, IntPtr.Zero);
+            if (size == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (size >= buffer.Capacity) throw new PathTooLongException();
+            path = buffer.ToString();
+            return path.StartsWith(@"\\", StringComparison.Ordinal)
+                ? @"\\?\UNC\" + path.Substring(2) : @"\\?\" + path;
+        }
+        catch (Exception error) { MarkStep(error, "normalize-path"); throw; }
+    }
+    private static string ParentDirectory(string path)
+    {
+        int root;
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+        {
+            int server = path.IndexOf('\\', 8);
+            if (server <= 8) throw new IOException();
+            int share = path.IndexOf('\\', server + 1);
+            root = share < 0 ? path.Length : share + 1;
+        }
+        else if (path.Length >= 7 && path[5] == ':' && path[6] == '\\') root = 7;
+        else throw new IOException();
+        int end = path.Length;
+        while (end > root && path[end - 1] == '\\') end--;
+        if (end <= root) return null;
+        int separator = path.LastIndexOf('\\', end - 1);
+        return path.Substring(0, Math.Max(root, separator));
+    }
+    private static void MarkStep(Exception error, string step)
+    {
+        if (!error.Data.Contains("CodexManage.NativeStep")) error.Data["CodexManage.NativeStep"] = step;
+    }
+    private static byte[] NewDescriptor(bool directory)
+    {
+        SecurityIdentifier user;
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) user = identity.User;
+        if (user == null) throw new UnauthorizedAccessException();
+        FileSystemSecurity security = directory
+            ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+        // This owner is supplied only to CREATE_NEW/CreateDirectory, never applied
+        // to an existing object or inferred from the token's default Owner group.
+        security.SetOwner(user);
+        security.SetAccessRuleProtection(true, false);
+        foreach (string value in new[] { user.Value, "S-1-5-18", "S-1-5-32-544" })
+        {
+            var sid = new SecurityIdentifier(value);
+            security.AddAccessRule(directory
+                ? new FileSystemAccessRule(sid, FileSystemRights.FullControl,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None, AccessControlType.Allow)
+                : new FileSystemAccessRule(sid, FileSystemRights.FullControl, AccessControlType.Allow));
+        }
+        return security.GetSecurityDescriptorBinaryForm();
+    }
+    private static void EnsureDirectory(string path, bool target)
+    {
+        string step = "directory-attributes";
+        try
+        {
+            // Ancestors remain namespace only; never change an existing owner.
+            uint attributes = NativeAttributes(path);
+            if (attributes != UInt32.MaxValue)
+            {
+                if ((attributes & (uint)FileAttributes.ReparsePoint) != 0 ||
+                    (attributes & (uint)FileAttributes.Directory) == 0) throw new IOException();
+                step = "directory-protect";
+                if (target) Execute("protect", path);
+                return;
+            }
+            int missing = Marshal.GetLastWin32Error();
+            if (missing != 2 && missing != 3) throw new Win32Exception(missing);
+            step = "directory-parent";
+            string parent = ParentDirectory(path);
+            if (String.IsNullOrEmpty(parent) || parent == path) throw new IOException();
+            EnsureDirectory(parent, false);
+            step = "directory-descriptor";
+            GCHandle pinned = GCHandle.Alloc(NewDescriptor(true), GCHandleType.Pinned);
+            try
+            {
+                var security = new SecurityAttributes { Length = Marshal.SizeOf(typeof(SecurityAttributes)),
+                    Descriptor = pinned.AddrOfPinnedObject(), Inherit = false };
+                step = "create-directory";
+                if (!CreateOwnedDirectory(path, ref security))
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    if (error != 183) throw new Win32Exception(error);
+                    step = "directory-protect";
+                    Execute(target ? "protect" : "check", path);
+                }
+                else { step = "directory-protect"; Execute("protect", path); }
+            }
+            finally { pinned.Free(); }
+        }
+        catch (Exception error) { MarkStep(error, step); throw; }
+    }
+    private sealed class PrivateStateAlreadyExistsException : IOException { }
+
+    private static string FileIdentity(SafeFileHandle file)
+    {
+        FileInformation info;
+        if (!GetFileInformationByHandle(file, out info)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if ((info.Attributes & (uint)(FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+            throw new IOException();
+        ulong index = ((ulong)info.IndexHigh << 32) | info.IndexLow;
+        return info.Volume.ToString("x8", System.Globalization.CultureInfo.InvariantCulture) + ":" +
+            index.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private enum PrivateFilePurpose { NodeHandoff, NativeRename, CompilerOutput }
+    private static SafeFileHandle CreatePrivateFileHandle(string path, bool rename = false)
+    {
+        return CreatePrivateFileHandleForPurpose(path,
+            rename ? PrivateFilePurpose.NativeRename : PrivateFilePurpose.NodeHandoff);
+    }
+    private static SafeFileHandle CreatePrivateFileHandleForPurpose(string path, PrivateFilePurpose purpose)
+    {
+        uint access = ReadControl | 0x80u;
+        switch (purpose)
+        {
+            // Node's creation lease must actually participate in sharing checks.
+            case PrivateFilePurpose.NodeHandoff: access |= FileReadData; break;
+            case PrivateFilePurpose.NativeRename: access |= 0x40000000u | 0x00010000u; break;
+            // csc opens A separately. This reservation pins A's identity, not
+            // its pathname; it must not impose Node's data-access share check.
+            case PrivateFilePurpose.CompilerOutput: break;
+            default: throw new ArgumentOutOfRangeException("purpose");
+        }
+        path = FullPath(path);
+        Execute("check", ParentDirectory(path));
+        GCHandle pinned = GCHandle.Alloc(NewDescriptor(false), GCHandleType.Pinned);
+        SafeFileHandle file = null;
+        try
+        {
+            var security = new SecurityAttributes { Length = Marshal.SizeOf(typeof(SecurityAttributes)),
+                Descriptor = pinned.AddrOfPinnedObject(), Inherit = false };
+            file = CreateOwnedFile(path, access,
+                3, ref security, 1, 0x00200000u, IntPtr.Zero);
+            if (file.IsInvalid) {
+                int error = Marshal.GetLastWin32Error();
+                if (error == 80 || error == 183) throw new PrivateStateAlreadyExistsException();
+                throw new Win32Exception(error);
+            }
+            RawSecurityDescriptor created = ReadSecurity(file);
+            SecurityIdentifier user;
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) user = identity.User;
+            CheckRetainedOwner(file, null, created, user, "create-file", path);
+            CheckAccess(created, new[] { user.Value, "S-1-5-18", "S-1-5-32-544" });
+            if ((created.ControlFlags & ControlFlags.DiscretionaryAclProtected) == 0)
+                throw new UnauthorizedAccessException("UNPROTECTED_PRIVATE_DACL");
+            FileIdentity(file); // Prove type and identity through this very handle.
+            return file;
+        }
+        catch { if (file != null) file.Dispose(); throw; }
+        finally { pinned.Free(); }
+    }
+
+    private static readonly Dictionary<string, SafeFileHandle> CreationLeases = new Dictionary<string, SafeFileHandle>();
+    public static string CreatePrivateFileReceipt(string path)
+    {
+        // Keep A alive and prohibit delete/rename until Node has opened its FD.
+        // Bounded leases are channel-local and disappear with native EOF/exit.
+        lock (CreationLeases)
+        {
+            if (CreationLeases.Count >= 64) throw new IOException();
+            SafeFileHandle file = CreatePrivateFileHandle(path);
+            try {
+                string identity = FileIdentity(file), token = Guid.NewGuid().ToString("N");
+                CreationLeases.Add(token, file);
+                return "PRIVATE_STATE_CREATED:" + token + ":" + identity;
+            }
+            catch { file.Dispose(); throw; }
+        }
+    }
+    private static void ReleasePrivateFile(string token)
+    {
+        Guid parsed;
+        if (token == null || token.Length != 32 || !Guid.TryParseExact(token, "N", out parsed)) throw new ArgumentException();
+        lock (CreationLeases) {
+            SafeFileHandle file;
+            if (!CreationLeases.TryGetValue(token, out file)) throw new UnauthorizedAccessException();
+            CreationLeases.Remove(token);
+            file.Dispose();
+        }
+    }
+    private static void CreatePrivateFile(string path) { CreatePrivateFileReceipt(path); }
+
+    static CodexManagePrivateStateSecurity()
+    {
+        // Also run when PowerShell loads this class without entering Main.
+        AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
+        AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string path, uint access, uint share,
+        IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInformation info);
+    [DllImport("advapi32.dll")]
+    private static extern uint GetSecurityInfo(SafeFileHandle file, int type, uint sections,
+        out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll")]
+    private static extern uint SetSecurityInfo(SafeFileHandle file, int type, uint sections,
+        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("advapi32.dll")]
+    private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileInformation
+    {
+        public uint Attributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME Creation, Access, Write;
+        public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+
+    private static RawSecurityDescriptor ReadSecurity(SafeFileHandle file)
+    {
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint error = GetSecurityInfo(file, 1, OwnerInformation | DaclInformation,
+            out owner, out group, out dacl, out sacl, out descriptor);
+        if (error != 0) throw new Win32Exception((int)error);
+        try
+        {
+            byte[] bytes = new byte[checked((int)GetSecurityDescriptorLength(descriptor))];
+            Marshal.Copy(descriptor, bytes, 0, bytes.Length);
+            return new RawSecurityDescriptor(bytes, 0);
+        }
+        finally { LocalFree(descriptor); }
+    }
+
+    private static void CheckOwner(RawSecurityDescriptor current, SecurityIdentifier sid)
+    {
+        if (current.Owner == null || !current.Owner.Equals(sid))
+            throw new UnauthorizedAccessException("WRONG_FILE_OWNER");
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "GetCurrentProcessId")]
+    private static extern uint OwnerEvidenceProcessId();
+    [DllImport("kernel32.dll", EntryPoint = "GetCurrentProcess")]
+    private static extern IntPtr OwnerEvidenceProcess();
+    [DllImport("kernel32.dll", EntryPoint = "GetProcessTimes", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OwnerEvidenceProcessTimes(IntPtr process, out long creation,
+        out long exit, out long kernel, out long user);
+    [DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    private static extern uint OwnerEvidenceFinalPath(SafeFileHandle file, StringBuilder path,
+        uint size, uint flags);
+
+    // Framework Exception.Data rejects non-serializable values at assignment.
+    // This private value contains only the bounded frame, never native handles.
+    // Arbitrary exception Data/Message is still never serialized by the protocol.
+    [Serializable]
+    private sealed class OwnerEvidence
+    {
+        internal readonly string Frame;
+        internal OwnerEvidence(string frame) { Frame = frame; }
+    }
+
+    private static void AttachOwnerEvidence(Exception error, string frame)
+    {
+        try { error.Data["CodexManage.OwnerEvidence"] = new OwnerEvidence(frame); }
+        catch
+        {
+            // Diagnostic attachment must not replace the original owner refusal.
+            // An absent frame is reported as not-emitted, never as an acceptance.
+        }
+    }
+
+    private static string OwnerHash(string text)
+    {
+        using (var hash = System.Security.Cryptography.SHA256.Create())
+            return BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(text)))
+                .Replace("-", "").ToLowerInvariant();
+    }
+
+    private static string OwnerPathHash(string path)
+    {
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            path = @"\\" + path.Substring(8);
+        else if (path.StartsWith(@"\\?\", StringComparison.Ordinal)) path = path.Substring(4);
+        return OwnerHash(path.Replace('/', '\\').ToLowerInvariant());
+    }
+
+    public static string OwnerFailureEvidence(Exception error)
+    {
+        if (!(error is UnauthorizedAccessException)) return null;
+        try
+        {
+            if (error.Message != "WRONG_FILE_OWNER") return null;
+            var values = error.Data;
+            // Some Framework IDictionary adapters throw for a missing key.
+            // Metadata access itself is optional and must preserve the refusal.
+            if (values == null || !values.Contains("CodexManage.OwnerEvidence")) return null;
+            var value = values["CodexManage.OwnerEvidence"] as OwnerEvidence;
+            return value == null ? null : value.Frame;
+        }
+        catch { return null; }
+    }
+
+    private static string OwnerFailureType(Exception error)
+    {
+        if (error is Win32Exception) return "Win32Exception";
+        if (error is UnauthorizedAccessException) return "UnauthorizedAccessException";
+        if (error is System.Security.Cryptography.CryptographicException) return "CryptographicException";
+        if (error is DllNotFoundException) return "DllNotFoundException";
+        if (error is EntryPointNotFoundException) return "EntryPointNotFoundException";
+        if (error is System.Security.SecurityException) return "SecurityException";
+        if (error is ArgumentException) return "ArgumentException";
+        return "Exception";
+    }
+
+    // Collect independently: an optional Win32 or hash failure must not erase
+    // all other facts or hide why evidence is partial. No policy decision uses it.
+    private static string OwnerPart(Func<string> read, string stage, ref string failedStage,
+        ref string failedType)
+    {
+        try { return read() ?? "-"; }
+        catch (Exception error)
+        {
+            if (failedStage == "none") { failedStage = stage; failedType = OwnerFailureType(error); }
+            return "-";
+        }
+    }
+
+    private static void CheckRetainedOwner(SafeFileHandle file, FileInformation? observed,
+        RawSecurityDescriptor current, SecurityIdentifier sid, string action, string path)
+    {
+        try { CheckOwner(current, sid); }
+        catch (UnauthorizedAccessException error)
+        {
+            if (error.Message == "WRONG_FILE_OWNER")
+            {
+                string stage = "none", type = "none";
+                string pid = OwnerPart(() => OwnerEvidenceProcessId().ToString(
+                    System.Globalization.CultureInfo.InvariantCulture), "process-id", ref stage, ref type);
+                string started = OwnerPart(() => {
+                    long creation, exit, kernel, user;
+                    if (!OwnerEvidenceProcessTimes(OwnerEvidenceProcess(), out creation, out exit,
+                        out kernel, out user)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    return creation > 0 ? creation.ToString(System.Globalization.CultureInfo.InvariantCulture) : "-";
+                }, "process-times", ref stage, ref type);
+                string userHash = OwnerPart(() => sid == null ? null : OwnerHash(sid.Value),
+                    "user-hash", ref stage, ref type);
+                string defaultOwner = OwnerPart(() => {
+                    using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                        return identity.Owner == null ? null : OwnerHash(identity.Owner.Value);
+                }, "default-owner", ref stage, ref type);
+                string owner = OwnerPart(() => current.Owner == null ? null : OwnerHash(current.Owner.Value),
+                    "file-owner-hash", ref stage, ref type);
+                string requested = path == null ? "-" : OwnerPart(() => OwnerPathHash(path),
+                    "requested-path-hash", ref stage, ref type);
+                FileInformation? info = observed;
+                string fileId = OwnerPart(() => {
+                    FileInformation value;
+                    if (info.HasValue) value = info.Value;
+                    else {
+                        if (!GetFileInformationByHandle(file, out value)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                        info = value;
+                    }
+                    return OwnerHash(value.Volume.ToString("x8", System.Globalization.CultureInfo.InvariantCulture) + ":" +
+                        (((ulong)value.IndexHigh << 32) | value.IndexLow).ToString("x16", System.Globalization.CultureInfo.InvariantCulture));
+                }, "handle-identity-hash", ref stage, ref type);
+                string finalPath = OwnerPart(() => {
+                    var final = new StringBuilder(32768);
+                    uint length = OwnerEvidenceFinalPath(file, final, (uint)final.Capacity, 0);
+                    if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    if (length >= final.Capacity) throw new ArgumentException();
+                    return OwnerPathHash(final.ToString());
+                }, "final-path-hash", ref stage, ref type);
+                string kind = !info.HasValue ? "unknown" :
+                    (info.Value.Attributes & (uint)FileAttributes.Directory) != 0 ? "directory" : "file";
+                AttachOwnerEvidence(error, "OWNER2:" + String.Join("|", new[] {
+                    action, pid, started, userHash, defaultOwner, owner, requested, fileId, finalPath,
+                    kind, stage, type
+                }));
+            }
+            throw;
+        }
+    }
+
+    private static void CheckAccess(RawSecurityDescriptor current, string[] allowed)
+    {
+        // A NULL DACL grants everyone access; an empty enumeration is not proof.
+        if (current.DiscretionaryAcl == null ||
+            (current.ControlFlags & ControlFlags.DiscretionaryAclPresent) == 0)
+            throw new UnauthorizedAccessException("NULL_PRIVATE_DACL");
+        foreach (GenericAce entry in current.DiscretionaryAcl)
+        {
+            QualifiedAce ace = entry as QualifiedAce;
+            if (ace == null) throw new UnauthorizedAccessException("UNKNOWN_PRIVATE_ACE");
+            if (ace.AceQualifier == AceQualifier.AccessAllowed &&
+                Array.IndexOf(allowed, ace.SecurityIdentifier.Value) < 0)
+                throw new UnauthorizedAccessException("SHARED_PRIVATE_FILE");
+        }
+    }
+
+    private static bool MatchesProtectedDacl(RawSecurityDescriptor current, byte[] expected)
+    {
+        ControlFlags required = ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected;
+        if ((current.ControlFlags & required) != required || current.DiscretionaryAcl == null ||
+            current.DiscretionaryAcl.BinaryLength != expected.Length) return false;
+        byte[] actual = new byte[expected.Length];
+        current.DiscretionaryAcl.GetBinaryForm(actual, 0);
+        for (int index = 0; index < expected.Length; index++)
+            if (actual[index] != expected[index]) return false;
+        return true;
+    }
+
+    public static void Execute(string action, string requestedPath)
+    {
+        if (action == "release-file") { ReleasePrivateFile(requestedPath); return; }
+        if (action == "create-directory") { EnsureDirectory(FullPath(requestedPath), true); return; }
+        if (action == "create-file") { CreatePrivateFile(FullPath(requestedPath)); return; }
+        if (action != "protect" && action != "protect-file" && action != "check")
+            throw new ArgumentException();
+        string path = FullPath(requestedPath);
+        if (!path.StartsWith(@"\\?\", StringComparison.Ordinal))
+            path = path.StartsWith(@"\\", StringComparison.Ordinal)
+                ? @"\\?\UNC\" + path.Substring(2) : @"\\?\" + path;
+        // OPEN_REPARSE_POINT prevents following a redirected final component.
+        // Query and update the same retained handle, including the final check.
+        uint access = ReadControl | 0x80u | (action == "check" ? 0u : WriteDac);
+        using (SafeFileHandle file = CreateFile(path, access, 7, IntPtr.Zero, 3,
+            0x02000000u | 0x00200000u, IntPtr.Zero))
+        {
+            if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            FileInformation info;
+            if (!GetFileInformationByHandle(file, out info))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if ((info.Attributes & (uint)FileAttributes.ReparsePoint) != 0) throw new IOException();
+            bool directory = (info.Attributes & (uint)FileAttributes.Directory) != 0;
+            SecurityIdentifier sid;
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) sid = identity.User;
+            if (sid == null) throw new UnauthorizedAccessException();
+            string[] allowed = { sid.Value, "S-1-5-18", "S-1-5-32-544" };
+            RawSecurityDescriptor current = ReadSecurity(file);
+            CheckRetainedOwner(file, info, current, sid, action, path);
+            if (action != "check")
+            {
+                if ((action == "protect") != directory) throw new IOException();
+                // Construct only the DACL. Owner, group and audit data are untouched.
+                FileSystemSecurity acl = directory
+                    ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+                acl.SetAccessRuleProtection(true, false);
+                foreach (string value in allowed)
+                {
+                    var identity = new SecurityIdentifier(value);
+                    var rule = directory
+                        ? new FileSystemAccessRule(identity, FileSystemRights.FullControl,
+                            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                            PropagationFlags.None, AccessControlType.Allow)
+                        : new FileSystemAccessRule(identity, FileSystemRights.FullControl,
+                            AccessControlType.Allow);
+                    acl.AddAccessRule(rule);
+                }
+                RawAcl dacl = new RawSecurityDescriptor(acl.GetSecurityDescriptorBinaryForm(), 0).DiscretionaryAcl;
+                byte[] bytes = new byte[dacl.BinaryLength];
+                dacl.GetBinaryForm(bytes, 0);
+                // Reapplying an inheritable DACL can propagate to unprotected
+                // legacy children even when the parent already has these ACEs.
+                // Owner/type were checked on this handle; skip only an exact,
+                // already-protected DACL and retain the same final validation.
+                if (!MatchesProtectedDacl(current, bytes))
+                {
+                    GCHandle pinned = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+                    try
+                    {
+                        uint error = SetSecurityInfo(file, 1, DaclInformation | ProtectedDaclInformation,
+                            IntPtr.Zero, IntPtr.Zero, pinned.AddrOfPinnedObject(), IntPtr.Zero);
+                        if (error != 0) throw new Win32Exception((int)error);
+                    }
+                    finally { pinned.Free(); }
+                }
+                current = ReadSecurity(file);
+                CheckRetainedOwner(file, info, current, sid, action, path);
+                if ((current.ControlFlags & ControlFlags.DiscretionaryAclProtected) == 0)
+                    throw new UnauthorizedAccessException("UNPROTECTED_PRIVATE_DACL");
+            }
+            CheckAccess(current, allowed);
         }
     }
 }

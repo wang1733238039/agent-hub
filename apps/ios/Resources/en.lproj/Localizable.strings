@@ -591,7 +591,7 @@
 "所选照片格式暂不支持" = "Selected photo format unsupported";
 "手动探测" = "Manual probe";
 "手动连接" = "Manual connection";
-"手机 → 电脑 · 每个文件最多 20 MB。同名文件会保留独立副本。" = "Phone → Computer · Up to 20 MB per file. Files with the same name are kept as separate copies.";
+"手机 → 电脑 · 同名文件会保留独立副本。" = "Phone → Computer · Files with the same name are kept as separate copies.";
 "手机与电脑共用一套任务库。发现服务后，核对电脑上的实例信息和证书指纹，再点选连接。" = "Phone and computer share one task database. After discovering a service, verify its instance and certificate fingerprint on the computer, then tap to connect.";
 "手机主动停止" = "Stopped from phone";
 "手机保存的文件已变化，请保留原记录并重新选择文件。" = "The file saved on this phone changed. Keep the original record and select the file again.";
@@ -760,6 +760,7 @@
 "最终提交" = "Final commit";
 "最终提交引用" = "Final commit reference";
 "最近" = "Recent";
+"最近使用" = "Recently used";
 "最近投递：" = "Last delivery: ";
 "最近投递：%@" = "Last delivery: %@";
 "最高" = "Maximum";
@@ -1515,7 +1516,7 @@
 
 "手机上没有可打开此链接的应用。" = "No app on this phone can open this link.";
 
-"这是电脑上的本地文件，手机不能直接访问。请刷新对话；文件须存在、位于电脑授权目录内且不超过 20 MB，才能下载预览。" = "This file is on the computer and cannot be opened directly on your phone. Refresh the conversation. To download and preview it, the file must exist, be within the computer’s authorized directories, and be no larger than 20 MB.";
+"这是电脑上的本地文件，手机不能直接访问。请刷新对话；文件须存在且获得当前聊天的读取授权，才能下载预览。" = "This file is on the computer and cannot be opened directly on your phone. Refresh the conversation. To download and preview it, the file must exist and have read permission for this conversation.";
 
 "此网址指向电脑的本机地址，手机无法直接访问。请使用手机可连接的局域网或 VPN 网址。" = "This URL points to the computer’s loopback address. Use a LAN or VPN URL that your phone can reach.";
 
@@ -1622,15 +1623,6 @@
 
 "未取得这条消息对应的电脑或聊天，请重新打开原对话后重试。" = "The computer or chat for this message is unavailable. Reopen the original chat and retry.";
 
-"Host Key" = "Host Key";
-"请输入这台电脑的 Host Key" = "Enter the Host Key for this computer";
-"Host Key 不正确，请在电脑端核对后重试" = "Incorrect Host Key. Check it on the computer and try again.";
-"可扫描包含密钥的连接信息，或自动发现后输入 Host Key 授权。" = "Scan connection details containing the key, or discover a computer and enter its Host Key to authorize.";
-"自动查找同一网络的电脑，首次连接需输入电脑端的 Host Key 授权。" = "Find computers on the same network. Enter the computer’s Host Key to authorize the first connection.";
-"授权并连接" = "Authorize and connect";
-"首次连接授权" = "Authorize first connection";
-"请从这台电脑的私有密钥文件读取 Host Key。授权后将安全保存设备凭据，后续自动重连。" = "Read the Host Key from this computer’s private key file. After authorization, device credentials are stored securely for automatic reconnection.";
-"使用 Host Key 重新授权" = "Reauthorize with Host Key";
 
 "自动查找同一网络的电脑；需要密钥的电脑会在首次连接时要求输入 Host Key。" = "Find computers on the same network. Computers requiring a key ask for their Host Key on the first connection.";
 "预览最近图片" = "Preview recent photo";
@@ -1768,3 +1760,55 @@
 "已添加" = "Added";
 
 "图片" = "Image";
+
+"轻触停止录音" = "Tap to stop recording";
+"丢弃录音" = "Discard recording";
+"无法丢弃录音，请重试。" = "Unable to discard the recording. Please try again.";
+
+"输入消息，长按语音输入" = "Message or hold to speak";
+
+"长按语音输入" = "Touch and hold to start voice input";
+
+"录音未完成" = "Recording incomplete";
+"无限额" = "Unlimited";
+"暂不可用" = "Unavailable";
+"暂未提供额度" = "Usage unavailable";
+"缓存额度" = "Cached usage";
+"部分额度暂不可用" = "Some usage is unavailable";
+"缓存" = "Cached";
+"当前客户端额度" = "Current client usage";
+"更新时间" = "Updated";
+"百分比为已用用量，各窗口单独计算" = "Percentages show usage consumed; each window is independent";
+"重置时间" = "Resets";
+"适用范围" = "Applies to";
+"所有模型和功能" = "All models and features";
+"全部限制同时生效" = "All limits apply";
+"任一限制可用" = "Any limit may be available";
+"按服务端规则" = "Provider rules apply";
+"观察时间" = "Observed";
+
+"可视化" = "Visualization";
+
+"无法显示可视化" = "Unable to display visualization";
+
+"此可视化文件过大、编码不支持或无法读取，可保存原文件后查看。" = "This visualization is too large, uses an unsupported encoding, or cannot be read. Save the original file to view it.";
+
+"预览已中断，请关闭后重新打开。" = "The preview was interrupted. Close it and open it again.";
+
+"需扫码配对" = "Scan the desktop QR code to pair";
+
+"改用扫码连接" = "Connect with a QR code";
+
+"这台电脑未提供自动直连，请扫描桌面配对二维码；更新 EasyWork 后可点选连接。" = "This computer does not offer automatic connections. Scan its pairing QR code, or update EasyWork to connect by tapping.";
+
+"请选择非空的普通文件。" = "Choose a nonempty regular file.";
+
+"电脑当前版本的文件大小上限为 %@，请更新电脑端。" = "This computer version limits files to %@. Update the computer app.";
+
+"原操作已完成，当前修改尚未保存。" = "The original operation completed. Your current changes are not saved.";
+"对话名称" = "Conversation name";
+"未查到原批量归档记录，结果仍未确认；不会重新提交。" = "The original batch archive record was not found. Its result is still unconfirmed; it will not be submitted again.";
+"重命名" = "Rename";
+"原任务已变化或结束，追加未提交。" = "The original task changed or ended. Guidance was not submitted.";
+"子 Agent" = "Sub-agent";
+"等待子 Agent 更新…" = "Waiting for sub-agent updates…";

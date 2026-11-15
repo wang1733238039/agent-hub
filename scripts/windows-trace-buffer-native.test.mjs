@@ -86,7 +86,11 @@ function observeSource(source) {
       'BufferFixture.Record(actual); ',
     ],
     ['h=CreateFile(', 'BufferFixture.Open(); '],
-    ['var handle=CreateFile(', 'BufferFixture.AnchorOpen(); '],
+    [
+      'var handle=CreateFile(',
+      'BufferFixture.AnchorOpen(); ',
+      '    static Dictionary<string,NamespaceAnchor> OpenNamespaceAnchors(',
+    ],
     [
       '        try {\n        var results=new string[items.Length];',
       '        BufferFixture.AfterAnchors(root);\n',
@@ -94,16 +98,23 @@ function observeSource(source) {
     ['Info info; if(!GetFileInformationByHandle', 'BufferFixture.Info(); '],
     ['if(!GetFileInformationByHandle(h,out before))', 'BufferFixture.Info(); '],
     ['if(!GetFileInformationByHandle(h,out after)', 'BufferFixture.Info(); '],
-    ['if(GetSecurityInfo(', 'BufferFixture.Security(); '],
-    ['int n=stream.Read(', 'BufferFixture.Read();'],
+    ['if(GetSecurityInfo(', 'BufferFixture.Security(); ', '    static byte[] Security('],
+    ['int n=stream.Read(', 'BufferFixture.Read();', '    static string SnapshotWithAnchors('],
   ];
   let observed = source;
-  for (const [marker, hook] of hooks) {
-    assert.equal(observed.split(marker).length, 2, `Exactly one observation site: ${marker}`);
-    observed = observed.replace(
+  for (const [marker, hook, method] of hooks) {
+    // New producer/log helpers also call these Win32 APIs. Count only the
+    // legacy method under test without modifying or observing the new paths.
+    const start = method ? observed.indexOf(method) : 0;
+    const end = method ? observed.indexOf('\n    }', start) + 6 : observed.length;
+    assert(start >= 0 && end > start, 'Complete observation method: ' + method);
+    const section = observed.slice(start, end);
+    assert.equal(section.split(marker).length, 2, `Exactly one observation site: ${marker}`);
+    const instrumented = section.replace(
       marker,
       hook + (hook.startsWith('BufferFixture.Item(') ? '' : marker),
     );
+    observed = observed.slice(0, start) + instrumented + observed.slice(end);
   }
   return observed;
 }
@@ -115,19 +126,26 @@ test('Windows batch keeps private fresh opens, per-item guards and one-command n
   );
   const batch = source.indexOf('    static string SnapshotMany(');
   const dispatch = source.indexOf('        var anchors=items.Length>1');
+  const boundary = source.slice(
+    source.indexOf('// Fixed read-only trace boundary.'),
+    source.indexOf('    sealed class NamespaceAnchor'),
+  );
+  const pathExtension = boundary.indexOf('    internal static string ProducerPath(');
+  const inspect = boundary.indexOf('    static string Inspect(', pathExtension);
+  const fileExtension = boundary.indexOf('    // Reuse the trace reader', inspect);
+  assert(pathExtension > 0 && inspect > pathExtension && fileExtension > inspect);
+  // New producer-only helpers are tested separately. Keep the ORIGINAL ACL,
+  // canonical path and complete Inspect byte pin unchanged, including call sites.
+  const originalBoundary =
+    boundary.slice(0, pathExtension) + boundary.slice(inspect, fileExtension);
   assert.equal(
-    digest(
-      source.slice(
-        source.indexOf('// Fixed read-only trace boundary.'),
-        source.indexOf('    sealed class NamespaceAnchor'),
-      ),
-    ),
+    digest(originalBoundary),
     '5c73b89775c9086ce91bb8fffa10154db5f0e34b7b8ff2f52448155021adda0b',
     'Original ACL, path and complete Inspect functions remain byte-identical',
   );
   assert.equal(
     digest(source.slice(batch, dispatch)),
-    '2ce168db49330baf358110666222453efa8307e663d846e15c98d075bbad0059',
+    '6731c53137d08e767d8233a2b2db7fb3adb0f62df54f0fa3b130007e825f8720',
     'All request/response validation stays before any namespace capture',
   );
   assert.equal(
@@ -140,8 +158,36 @@ test('Windows batch keeps private fresh opens, per-item guards and one-command n
     '67050a2d0aef89221faad418bee52cf405ae707f678e4551ceb078d45222c43b',
     'Body and complete post-read guards remain unchanged',
   );
+  const wire = source.slice(source.indexOf('    static int Main'));
+  const additions = [
+    '            if(args.Length>0 && args[0]=="log-snapshot")return LogSnapshotCommand(args);\n',
+    // The independently guarded producer protocol has a separate dispatcher;
+    // removing only this exact addition must preserve the old wire fingerprint.
+    '            if(args.Length>0 && args[0]=="serve-producer")return ServeProducer(args);\n',
+    '                    else if(parts.Length==2 && parts[0]=="I") {\n                        string reply=json.Serialize(Producer(probe,parts[1]));if(Encoding.UTF8.GetByteCount(reply)>256)throw new ArgumentException();Console.WriteLine(reply);\n                    }\n',
+  ];
+  let legacyWire = wire;
+  for (const addition of additions) {
+    assert.equal(wire.split(addition).length, 2);
+    legacyWire = legacyWire.replace(addition, '');
+  }
+  const scoped =
+    '            using(var probe=new TraceProcess(Int32.Parse(args[2]),Int64.Parse(args[3]),args[4])) {';
+  assert.equal(wire.split(scoped).length, 2);
+  assert.equal(wire.split('            } return 0;\n        } catch').length, 2);
+  // Scoped disposal now covers exceptional exits as well; the original S/P,
+  // serve, error and flush publication bytes remain pinned independently.
+  legacyWire = legacyWire
+    .replace(
+      scoped,
+      '            var probe=new TraceProcess(Int32.Parse(args[2]),Int64.Parse(args[3]),args[4]);',
+    )
+    .replace(
+      '            } return 0;\n        } catch',
+      '            probe.Dispose(); return 0;\n        } catch',
+    );
   assert.equal(
-    digest(source.slice(source.indexOf('    static int Main'))),
+    digest(legacyWire),
     'f462c685ab354623b844e2ddf9823a14d45edeacd0b98a1d3a2292a4979b6e4c',
     'S/P/serve/error wire publication remains unchanged',
   );
@@ -395,6 +441,8 @@ test(
       ).toString('base64');
       for (const batchItems of [
         ...Array.from({ length: 8 }, (_, index) => items.slice(0, index + 1)),
+        Array.from({ length: 32 }, (_, index) => ({ ...items[index % items.length] })),
+        Array.from({ length: 64 }, () => ({ ...items[0] })),
         [
           { path: empty, maximum: 1 },
           { path: full, maximum: 16384 },
@@ -411,7 +459,16 @@ test(
         ).toString('base64');
         const batchValues = [];
         for (const version of ['old', 'new']) {
-          const result = run(binaries[version].observed, ['batch', root, batchRequest]);
+          const result =
+            count > 8
+              ? run(
+                  binaries[version].observed,
+                  ['batch', root, '--request-stdin'],
+                  5000,
+                  undefined,
+                  batchRequest,
+                )
+              : run(binaries[version].observed, ['batch', root, batchRequest]);
           assert.equal(result.status, 0);
           const observed = JSON.parse(result.stdout);
           assert.equal(observed.rejected, false);
@@ -441,6 +498,7 @@ test(
             ),
           );
           assertProof(observed, batchItems);
+          assert(observed.highWater <= 8, 'At most eight full native reads may overlap');
           if (count === 1) assert.equal(observed.highWater, 1);
           batchValues.push(batch);
         }
@@ -590,9 +648,9 @@ test(
           },
         ],
         [
-          'ninth item',
+          '65th item',
           (value) => {
-            value.items.push({ index: 8, ...items[0] });
+            value.items = Array.from({ length: 65 }, (_, index) => ({ ...items[0], index }));
           },
         ],
       ]) {

@@ -25,7 +25,6 @@ const identity = {
   userSid: 'fixture-sid',
   sameUser: true,
   sameSession: true,
-  trustedPublisher: true,
 };
 const version = '26.928.20755';
 const archive = () => {
@@ -134,18 +133,43 @@ try {
     ['./windows-desktop-service.mjs', 'scripts/windows-desktop-service.mjs'],
     ['./windows-desktop-recovery.mjs', 'scripts/windows-desktop-recovery.mjs'],
     ['./windows-desktop-worker.mjs', 'scripts/windows-desktop-worker.mjs'],
+    ['./windows-host-environment.mjs', 'scripts/windows-host-environment.mjs'],
+    [
+      './windows-response-suggestions-config.mjs',
+      'scripts/windows-response-suggestions-config.mjs',
+    ],
+    ['./windows-host-regular-layout.mjs', 'scripts/windows-host-regular-layout.mjs'],
+    ['./windows-host-regular-installed.mjs', 'scripts/windows-host-regular-installed.mjs'],
+    ['./windows-host-regular-runtime.mjs', 'scripts/windows-host-regular-runtime.mjs'],
+    ['./windows-host-regular-recovery.mjs', 'scripts/windows-host-regular-recovery.mjs'],
     ['./host-worker-supervisor.mjs', 'scripts/host-worker-supervisor.mjs'],
     [
       './fixtures/windows-private-state-boundary.mjs',
       'scripts/fixtures/windows-private-state-boundary.mjs',
     ],
     [
+      '../packages/codex-adapter/dist/diagnostic-events.js',
+      'packages/codex-adapter/dist/diagnostic-events.js',
+    ],
+    [
       '../packages/codex-adapter/dist/desktop-platform.js',
       'packages/codex-adapter/dist/desktop-platform.js',
     ],
     [
+      '../packages/codex-adapter/dist/desktop-response-config.js',
+      'packages/codex-adapter/dist/desktop-response-config.js',
+    ],
+    [
       '../packages/codex-adapter/dist/windows-process.js',
       'packages/codex-adapter/dist/windows-process.js',
+    ],
+    [
+      '../packages/codex-adapter/dist/desktop-private-state-native.js',
+      'packages/codex-adapter/dist/desktop-private-state-native.js',
+    ],
+    [
+      '../packages/codex-adapter/windows/private-state-compilation.cs',
+      'packages/codex-adapter/windows/private-state-compilation.cs',
     ],
     [
       '../packages/codex-adapter/windows/private-state.cs',
@@ -156,11 +180,27 @@ try {
       'packages/codex-adapter/windows/host-launcher.cs',
     ],
     [
+      '../packages/codex-adapter/windows/private-state-recovery.cs',
+      'packages/codex-adapter/windows/private-state-recovery.cs',
+    ],
+    [
       '../packages/codex-adapter/windows/private-state.ps1',
       'packages/codex-adapter/windows/private-state.ps1',
     ],
   ])
     await cp(new URL(from, import.meta.url), join(directory, to));
+  await cp(
+    new URL('../packages/codex-adapter/node_modules/smol-toml/', import.meta.url),
+    join(directory, 'packages/codex-adapter/node_modules/smol-toml'),
+    { recursive: true, dereference: true },
+  );
+  // Expose the real implementations used by the service without loading the runtime barrel.
+  await writeFile(
+    join(directory, 'packages/codex-adapter/dist/index.js'),
+    `export { assertPrivateFile, makePrivateDirectorySync, openPrivateFileSync, writePrivateFileSync } from './desktop-platform.js';
+export { inspectDesktopResponseConfigToml } from './desktop-response-config.js';
+`,
+  );
   // Exercise preload URL escaping as well as Windows drive-letter handling.
   const mock = join(directory, 'native fixture #%.mjs');
   const mockURL = pathToFileURL(mock).href;
@@ -170,6 +210,7 @@ try {
 import childProcess from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import fs from 'node:fs';
+import os from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import {installWindowsPrivateStateFixture} from './scripts/fixtures/windows-private-state-boundary.mjs';
@@ -181,6 +222,8 @@ assert.equal(process.env.LOCALAPPDATA, ${JSON.stringify(previousLocalData)}, 'No
 // Apply synthetic paths only after Node and its native crypto initialization are ready.
 process.env.LOCALAPPDATA = ${JSON.stringify(localData)};
 process.env.SystemRoot = ${JSON.stringify(systemRoot)};
+// Keep installation routing entirely inside this synthetic child fixture.
+os.homedir=()=>${JSON.stringify(join(directory, 'fixture-profile'))};
 Object.defineProperty(process, 'platform', {value:'win32'});
 const logicalRoot=join(process.env.LOCALAPPDATA,'CodexManage/native-helpers');
 const physicalRoot=join(process.env.LOCALAPPDATA,'Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/CodexManage/native-helpers');
@@ -188,7 +231,7 @@ const native=fs.realpathSync.native;
 if(process.env.FIXTURE_MSIX_REDIRECT==='1')fs.realpathSync.native=(path,...options)=>{
   if(typeof path==='string'&&path.startsWith(logicalRoot+sep)){
     const physical=join(physicalRoot,relative(logicalRoot,path));
-    fs.mkdirSync(dirname(physical),{recursive:true});fs.copyFileSync(path,physical);
+    fs.mkdirSync(dirname(physical),{recursive:true});if(!fs.existsSync(physical))fs.linkSync(path,physical);
     return native(physical,...options);
   }
   return native(path,...options);
@@ -196,16 +239,31 @@ if(process.env.FIXTURE_MSIX_REDIRECT==='1')fs.realpathSync.native=(path,...optio
 childProcess.execFileSync = (file, args, options) => {
   assert.equal(options.windowsHide, true, 'Native background helper allocated a console');
   if (file.endsWith('csc.exe')) {
-    writeFileSync(args.find(arg => arg.startsWith('/out:')).slice(5), 'synthetic launcher');
-    assert(args.includes('/target:winexe'));
-    return '';
+    assert.fail('Compiler must stay inside the Native preparation lease');
   }
   if (file.endsWith('private-state.exe')) return 'PRIVATE_STATE_OK';
   if (args.some(arg => arg.endsWith('private-state.ps1'))) {
     const action=args[args.indexOf('-Action')+1],path=args[args.indexOf('-Path')+1];
-    assert(['protect','protect-file','check'].includes(action));
+    assert(['protect','protect-file','check','create-directory','create-file','prepare-native','bootstrap-native'].includes(action));
+    if(action==='bootstrap-native')for(const flag of ['-BinaryPath','-PhysicalPath']){
+      const binary=args[args.indexOf(flag)+1],inside=relative(${JSON.stringify(directory)},binary);
+      assert(binary&&inside!=='..'&&!inside.startsWith('..'+sep),'Binary bootstrap escaped fixture root');
+      assert(fs.statSync(binary).isFile());
+    }
     const contained=relative(${JSON.stringify(directory)},path);
     assert(contained!=='..'&&!contained.startsWith('..'+sep),'Bootstrap escaped fixture root');
+    if(action==='prepare-native'){
+      const name=args[args.indexOf('-NativeName')+1],budget=Number(args[args.indexOf('-BudgetMs')+1]);
+      assert(['private-state','trace-state','host-launcher'].includes(name));
+      assert(budget>0&&budget<=options.timeout&&budget<=30000);
+      fs.mkdirSync(path,{recursive:true,mode:0o700});
+      const target=join(path,name+'.exe');
+      fs.writeFileSync(target,'synthetic launcher',{flag:'wx',mode:0o600});
+      const created=fs.lstatSync(target,{bigint:true});
+      return 'PRIVATE_STATE_NATIVE_READY:'+created.dev.toString(16).padStart(8,'0')+':'+created.ino.toString(16).padStart(16,'0');
+    }
+    if(action==='create-directory')fs.mkdirSync(path,{recursive:true,mode:0o700});
+    if(action==='create-file')fs.closeSync(fs.openSync(path,'wx',0o600));
     return 'PRIVATE_STATE_OK';
   }
   if (args.includes('inspect')) return ${JSON.stringify(JSON.stringify(identity))};
@@ -276,6 +334,8 @@ syncBuiltinESMExports();
     HOST_AGENT_PORT: '8822',
     CODEX_DESKTOP_SUGGESTION_OBSERVER: '1',
     CODEX_DESKTOP_SUGGESTION_TRACE_ROOT: join(directory, 'private-trace-fixture'),
+    CODEX_DESKTOP_TRACE_RETENTION: '1',
+    CODEX_DESKTOP_NATIVE_SUGGESTIONS_CONFIG: join(directory, 'native-suggestions.json'),
   });
   const savedPath = join(directory, '.local/desktop-runtime/windows-desktop.json');
   const saved = JSON.parse(await readFile(savedPath, 'utf8'));
@@ -306,6 +366,11 @@ syncBuiltinESMExports();
   assert.equal(after.environment.HOST_AGENT_NAME, 'Preserved PC');
   assert.equal(after.environment.HOST_AGENT_PORT, '8822');
   assert.equal(after.environment.CODEX_DESKTOP_SUGGESTION_OBSERVER, '1');
+  assert.equal(after.environment.CODEX_DESKTOP_TRACE_RETENTION, '1');
+  assert.equal(
+    after.environment.CODEX_DESKTOP_NATIVE_SUGGESTIONS_CONFIG,
+    join(directory, 'native-suggestions.json'),
+  );
   assert.equal(
     after.environment.CODEX_DESKTOP_SUGGESTION_TRACE_ROOT,
     join(directory, 'private-trace-fixture'),
@@ -358,6 +423,8 @@ writeFileSync(${JSON.stringify(workerSnapshot)}, JSON.stringify({
   relayURL: process.env.HOST_NOTIFICATION_RELAY_URL,
   tokenFile: process.env.HOST_NOTIFICATION_PUBLISHER_TOKEN_FILE,
   httpsEndpoints: process.env.HOST_AGENT_HTTPS_ENDPOINTS,
+  traceRetention: process.env.CODEX_DESKTOP_TRACE_RETENTION,
+  nativeSuggestionsConfig: process.env.CODEX_DESKTOP_NATIVE_SUGGESTIONS_CONFIG,
 }));
 `,
   );
@@ -390,6 +457,8 @@ writeFileSync(${JSON.stringify(workerSnapshot)}, JSON.stringify({
     relayURL,
     tokenFile: join(directory, tokenFile),
     httpsEndpoints,
+    traceRetention: '1',
+    nativeSuggestionsConfig: join(directory, 'native-suggestions.json'),
   });
   const invalidWorkerConfig = join(directory, 'invalid-worker.json');
   for (const invalid of [
@@ -398,6 +467,8 @@ writeFileSync(${JSON.stringify(workerSnapshot)}, JSON.stringify({
     { HOST_NOTIFICATION_RELAY_URL: 42 },
     { HOST_NOTIFICATION_PUBLISHER_TOKEN_FILE: 42 },
     { HOST_AGENT_HTTPS_ENDPOINTS: 42 },
+    { CODEX_DESKTOP_TRACE_RETENTION: 42 },
+    { CODEX_DESKTOP_NATIVE_SUGGESTIONS_CONFIG: 42 },
   ]) {
     await rm(workerSnapshot, { force: true });
     await writeFile(
@@ -439,6 +510,8 @@ writeFileSync(${JSON.stringify(workerSnapshot)}, JSON.stringify({
     relayURL: '',
     tokenFile: '',
     httpsEndpoints,
+    traceRetention: '1',
+    nativeSuggestionsConfig: join(directory, 'native-suggestions.json'),
   });
   console.log(
     'Windows notification configuration: persistence, worker forwarding and input rejection passed. Native calls and runtime entry mocked.',

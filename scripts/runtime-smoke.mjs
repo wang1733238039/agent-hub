@@ -1,16 +1,6 @@
 import './windows-hidden-spawn-guard.mjs';
 import assert from 'node:assert/strict';
-import {
-  mkdtemp,
-  writeFile,
-  chmod,
-  mkdir,
-  readFile,
-  rm,
-  symlink,
-  realpath,
-  cp,
-} from 'node:fs/promises';
+import { writeFile, chmod, mkdir, readFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -33,11 +23,16 @@ import { codexPrivateConnectionContext } from '../packages/protocol/dist/index.j
 import { RuntimePersistenceError } from '../packages/codex-adapter/dist/runtime-persistence.js';
 import { approvalRequest } from '../packages/codex-adapter/dist/approval-requests.js';
 import {
+  makePrivateDirectorySync,
+  writePrivateFileSync,
+} from '../packages/codex-adapter/dist/desktop-platform.js';
+import {
   RuntimeSession,
   replyIntentFingerprint,
 } from '../packages/codex-adapter/dist/runtime-session.js';
 
-const directory = await mkdtemp(join(tmpdir(), 'codex-manage-runtime-'));
+const directory = join(tmpdir(), 'codex-manage-runtime-' + randomUUID());
+makePrivateDirectorySync(directory);
 const appForm = {
   mode: 'form',
   serverName: 'node_repl',
@@ -516,8 +511,12 @@ try {
     400,
   );
   const restoredDirectory = join(directory, 'restored-reply-ledger-fixture');
-  await mkdir(restoredDirectory);
-  await cp(join(directory, 'state', 'runtime.json'), join(restoredDirectory, 'runtime.json'));
+  makePrivateDirectorySync(restoredDirectory);
+  writePrivateFileSync(
+    join(restoredDirectory, 'runtime.json'),
+    await readFile(join(directory, 'state', 'runtime.json')),
+    { flag: 'wx', mode: 0o600 },
+  );
   const restoredSession = new RuntimeSession({
     ...service.session.options,
     directory: restoredDirectory,
@@ -666,19 +665,74 @@ try {
     attachmentIds: [],
     mode: 'next-turn',
   };
-  await api('/v1/replies', compactionReply);
-  await until(compactionThread.id, (s) =>
-    s.messages.some((m) => m.kind === 'contextCompaction' && m.status === 'inProgress'),
-  );
-  await until(compactionThread.id, (s) =>
-    s.messages.some((m) => m.kind === 'contextCompaction' && m.status === 'completed'),
-  );
   // Actual HTTP boundary: independent readers, exact content, target isolation and durable receipts.
   const readerId = createHash('sha256').update('mobile-reader-a').digest('hex');
   const secondReader = createHash('sha256').update('mobile-reader-b').digest('hex');
   const readHistoryURL =
     '/v1/history?' + new URLSearchParams({ hostId, threadId: compactionThread.id, readerId });
+  // Compaction and even idle can precede asynchronous attachment-link projection.
+  // Hold only this fixture's file inspection to exercise the stale-position window deterministically.
+  const files = service.session.attachmentFiles;
+  const inspect = files.inspect;
+  const projection = Promise.withResolvers();
+  files.inspect = async function (...args) {
+    if (args[0] === join(root, 'result.txt')) await projection.promise;
+    return inspect.apply(this, args);
+  };
+  let compactionReceipt, unprojectedHistory;
+  try {
+    compactionReceipt = await api('/v1/replies', compactionReply);
+    await until(compactionThread.id, (s) =>
+      s.messages.some((m) => m.kind === 'contextCompaction' && m.status === 'inProgress'),
+    );
+    const completed = await until(
+      compactionThread.id,
+      (s) =>
+        s.runtime.state === 'idle' &&
+        s.messages.some((m) => m.kind === 'contextCompaction' && m.status === 'completed'),
+    );
+    assert.equal(
+      completed.messages.find((m) => m.id === 'a-' + compactionReceipt.turnId).text,
+      `[result](${join(root, 'result.txt')}) [again](${join(root, 'result.txt')})`,
+    );
+    unprojectedHistory = await api(readHistoryURL);
+  } finally {
+    files.inspect = inspect;
+    projection.resolve();
+  }
+  await until(
+    compactionThread.id,
+    (s) =>
+      s.runtime.state === 'idle' &&
+      s.messages.some(
+        (m) =>
+          m.id === 'a-' + compactionReceipt.turnId &&
+          m.status === 'completed' &&
+          m.attachments.length === 1 &&
+          m.text ===
+            `[result](codex-attachment://${m.attachments[0].id}) [again](codex-attachment://${m.attachments[0].id})`,
+      ),
+  );
   const readHistory = await api(readHistoryURL);
+  const unprojectedPosition = unprojectedHistory.thread.readState.latest;
+  assert.equal(readHistory.thread.readState.latest.messageId, unprojectedPosition.messageId);
+  assert(readHistory.thread.readState.latest.revision > unprojectedPosition.revision);
+  assert.notEqual(
+    readHistory.thread.readState.latest.contentVersion,
+    unprojectedPosition.contentVersion,
+  );
+  await api(
+    '/v1/threads/read',
+    {
+      hostId,
+      threadId: compactionThread.id,
+      readerId,
+      position: unprojectedPosition,
+      target: unprojectedHistory.readTarget,
+    },
+    409,
+  );
+  assert.equal((await api(readHistoryURL)).thread.readState.read, undefined);
   const position = readHistory.thread.readState.latest;
   const target = readHistory.readTarget;
   const reading = { hostId, threadId: compactionThread.id, readerId, position, target };
@@ -1001,12 +1055,13 @@ try {
   };
   await api('/v1/approvals', { ...appAnswer, decision: 'acceptForSession' }, 400);
   await api('/v1/approvals', appAnswer);
+  await api('/v1/approvals', appAnswer, 409);
+  // The API confirms dispatch; the fixture writes its response before emitting idle.
+  await until(thread.id, (s) => s.runtime.state === 'idle');
   assert.deepEqual(
     JSON.parse(await readFile(join(directory, 'approval-response'), 'utf8')).result,
     { action: 'accept', content: {}, _meta: { persist: 'always' } },
   );
-  await api('/v1/approvals', appAnswer, 409);
-  await until(thread.id, (s) => s.runtime.state === 'idle');
   await api('/v1/replies', {
     ...request,
     clientMessageId: randomUUID(),
@@ -1178,7 +1233,9 @@ try {
   inject(1);
   await api('/v1/replies', preWire, 503);
   persistence.save = durableSave;
-  assert.equal((await api('/v1/replies', preWire)).state, 'failed');
+  const unsubmittedReceipt = await api('/v1/replies', preWire);
+  assert.equal(unsubmittedReceipt.state, 'failed');
+  assert.equal(unsubmittedReceipt.submissionState, 'not-submitted');
   assert.deepEqual(await readFile(join(directory, 'turn-wire')), previousWire);
   assert.equal(
     service.session.state.receipts.filter(
@@ -1211,6 +1268,7 @@ try {
   const acceptedWire = await readFile(join(directory, 'turn-wire'));
   const uncertain = await api('/v1/replies', postWire);
   assert.equal(uncertain.state, 'uncertain');
+  assert.equal(uncertain.submissionState, null, 'A post-write failure never authorizes resend');
   assert.deepEqual(await readFile(join(directory, 'turn-wire')), acceptedWire);
   await until(thread.id, (snapshot) => snapshot.runtime.state === 'running');
   await api('/v1/stop', { hostId, threadId: thread.id, turnId: uncertain.turnId });
@@ -1337,13 +1395,12 @@ async function replySafetyBoundaries(template, thread) {
   const sessions = [];
   let checks = 0;
   const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-  const privateJson = async (file, value) => {
-    await writeFile(file, JSON.stringify(value), { mode: 0o600 });
-    await chmod(file, 0o600);
+  const privateJson = (file, value) => {
+    writePrivateFileSync(file, JSON.stringify(value), { mode: 0o600 });
   };
   const make = async (label, checkpoint) => {
     const stateDir = join(directory, 'reply-safety-' + label);
-    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    makePrivateDirectorySync(stateDir);
     await privateJson(join(stateDir, 'runtime.json'), seed);
     return configure(
       new RuntimeSession({
@@ -1515,7 +1572,8 @@ async function replySafetyBoundaries(template, thread) {
       assert.equal(failed.fixtureWires.length, 0);
       assert.equal(failed.state.receipts.length, 1);
       failed.persistence.save = originalSave;
-      await failed.submit(input, target);
+      const failedReceipt = await failed.submit(input, target);
+      assert.equal(failedReceipt.submissionState, 'not-submitted');
       assert.equal(
         failed.fixtureWires.length,
         0,
@@ -1726,7 +1784,7 @@ async function replySafetyBoundaries(template, thread) {
         assert.equal(status[key], null, 'Unavailable must not manufacture ' + key);
     };
     const coldDir = join(directory, 'reply-safety-cold');
-    await mkdir(coldDir, { mode: 0o700 });
+    makePrivateDirectorySync(coldDir);
     await privateJson(join(coldDir, 'runtime.json'), seed);
     const coldIntent = { ...request(template), text: 'exact cold continuation' };
     const operations = [
@@ -1740,8 +1798,10 @@ async function replySafetyBoundaries(template, thread) {
     assert.equal(predecessor.status, 0);
     const bootstrapSource = join(directory, 'cold-bootstrap-source'),
       bootstrapLog = join(directory, 'cold-bootstrap-log');
-    await writeFile(bootstrapSource, 'isolated operator boundary audit fixture', { mode: 0o600 });
-    await writeFile(bootstrapLog, 'isolated exited predecessor fixture', { mode: 0o600 });
+    writePrivateFileSync(bootstrapSource, 'isolated operator boundary audit fixture', {
+      mode: 0o600,
+    });
+    writePrivateFileSync(bootstrapLog, 'isolated exited predecessor fixture', { mode: 0o600 });
     const bootstrapFenceFile = join(directory, 'cold-bootstrap-fence.json');
     const bootstrapFence = {
       version: 2,
@@ -1778,15 +1838,15 @@ async function replySafetyBoundaries(template, thread) {
         '-e',
         `
       import {RuntimeSession,replyIntentFingerprint} from ${JSON.stringify(sessionModule)};
-      import {writeFileSync} from 'node:fs';
-      writeFileSync(${JSON.stringify(bootstrapCheckpointFile)},JSON.stringify({...${JSON.stringify(bootstrapCheckpoint)},newPid:process.pid}),{mode:0o600});
+      import {writePrivateFileSync,closeWindowsPrivateStateBackend} from ${JSON.stringify(new URL('../packages/codex-adapter/dist/desktop-platform.js', import.meta.url).href)};
+      writePrivateFileSync(${JSON.stringify(bootstrapCheckpointFile)},JSON.stringify({...${JSON.stringify(bootstrapCheckpoint)},newPid:process.pid}),{mode:0o600});
       const session = new RuntimeSession(${JSON.stringify({ ...template.options, directory: coldDir, replyCheckpointFile: bootstrapCheckpointFile })});
       const target=session.readingTarget();
       for(let i=0;i<41;i++){const reply={hostId:session.hostId,threadId:${JSON.stringify(thread.id)},clientMessageId:'retained-'+i,text:'fixture-'+i,attachmentIds:[],mode:'next-turn'};
         session.state.receipts.push({clientMessageId:reply.clientMessageId,hostId:reply.hostId,threadId:reply.threadId,reply,
         fingerprintVersion:2,target,attachmentSnapshot:[],fingerprint:replyIntentFingerprint(reply,target),
         state:['received','queued','submitting','submitted','uncertain','failed','cancelled'][i%7],turnId:null,error:null});}
-      session.save();session.close();`,
+      session.save();session.close();closeWindowsPrivateStateBackend();`,
       ],
       { encoding: 'utf8' },
     );
@@ -1959,7 +2019,7 @@ async function replySafetyBoundaries(template, thread) {
       'legacy',
     ]) {
       const invalidDir = join(directory, 'reply-safety-invalid-' + mutation);
-      await mkdir(invalidDir, { mode: 0o700 });
+      makePrivateDirectorySync(invalidDir);
       let state = JSON.parse(originalColdLedger.toString('utf8'));
       if (mutation === 'fresh' || mutation === 'legacy') delete state.replyLedger;
       if (mutation === 'incompatible') state.replyLedger.version = 99;
@@ -1994,12 +2054,14 @@ async function replySafetyBoundaries(template, thread) {
     // Explicit legacy migration stays an operator attestation. These are isolated
     // artifact/hash fixtures, not evidence that any real old Host was fenced.
     const legacyColdDir = join(directory, 'reply-safety-legacy-cold');
-    await mkdir(legacyColdDir, { mode: 0o700 });
+    makePrivateDirectorySync(legacyColdDir);
     await privateJson(join(legacyColdDir, 'runtime.json'), seed);
     const auditSource = join(directory, 'legacy-audit-source'),
       auditLog = join(directory, 'legacy-audit-log');
-    await writeFile(auditSource, 'isolated operator-audited boundary fixture', { mode: 0o600 });
-    await writeFile(auditLog, 'isolated exited-writer log fixture', { mode: 0o600 });
+    writePrivateFileSync(auditSource, 'isolated operator-audited boundary fixture', {
+      mode: 0o600,
+    });
+    writePrivateFileSync(auditLog, 'isolated exited-writer log fixture', { mode: 0o600 });
     const legacyFence = {
       version: 2,
       kind: 'operator-audited-legacy-fence-v2',
@@ -2048,7 +2110,7 @@ async function replySafetyBoundaries(template, thread) {
     );
     checks++;
     const tamperedDir = join(directory, 'reply-safety-tampered-audit');
-    await mkdir(tamperedDir, { mode: 0o700 });
+    makePrivateDirectorySync(tamperedDir);
     await privateJson(join(tamperedDir, 'runtime.json'), seed);
     await writeFile(auditLog, 'changed isolated log');
     assert.throws(
@@ -2062,7 +2124,7 @@ async function replySafetyBoundaries(template, thread) {
     );
     checks++;
     const unauditedDir = join(directory, 'reply-safety-unaudited-v2');
-    await mkdir(unauditedDir, { mode: 0o700 });
+    makePrivateDirectorySync(unauditedDir);
     await privateJson(join(unauditedDir, 'runtime.json'), seed);
     const unauditedProcess = spawnSync(
       process.execPath,

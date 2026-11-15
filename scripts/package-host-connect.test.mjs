@@ -194,7 +194,7 @@ test(
           JSON.stringify({
             name: '@codex-manage/' + component.split('/').at(-1),
             type: 'module',
-            dependencies: {},
+            dependencies: component === 'packages/codex-adapter' ? { 'smol-toml': 'catalog:' } : {},
           }),
         );
         await write(component + '/src/index.ts', emitted);
@@ -203,12 +203,69 @@ test(
       }
       await mkdir(join(repository, 'packages/codex-adapter/windows'));
       await write('scripts/desktop-completion-notify-observer.py', '# synthetic fixture\n');
+      await write(
+        'packages/codex-adapter/resources/desktop-completion-notify-observer.py',
+        '# synthetic fixture\n',
+      );
+      await write('scripts/desktop-trace-retire.py', '# synthetic anchored retirement helper\n');
       const ciSources = {
         'scripts/ci/Dockerfile': 'FROM scratch\n',
         'scripts/ci/legacy-bootstrap.bash': '# synthetic bootstrap\n',
         'scripts/ci/legacy-sdkmanager.bash': '# synthetic sdk compatibility\n',
+        'apps/ios/CodexManage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved':
+          '{"pins":[],"version":3}\n',
+        'apps/ios/FilePreviewKit/Package.resolved': '{"pins":[],"version":3}\n',
+        ...Object.fromEntries(
+          [
+            'apps/android/src/androidTest/java/com/agenthub/android/NativeSoundForeignWitnessProvider.java',
+            'scripts/mobile/fixtures/android/os/Looper.java',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/jvm/android/util/Base64.java',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/authorization-fence/phase1/validation.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/authorization-fence/phase2/validation.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/authorization-fence/phase3/validation.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/boundaries.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase1/validation.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase10-canonical/validation.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase2/resource-overlay.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase5/validation.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase9-text-visibility/validation.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/native-boundaries/numeric-probe.init.gradle',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/numeric-fix/validation.init.gradle',
+            'apps/android/src/androidTest/java/com/agenthub/android/OwnedAcceptanceDocuments.java',
+            'apps/android/src/androidTest/java/com/agenthub/android/OwnedExternalSourceActivity.java',
+            'apps/android/src/androidTest/java/com/agenthub/android/OwnedPhotoMediaActivity.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedCameraColdDriver.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedDocumentColdDriver.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedExternalInboxColdDriver.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedPhotoColdDriver.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/NaturalProcessVisibility.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedNaturalNoticeObserver.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/NativeFixedProcessCapture.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/NativePublicProcessCapture.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedPublicProcessDiagnosticObserver.java',
+            'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedPublicProcessNaturalObserver.java',
+            'apps/android/src/androidTest/java/com/agenthub/android/P8WindowPixelCopyDestination.java',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/capture-exit-barrier/P8CaptureExitBarrierChecks.java',
+            'docs/plans/android-alignment-20261022/parallel/p8-easywork/common-capture-lifetime/P8WindowPixelCopyDestinationChecks.java',
+            'scripts/mobile/fixtures/NaturalDiagnosticCapacityVectors.java',
+            'scripts/mobile/fixtures/NaturalVisibilityVectors.java',
+          ].map((name) => [name, '// reviewed test-only source fixture\n']),
+        ),
       };
       for (const [name, body] of Object.entries(ciSources)) await write(name, body);
+      const soundSources = [
+        'apps/android/src/main/assets/chat-notification-sounds/v1/attention.wav',
+        'apps/android/src/main/assets/chat-notification-sounds/v1/chime.wav',
+        'apps/android/src/main/assets/chat-notification-sounds/v1/soft.wav',
+        'apps/android/src/androidTest/assets/chat-notification-sounds/synthetic-tone.m4a',
+        'apps/android/src/androidTest/assets/chat-notification-sounds/synthetic-tone.mp3',
+      ];
+      const soundBytes = new Map();
+      for (const name of soundSources) {
+        const bytes = await readFile(new URL('../' + name, import.meta.url));
+        soundBytes.set(name, bytes);
+        await write(name, bytes);
+      }
       await write('skills/codex-host-connect/SKILL.md', 'Synthetic packaging fixture.\n');
       for (const name of ['bonjour-service', 'qrcode']) {
         await write(
@@ -217,6 +274,17 @@ test(
         );
         await write('node_modules/' + name + '/index.js', 'module.exports = {};\n');
       }
+      // Keep the synthetic adapter dependency scoped like pnpm and hide its
+      // manifest subpath to exercise the packager's package-exports fallback.
+      const toml = 'packages/codex-adapter/node_modules/smol-toml/';
+      const tomlManifest = JSON.stringify({
+        name: 'smol-toml',
+        version: '1.9.1',
+        exports: { '.': './dist/index.cjs' },
+      });
+      const tomlEntry = 'module.exports = { parse: () => ({}) };\n';
+      await write(toml + 'package.json', tomlManifest);
+      await write(toml + 'dist/index.cjs', tomlEntry);
       await mkdir(taskHubBundle);
       await writeFile(
         join(taskHubBundle, 'manifest.json'),
@@ -235,6 +303,26 @@ test(
         output: join(tmp, 'valid.zip'),
       });
       assert.match(valid.sha256, /^[a-f0-9]{64}$/);
+      const deployedToml = 'codex-host-connect/assets/codex-manage/node_modules/smol-toml/';
+      for (const [path, contents] of [
+        ['package.json', tomlManifest],
+        ['dist/index.cjs', tomlEntry],
+      ])
+        assert.equal(
+          execFileSync('/usr/bin/unzip', ['-p', valid.archive, deployedToml + path], {
+            encoding: 'utf8',
+          }),
+          contents,
+        );
+      for (const [name, bytes] of soundBytes)
+        assert.deepEqual(
+          execFileSync('/usr/bin/unzip', [
+            '-p',
+            valid.archive,
+            'codex-host-connect/assets/codex-manage/' + name,
+          ]),
+          bytes,
+        );
       for (const [name, body] of Object.entries(ciSources))
         assert.equal(
           execFileSync(
@@ -244,7 +332,10 @@ test(
           ),
           body,
         );
-      for (const location of ['packages/codex-adapter', 'node_modules/@codex-manage/codex-adapter'])
+      for (const location of [
+        'packages/codex-adapter',
+        'node_modules/@codex-manage/codex-adapter',
+      ]) {
         assert.equal(
           execFileSync(
             '/usr/bin/unzip',
@@ -257,6 +348,66 @@ test(
           ),
           emitted,
         );
+        assert.equal(
+          execFileSync(
+            '/usr/bin/unzip',
+            [
+              '-p',
+              valid.archive,
+              'codex-host-connect/assets/codex-manage/' +
+                location +
+                '/resources/desktop-trace-retire.py',
+            ],
+            { encoding: 'utf8' },
+          ),
+          '# synthetic anchored retirement helper\n',
+        );
+      }
+      const observerCopy = 'packages/codex-adapter/resources/desktop-completion-notify-observer.py';
+      await write(observerCopy, '# stale resource copy\n');
+      const staleResourceOutput = join(tmp, 'stale-resource.zip');
+      await assert.rejects(
+        packageHostConnect({ repository, taskHubBundle, output: staleResourceOutput }),
+        /Runtime helper source copy differs: desktop-completion-notify-observer\.py/,
+      );
+      await assert.rejects(readFile(staleResourceOutput), { code: 'ENOENT' });
+      assert.equal(
+        await readFile(join(repository, observerCopy), 'utf8'),
+        '# stale resource copy\n',
+      );
+      await write(observerCopy, '# synthetic fixture\n');
+      const changedSound = soundSources[0];
+      await write(changedSound, Buffer.from('changed unreviewed bytes'));
+      const changedSoundOutput = join(tmp, 'changed-sound.zip');
+      await assert.rejects(
+        packageHostConnect({ repository, taskHubBundle, output: changedSoundOutput }),
+        /Reviewed synthetic source fingerprint changed/,
+      );
+      await assert.rejects(readFile(changedSoundOutput), { code: 'ENOENT' });
+      await write(changedSound, soundBytes.get(changedSound));
+      const unknownSound = 'apps/android/src/androidTest/assets/private-recording.m4a';
+      await write(unknownSound, soundBytes.get(changedSound));
+      const unknownSoundOutput = join(tmp, 'unknown-sound.zip');
+      await assert.rejects(
+        packageHostConnect({ repository, taskHubBundle, output: unknownSoundOutput }),
+        /Review unknown source file.*private-recording\.m4a/,
+      );
+      await assert.rejects(readFile(unknownSoundOutput), { code: 'ENOENT' });
+      await rm(join(repository, unknownSound));
+      for (const [index, unknown] of [
+        'apps/android/src/androidTest/java/Unknown.java',
+        'apps/android-inbox-examiner/src/main/java/com/agenthub/android/Unknown.java',
+        'scripts/mobile/fixtures/Unknown.java',
+      ].entries()) {
+        await write(unknown, '// not reviewed for distribution\n');
+        const unknownOutput = join(tmp, 'unknown-' + index + '.zip');
+        await assert.rejects(
+          packageHostConnect({ repository, taskHubBundle, output: unknownOutput }),
+          /Review unknown source file.*Unknown\.java/,
+        );
+        await assert.rejects(readFile(unknownOutput), { code: 'ENOENT' });
+        await rm(join(repository, unknown));
+      }
       const orphan = 'packages/codex-adapter/dist/orphan.js';
       await write(orphan, 'export const stale = true;\n');
       const output = join(tmp, 'rejected.zip');

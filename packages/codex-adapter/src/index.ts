@@ -18,6 +18,11 @@ export {
   assertPrivateFile,
   protectWindowsStateDirectory,
   protectWindowsStateFile,
+  makePrivateDirectorySync,
+  openPrivateFileSync,
+  openPrivateFile,
+  writePrivateFileSync,
+  renamePrivateFileSync,
 } from './desktop-platform.js';
 export { runDesktopStdioBridge } from './desktop-stdio-bridge.js';
 
@@ -50,9 +55,29 @@ export interface CodexAdapter {
 }
 export { DesktopTranscription } from './desktop-transcription.js';
 export {
+  DesktopImages,
+  desktopImageModels,
+  inspectImage,
+  prepareDesktopImage,
+  validateDesktopImageResponse,
+  type DesktopImagesTransport,
+  type DesktopImageOperation,
+} from './desktop-images.js';
+export {
+  DesktopResponses,
+  ResponsesProxyError,
+  ResponsesEventReader,
+  ResponseChatStream,
+  prepareDesktopResponse,
+  chatCompletionToResponse,
+  responseToChatCompletion,
+  type DesktopResponsesTransport,
+} from './desktop-responses.js';
+export {
   DesktopSuggestionObserver,
   SuggestionObservationError,
 } from './desktop-suggestion-observer.js';
+export { inspectDesktopResponseConfigToml } from './desktop-response-config.js';
 export {
   DesktopDomBridge,
   DesktopDomBridgeError,
@@ -74,4 +99,4 @@ export { withWindowsProcessCreation } from './windows-process.js';
 // Internal fixed-category telemetry; no new remote operation or model data.
 export { createWindowsTraceDiagnostics } from './windows-trace-diagnostics.js';
 
-export { appendRuntimeDiagnostic } from './runtime-diagnostics.js';
+export { appendRuntimeDiagnostic, startRuntimeDiagnostics } from './runtime-diagnostics.js';

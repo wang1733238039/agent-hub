@@ -4,6 +4,53 @@ import Network
 import Vision
 import Darwin
 
+/// Separate from the legacy fixture test class and its launch/reset setup.
+/// Only the original installed EasyWork acceptance App is launched with restore.
+final class EasyWorkPhysicalAccessibilityUITests: XCTestCase {
+  @MainActor func testOriginalPhysicalChatAndSidebarAccessibilityAuditWithoutInput() throws {
+    #if targetEnvironment(simulator)
+    throw XCTSkip("Original physical iPhone required")
+    #endif
+    let env=ProcessInfo.processInfo.environment
+    guard let raw=env["EASYWORK_PHYSICAL_UI_AUDIT_CONFIG_JSON"],let c=try JSONSerialization.jsonObject(with:Data(raw.utf8))as?[String:Any],let run=c["caseId"]as?String,UUID(uuidString:run) != nil,c["targetBundleIdentifier"]as?String=="com.easyai.agenthub.easyworkacceptance",c["newModelsAuthorized"]as?Int==0,c["newUploadsAuthorized"]as?Int==0,c["preserveOriginalInstallationAndUnsentDraft"]as?Bool==true else{throw XCTSkip("Frozen own physical read-only UI audit required")}
+    continueAfterFailure=true
+    let own=XCUIApplication(bundleIdentifier:"com.easyai.agenthub.easyworkacceptance")
+    own.launchArguments=["-ui-testing","-restore-testing","-easywork-local-dev"]
+    // No hosted API-test environment, fixture data, pairing, privacy reset,
+    // models, text input, clipboard, notification taps or account changes.
+    own.launch()
+    guard own.wait(for:.runningForeground,timeout:40)else{XCTFail("The exact original acceptance App must be foreground");return}
+    var issues:[[String:Any]]=[],sidebarOpen=false
+    func attachment(_ name:String){let item=XCTAttachment(screenshot:own.screenshot());item.name=run+"-"+name;item.lifetime = .keepAlways;add(item)}
+    func audit(_ screen:String)throws {
+      attachment(screen+"-before")
+      try own.performAccessibilityAudit(for:.all){ issue in
+        var row:[String:Any]=["screen":screen,"type":issue.auditType.rawValue,"compact":issue.compactDescription,"detail":issue.detailedDescription]
+        if let element=issue.element{row["elementIdentifier"]=element.identifier;row["elementFrame"]=String(describing:element.frame)}
+        issues.append(row)
+        // Collect every issue, then fail explicitly; no issue is waived.
+        return true
+      }
+      attachment(screen+"-after")
+    }
+    defer{
+      if sidebarOpen,own.buttons["close-sidebar"].exists{own.buttons["close-sidebar"].tap()}
+      let proof:[String:Any]=["caseId":run,"targetBundleIdentifier":"com.easyai.agenthub.easyworkacceptance","physicalIPhone":true,"newModelsUploadsInputsOrPrivacyResets":0,"normalUnaidedNetworkAcceptanceNotClaimed":true,"actualAuditIssues":issues,"auditIssuesWaived":0,"wholeFeaturePassed":false,"codexTests":false]
+      if let data=try?JSONSerialization.data(withJSONObject:proof,options:[.sortedKeys]){let item=XCTAttachment(data:data,uniformTypeIdentifier:"public.json");item.name=run+"-actual-accessibility-audit.json";item.lifetime = .keepAlways;add(item)}
+    }
+    let sidebar=own.buttons["open-sidebar"]
+    guard sidebar.waitForExistence(timeout:35),own.buttons["client-switch"].label.contains("EasyWork")else{attachment("exact-target-ui-unavailable");XCTFail("Original EasyWork UI and current target must be visible");return}
+    guard sidebar.frame.width>=44,sidebar.frame.height>=44 else{attachment("original-sidebar-invalid-hit-region");XCTFail("Original sidebar button must have a real 44-point hit region before tapping");return}
+    try audit("original-chat")
+    sidebar.tap();sidebarOpen=true
+    guard own.buttons["close-sidebar"].waitForExistence(timeout:15)else{attachment("original-sidebar-not-open");XCTFail("Original sidebar must open");return}
+    try audit("original-sidebar")
+    own.buttons["close-sidebar"].tap();sidebarOpen=false
+    XCTAssertTrue(own.buttons["open-sidebar"].waitForExistence(timeout:15))
+    XCTAssertTrue(issues.isEmpty,"Every actual accessibility issue is retained in the attached JSON; none waived")
+  }
+}
+
 extension CodexManageUITests {
   @MainActor private func controlledFileShare(openIn: Bool = false) -> XCUIApplication {
     if ProcessInfo.processInfo.environment["QUICK_ATTACHMENT_SOURCE_BUNDLE_ID"] == "com.easyai.agenthub.externalfilesource.acceptance" {
@@ -894,11 +941,36 @@ final class CodexManageUITests: XCTestCase {
   private var suggestionCleanupTarget: (hostId: String, originalId: String)?
   override func setUpWithError() throws {
     continueAfterFailure = false
-    if name.contains("testMarkdownFilePreviewPhysicalDEV") {
+    observeEasyWorkExaminer(name)
+    if name.contains("testEasyWorkRealDEVDeviceGrant"),
+      let encoded = ProcessInfo.processInfo.environment["EASYWORK_GRANT_EXAMINER_CONFIG_JSON"],
+      let value = try JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: Any],
+      value["readingSecondResume"] as? Bool == true {
+      app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+      return
+    }
+    if name.contains("testVisualizationPhysicalDEV") {
+      guard let raw = ProcessInfo.processInfo.environment["VISUALIZATION_FIXTURE"],
+        let fixture = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+        let bundleId = fixture["bundleId"] as? String,
+        bundleId.hasPrefix("com.easyai.agenthub.visualization.") else {
+        throw XCTSkip("Requires the independent visualization acceptance App")
+      }
+      XCUIDevice.shared.orientation = .portrait
+      app = XCUIApplication(bundleIdentifier: bundleId)
+      addUIInterruptionMonitor(withDescription: "Visualization acceptance network permission") { alert in
+        let allow = alert.buttons.matching(NSPredicate(format: "label IN %@", ["无线局域网与蜂窝网络", "无线局域网与蜂窝数据", "允许", "Allow"])).firstMatch
+        guard allow.exists else { return false }; allow.tap(); return true
+      }
+      app.launchArguments = ["-ui-testing"]
+      app.launchChineseTest()
+      return
+    }
+    if name.contains("testMarkdownFilePreviewPhysicalDEV") || name.contains("testFileSizeLimitsPhysicalDEV") {
       guard let raw = ProcessInfo.processInfo.environment["FILE_PREVIEW_FIXTURE"],
         let fixture = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
         let bundleId = fixture["bundleId"] as? String,
-        bundleId.hasPrefix("com.easyai.agenthub.filepreview.") else {
+        (bundleId.hasPrefix("com.easyai.agenthub.filepreview.") || (name.contains("testFileSizeLimitsPhysicalDEV") && bundleId.hasPrefix("com.easyai.agenthub.filesizelimits."))) else {
         throw XCTSkip("Requires the independent file preview acceptance App")
       }
       XCUIDevice.shared.orientation = .portrait
@@ -1400,16 +1472,325 @@ final class CodexManageUITests: XCTestCase {
     try await persisted(newAccount: true, queriedAfter: beforeQuery)
     shot("legacy-ios-account-change-relaunch-original-query")
   }
+  @MainActor func testEasyWorkRealDEVMacBookReadOnly() throws {
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_MACBOOK_READONLY_JSON"] else { throw XCTSkip("Requires MacBook preflight configuration") }
+    let c = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: String])
+    try easyWorkRealReadOnlyConnect(c)
+  }
+  @MainActor private func easyWorkRealReadOnlyConnect(_ c: [String: String]) throws {
+    let keys = ["bundleId", "name", "osUser", "address", "endpoint", "projectId", "threadId"]
+    guard keys.allSatisfy({ !(c[$0] ?? "").isEmpty }), c["bundleId"] == "com.easyai.agenthub.externalattachments.acceptance" else { throw NSError(domain: "MacBookReadOnly", code: 1) }
+    app = XCUIApplication(bundleIdentifier: c["bundleId"]!)
+    app.launchArguments = []
+    app.activate()
+    if !app.navigationBars["添加客户端"].exists {
+      if !app.buttons["add-client"].exists {
+        guard app.buttons["client-switch"].waitForExistence(timeout: 30) else { throw NSError(domain: "MacBookReadOnly", code: 2) }
+        app.buttons["client-switch"].tap()
+      }
+      guard app.buttons["add-client"].waitForExistence(timeout: 15), app.buttons["add-client"].isHittable else { throw NSError(domain: "MacBookReadOnly", code: 3) }
+      app.buttons["add-client"].tap()
+    }
+    guard app.buttons["EasyWork"].firstMatch.waitForExistence(timeout: 15) else { throw NSError(domain: "MacBookReadOnly", code: 4) }
+    app.buttons["EasyWork"].firstMatch.tap()
+    let routes: [String: String]
+    if let rawRoutes = c["allowedRoutes"] {
+      routes = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(rawRoutes.utf8)) as? [String: String])
+      guard !routes.isEmpty, routes[c["endpoint"]!] == c["address"]! else { throw NSError(domain: "MacBookReadOnly", code: 6) }
+    } else { routes = [c["endpoint"]!: c["address"]!] }
+    let matches = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@ AND value IN %@", "easywork-discovered-", c["name"]!, Array(routes.keys)))
+    let row = matches.firstMatch
+    guard row.waitForExistence(timeout: 90) else { throw NSError(domain: "MacBookReadOnly", code: 5) }
+    let resolved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      guard let endpoint = row.value as? String, let address = routes[endpoint] else { return false }
+      return matches.count == 1 && row.label.contains(c["osUser"]!) && row.label.contains(address)
+    }, object: row)
+    guard XCTWaiter.wait(for: [resolved], timeout: 45) == .completed else { throw NSError(domain: "MacBookReadOnly", code: 6) }
+    print("MACBOOK_READONLY_DISCOVERY_CONFIRMED"); fflush(stdout)
+    row.tap()
+    let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      let button = self.app.buttons["client-switch"]
+      return button.label.contains(c["name"]!) && (button.value as? String ?? "").contains("实时连接")
+    }, object: app.buttons["client-switch"])
+    guard XCTWaiter.wait(for: [selected], timeout: 90) == .completed else { throw NSError(domain: "MacBookReadOnly", code: 7) }
+    print("MACBOOK_READONLY_CONNECTED"); fflush(stdout)
+    guard app.buttons["open-sidebar"].waitForExistence(timeout: 20) else { throw NSError(domain: "MacBookReadOnly", code: 8) }
+    app.buttons["open-sidebar"].tap()
+    let list = app.scrollViews["sidebar-list"]
+    guard list.waitForExistence(timeout: 15) else { throw NSError(domain: "MacBookReadOnly", code: 9) }
+    let toggle = app.buttons["sidebar-projects-toggle"]
+    if toggle.exists, (toggle.value as? String) == "已折叠" { toggle.tap() }
+    let project = app.buttons["project-" + c["projectId"]!]
+    for _ in 0..<8 where !project.isHittable { list.swipeUp() }
+    guard project.waitForExistence(timeout: 30), project.isHittable else { throw NSError(domain: "MacBookReadOnly", code: 10) }
+    if (project.value as? String) == "已折叠" { project.tap() }
+    let thread = app.buttons["thread-" + c["threadId"]!]
+    for _ in 0..<8 where !thread.isHittable { list.swipeUp() }
+    guard thread.waitForExistence(timeout: 30), thread.isHittable else { throw NSError(domain: "MacBookReadOnly", code: 11) }
+    thread.tap()
+    guard app.descendants(matching: .any).matching(identifier: "composer-input").firstMatch.waitForExistence(timeout: 30) else { throw NSError(domain: "MacBookReadOnly", code: 12) }
+    print("MACBOOK_READONLY_PROJECT_THREAD_OPENED " + c["projectId"]! + " " + c["threadId"]!); fflush(stdout)
+  }
+  @MainActor func testEasyWorkRealDEVUpdatedRepliesReadOnly() throws {
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_UPDATED_TWO_HOSTS_JSON"] else { throw XCTSkip("Requires verified completed two-host inputs") }
+    let config = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
+    guard config["bundleId"] as? String == "com.easyai.agenthub.externalattachments.acceptance",
+      let hosts = config["hosts"] as? [[String: String]], hosts.count == 2 else { throw NSError(domain: "UpdatedRepliesReadOnly", code: 1) }
+    for host in hosts {
+      let keys = ["displayName", "osUser", "address", "endpoint", "projectId", "threadId", "nonce", "deviceId"]
+      guard keys.allSatisfy({ !(host[$0] ?? "").isEmpty }) else { throw NSError(domain: "UpdatedRepliesReadOnly", code: 2) }
+      try easyWorkRealReadOnlyConnect(["bundleId": "com.easyai.agenthub.externalattachments.acceptance",
+        "name": host["displayName"]!, "osUser": host["osUser"]!, "address": host["address"]!,
+        "endpoint": host["endpoint"]!, "projectId": host["projectId"]!, "threadId": host["threadId"]!,
+        "allowedRoutes": host["allowedRoutes"] ?? "{}"])
+      let reply = app.staticTexts[host["nonce"]!]
+      guard reply.waitForExistence(timeout: 45) else { throw NSError(domain: "UpdatedRepliesReadOnly", code: 3) }
+      shot("easywork-model-reply-" + host["deviceId"]!, fullScreen: true)
+      print("EASYWORK_MODEL_REPLY_READ_ONLY " + host["threadId"]! + " " + host["nonce"]!); fflush(stdout)
+    }
+  }
+  @MainActor func testEasyWorkRealDEVUpdatedDiscoveryBothHosts() throws {
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_UPDATED_TWO_HOSTS_JSON"] else {
+      throw XCTSkip("Requires the final private two-host configuration")
+    }
+    let config = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
+    guard config["bundleId"] as? String == "com.easyai.agenthub.externalattachments.acceptance",
+      let hosts = config["hosts"] as? [[String: String]], hosts.count == 2 else {
+      throw NSError(domain: "UpdatedTwoHosts", code: 1)
+    }
+    let required = ["displayName", "osUser", "address", "endpoint", "deviceId", "workspaceId", "runtimeId", "pin", "projectId", "threadId", "nonce"]
+    guard hosts.allSatisfy({ h in required.allSatisfy { !(h[$0] ?? "").isEmpty } }),
+      hosts[0]["deviceId"] != hosts[1]["deviceId"], hosts[0]["threadId"] != hosts[1]["threadId"],
+      hosts[0]["nonce"] != hosts[1]["nonce"] else { throw NSError(domain: "UpdatedTwoHosts", code: 2) }
+    // Each route must be independently verified against this host's target, public key and pin.
+    let routes = try hosts.map { host -> [String: String] in
+      guard let rawRoutes = host["allowedRoutes"] else { return [host["endpoint"]!: host["address"]!] }
+      guard let data = rawRoutes.data(using: .utf8),
+        let entries = try JSONSerialization.jsonObject(with: data) as? [String: String],
+        !entries.isEmpty, entries.allSatisfy({ !$0.key.isEmpty && !$0.value.isEmpty }),
+        entries[host["endpoint"]!] == host["address"]! else { throw NSError(domain: "UpdatedTwoHosts", code: 17) }
+      return entries
+    }
+    guard Set(routes[0].keys).isDisjoint(with: Set(routes[1].keys)) else { throw NSError(domain: "UpdatedTwoHosts", code: 17) }
+    app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.externalattachments.acceptance")
+    app.launchArguments = []
+    app.activate()
+    let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    let systemAlert = system.alerts.firstMatch
+    if systemAlert.exists {
+      let speechRequest = systemAlert.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "语音识别")).firstMatch
+      let ourApp = systemAlert.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Agent Hub")).firstMatch
+      let decline = systemAlert.buttons.matching(NSPredicate(format: "label IN %@", ["不允许", "Don't Allow"])).firstMatch
+      guard speechRequest.exists, ourApp.exists, decline.isHittable else { throw NSError(domain: "UpdatedTwoHosts", code: 20) }
+      decline.tap()
+    }
+    let voiceCancel = app.buttons["cancel-dictation"]
+    if voiceCancel.waitForExistence(timeout: 2) { voiceCancel.tap() }
+    let sharingAllow = app.buttons["ai-sharing-allow"]
+    if sharingAllow.exists {
+      guard app.staticTexts[hosts[0]["displayName"]!].exists else { throw NSError(domain: "UpdatedTwoHosts", code: 18) }
+      shot("easywork-prior-unsubmitted-consent", fullScreen: true)
+      sharingAllow.tap()
+    }
+    guard app.buttons["client-switch"].waitForExistence(timeout: 30) else { XCTFail("Client picker unavailable"); return }
+    func openDiscovery() throws {
+      guard app.buttons["client-switch"].waitForExistence(timeout: 20) else { throw NSError(domain: "UpdatedTwoHosts", code: 3) }
+      app.buttons["client-switch"].tap()
+      guard app.buttons["add-client"].waitForExistence(timeout: 15) else { throw NSError(domain: "UpdatedTwoHosts", code: 4) }
+      app.buttons["add-client"].tap()
+      guard app.buttons["EasyWork"].firstMatch.waitForExistence(timeout: 15) else { throw NSError(domain: "UpdatedTwoHosts", code: 5) }
+      app.buttons["EasyWork"].firstMatch.tap()
+    }
+    func rows(_ host: [String: String], _ allowed: [String: String]) -> XCUIElementQuery {
+      app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@ AND value IN %@", "easywork-discovered-", host["displayName"]!, Array(allowed.keys)))
+    }
+    func matchesIdentity(_ item: XCUIElement, _ host: [String: String], _ allowed: [String: String]) -> Bool {
+      guard let endpoint = item.value as? String, let address = allowed[endpoint] else { return false }
+      return item.label.contains(host["displayName"]!) && item.label.contains(host["osUser"]!) && item.label.contains(address)
+    }
+    try openDiscovery()
+    for (index, host) in hosts.enumerated() {
+      let matching = rows(host, routes[index])
+      let item = matching.firstMatch
+      guard item.waitForExistence(timeout: 90), matching.count == 1 else { XCTFail("Expected unique discovery row missing or ambiguous"); return }
+      let resolved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        matching.count == 1 && matchesIdentity(item, host, routes[index])
+      }, object: item)
+      guard XCTWaiter.wait(for: [resolved], timeout: 45) == .completed else { XCTFail("Discovery identity or endpoint mismatch"); return }
+    }
+    shot("easywork-updated-two-hosts-discovery", fullScreen: true)
+    func selectAndRead(_ host: [String: String], _ allowed: [String: String], discoveryOpen: Bool) throws {
+      if !discoveryOpen { try openDiscovery() }
+      let matching = rows(host, allowed)
+      let item = matching.firstMatch
+      guard item.waitForExistence(timeout: 45), matching.count == 1, matchesIdentity(item, host, allowed) else { throw NSError(domain: "UpdatedTwoHosts", code: 6) }
+      item.tap()
+      let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        self.app.buttons["client-switch"].label.contains(host["displayName"]!) && (self.app.buttons["client-switch"].value as? String ?? "").contains("实时连接") && !self.app.buttons["easywork-connecting"].exists
+      }, object: app.buttons["client-switch"])
+      guard XCTWaiter.wait(for: [selected], timeout: 90) == .completed else { throw NSError(domain: "UpdatedTwoHosts", code: 7) }
+      guard app.buttons["open-sidebar"].waitForExistence(timeout: 20) else { throw NSError(domain: "UpdatedTwoHosts", code: 8) }
+      app.buttons["open-sidebar"].tap()
+      let list = app.scrollViews["sidebar-list"]
+      guard list.waitForExistence(timeout: 15) else { throw NSError(domain: "UpdatedTwoHosts", code: 8) }
+      let toggle = app.buttons["sidebar-projects-toggle"]
+      if toggle.exists, (toggle.value as? String) == "已折叠" { toggle.tap() }
+      let project = app.buttons["project-" + host["projectId"]!]
+      for _ in 0..<8 where !project.isHittable { list.swipeUp() }
+      guard project.waitForExistence(timeout: 60), project.isHittable else { throw NSError(domain: "UpdatedTwoHosts", code: 9) }
+      if (project.value as? String) == "已折叠" { project.tap() }
+      let thread = app.buttons["thread-" + host["threadId"]!]
+      for _ in 0..<8 where !thread.isHittable { list.swipeUp() }
+      guard thread.waitForExistence(timeout: 30), thread.isHittable else { throw NSError(domain: "UpdatedTwoHosts", code: 10) }
+      thread.tap()
+      print("EASYWORK_UPDATED_WORKSPACE_READ " + host["deviceId"]! + " " + host["workspaceId"]! + " " + host["runtimeId"]!)
+    }
+    try selectAndRead(hosts[0], routes[0], discoveryOpen: true)
+    try selectAndRead(hosts[1], routes[1], discoveryOpen: false)
+    try selectAndRead(hosts[0], routes[0], discoveryOpen: false)
+    func persistSubmissionMarker(_ host: [String: String], suffix: String) throws {
+      let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+      let ledger = documents.appendingPathComponent("easywork-updated-two-hosts", isDirectory: true)
+      try FileManager.default.createDirectory(at: ledger, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+      let marker = ledger.appendingPathComponent(host["nonce"]! + suffix).path
+      let fd = open(marker, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+      guard fd >= 0 else { throw NSError(domain: "UpdatedTwoHosts", code: 15) }
+      let markerData = Data((host["threadId"]! + "\n" + host["nonce"]! + "\n").utf8)
+      let written = markerData.withUnsafeBytes { bytes in write(fd, bytes.baseAddress!, bytes.count) }
+      let flushed = fsync(fd); close(fd)
+      let dirFD = open(ledger.path, O_RDONLY)
+      guard dirFD >= 0 else { throw NSError(domain: "UpdatedTwoHosts", code: 16) }
+      let dirFlushed = fsync(dirFD); close(dirFD)
+      guard written == markerData.count, flushed == 0, dirFlushed == 0 else { throw NSError(domain: "UpdatedTwoHosts", code: 16) }
+    }
+    for (index, host) in hosts.enumerated() {
+      if index == 1 { try selectAndRead(host, routes[index], discoveryOpen: false) }
+      let input = app.descendants(matching: .any).matching(identifier: "composer-input").firstMatch
+      guard input.waitForExistence(timeout: 30), input.isEnabled,
+        let value = input.value as? String, value.isEmpty else { throw NSError(domain: "UpdatedTwoHosts", code: 11) }
+      let message = "请只回复 " + host["nonce"]! + "，不要使用工具。"
+      input.tap(); input.typeText(message)
+      guard input.value as? String == message else { throw NSError(domain: "UpdatedTwoHosts", code: 11) }
+      if app.buttons["composer-dismiss-keyboard"].exists { app.buttons["composer-dismiss-keyboard"].tap() }
+      let send = app.buttons["send-message"]
+      guard send.waitForExistence(timeout: 15), send.isEnabled, send.isHittable else { throw NSError(domain: "UpdatedTwoHosts", code: 12) }
+      guard host["nonce"]!.range(of: "^[A-Za-z0-9_-]{8,80}$", options: .regularExpression) != nil else { throw NSError(domain: "UpdatedTwoHosts", code: 14) }
+      try persistSubmissionMarker(host, suffix: ".submitted")
+      print("EASYWORK_UPDATED_SEND_ONCE " + host["threadId"]! + " " + host["nonce"]!); fflush(stdout)
+      send.tap()
+      if sharingAllow.waitForExistence(timeout: 5) {
+        guard app.staticTexts[host["displayName"]!].exists else { throw NSError(domain: "UpdatedTwoHosts", code: 18) }
+        // This gate returns before creating a PendingReply. Granting never submits the draft.
+        shot("easywork-unsubmitted-consent-" + host["nonce"]!, fullScreen: true)
+        try persistSubmissionMarker(host, suffix: ".consent-gate")
+        sharingAllow.tap()
+        guard input.waitForExistence(timeout: 15), input.value as? String == message,
+          send.isEnabled, send.isHittable else { throw NSError(domain: "UpdatedTwoHosts", code: 19) }
+        try persistSubmissionMarker(host, suffix: ".dispatch-after-consent")
+        print("EASYWORK_UPDATED_DISPATCH_AFTER_CONSENT " + host["threadId"]! + " " + host["nonce"]!); fflush(stdout)
+        send.tap()
+      }
+      guard app.staticTexts[message].waitForExistence(timeout: 45) else { throw NSError(domain: "UpdatedTwoHosts", code: 13) }
+      print("EASYWORK_UPDATED_SEND_OBSERVED " + host["threadId"]!); fflush(stdout)
+    }
+  }
+  @MainActor func testEasyWorkRealDEVDiscoveryIdentity() throws {
+    let raw = try XCTUnwrap(ProcessInfo.processInfo.environment["EASYWORK_DISCOVERY_IDENTITY_JSON"])
+    let config = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
+    let bundleId = try XCTUnwrap(config["bundleId"] as? String)
+    let prefix = "com.easyai.agenthub.easyworkdiscovery."
+    guard bundleId.hasPrefix(prefix), bundleId.count > prefix.count,
+      bundleId.range(of: "^com\\.easyai\\.agenthub\\.easyworkdiscovery\\.[A-Za-z0-9-]+$", options: .regularExpression) != nil else {
+      throw NSError(domain: "DiscoveryIdentity", code: 1)
+    }
+    let hosts = try XCTUnwrap(config["hosts"] as? [[String: String]])
+    guard hosts.count == 2, hosts.allSatisfy({ host in
+      ["serviceName", "displayName", "address"].allSatisfy { !(host[$0] ?? "").isEmpty }
+    }) else { throw NSError(domain: "DiscoveryIdentity", code: 2) }
+    app = XCUIApplication(bundleIdentifier: bundleId)
+    app.launchArguments = ["-ui-testing"]
+    app.launchChineseTest()
+    XCTAssertTrue(app.buttons["client-switch"].waitForExistence(timeout: 30))
+    app.buttons["client-switch"].tap()
+    XCTAssertTrue(app.buttons["add-client"].waitForExistence(timeout: 10))
+    app.buttons["add-client"].tap()
+    XCTAssertTrue(app.buttons["EasyWork"].firstMatch.waitForExistence(timeout: 10))
+    app.buttons["EasyWork"].firstMatch.tap()
+    for host in hosts {
+      let id = try XCTUnwrap(host["serviceName"])
+      let display = try XCTUnwrap(host["displayName"])
+      let address = try XCTUnwrap(host["address"])
+      let row = app.buttons["easywork-discovered-" + id]
+      XCTAssertTrue(row.waitForExistence(timeout: 90), "Missing Bonjour row: " + id)
+      let resolved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        row.label.contains(display) && row.label.contains(address) && row.label.contains("需扫码配对")
+      }, object: row)
+      XCTAssertEqual(XCTWaiter.wait(for: [resolved], timeout: 45), .completed, row.debugDescription)
+      XCTAssertTrue((row.value as? String ?? "").contains(address), row.debugDescription)
+    }
+    shot("easywork-real-discovery-identities", fullScreen: true)
+    app.buttons["easywork-discovered-" + (try XCTUnwrap(hosts.first?["serviceName"]))].tap()
+    let error = app.staticTexts["easywork-pair-error"]
+    XCTAssertTrue(error.waitForExistence(timeout: 30))
+    XCTAssertTrue(error.label.contains("请扫描桌面配对二维码"), error.label)
+    let useQR = app.buttons["easywork-use-qr"]
+    XCTAssertTrue(useQR.waitForExistence(timeout: 10))
+    shot("easywork-real-legacy-scan-prompt", fullScreen: true)
+    useQR.tap()
+    XCTAssertTrue(app.textFields["easywork-qr-description"].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.buttons["easywork-scan"].exists)
+    XCTAssertFalse(app.buttons["easywork-pair-lan"].isEnabled)
+    shot("easywork-real-scan-form", fullScreen: true)
+  }
   @MainActor func testEasyWorkRealDEVDeviceGrant() async throws {
-    guard let configPath = ProcessInfo.processInfo.environment["EASYWORK_GRANT_EXAMINER_CONFIG"] else { throw XCTSkip("Dedicated EWDAP examiner required") }
-    let config = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: configPath))) as? [String: Any])
+    let environment = ProcessInfo.processInfo.environment
+    let configData: Data
+    if let json = environment["EASYWORK_GRANT_EXAMINER_CONFIG_JSON"] { configData = Data(json.utf8) }
+    else if let path = environment["EASYWORK_GRANT_EXAMINER_CONFIG"] { configData = try Data(contentsOf: URL(fileURLWithPath: path)) }
+    else { throw XCTSkip("Dedicated EWDAP examiner required") }
+    let config = try XCTUnwrap(JSONSerialization.jsonObject(with: configData) as? [String: Any])
+    var voiceSourceInteractionOptions: Any?
+    if ["voice-pending-migration-source","voice-pending-migration-export-existing"].contains(config["scenario"] as? String ?? "") {
+      #if targetEnvironment(simulator)
+      guard config["ownedFreshVoiceSource"] as? Bool == true,
+        config["newModelInputsAuthorized"] as? Int == 0,
+        config["newVoiceCapturesAuthorized"] as? Int == (config["scenario"] as? String == "voice-pending-migration-export-existing" ? 0 : 1),
+        ProcessInfo.processInfo.environment["SIMULATOR_UDID"] == config["voiceSourceSimulator"] as? String,
+        app.responds(to: NSSelectorFromString("currentInteractionOptions")),
+        app.responds(to: NSSelectorFromString("setCurrentInteractionOptions:")) else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:1) }
+      voiceSourceInteractionOptions = app.value(forKey:"currentInteractionOptions")
+      app.setValue(NSNumber(value:3),forKey:"currentInteractionOptions")
+      #else
+      throw NSError(domain:"EasyWorkVoiceMigrationSource",code:2)
+      #endif
+    }
+    if ["migration-import-fresh", "migration-reauthorize", "migration-authorized-unknown-query"].contains(config["scenario"] as? String ?? ""),
+      config["migrationVoiceOperationId"] as? String != nil || config["migrationUnknownOperationId"] as? String != nil {
+      #if targetEnvironment(simulator)
+      let ownedReceiver = config["migrationVoiceOperationId"] as? String != nil && config["ownedVoiceMigrationReceiver"] as? Bool == true
+        || (config["migrationUnknownOperationId"] as? String).flatMap(UUID.init(uuidString:)) != nil && config["ownedUnknownMigrationReceiver"] as? Bool == true
+      guard ownedReceiver,
+        config["newModelInputsAuthorized"] as? Int == 0,
+        config["newVoiceCapturesAuthorized"] as? Int == 0,
+        ProcessInfo.processInfo.environment["SIMULATOR_UDID"] == config["voiceReceiverSimulator"] as? String,
+        app.responds(to:NSSelectorFromString("currentInteractionOptions")),
+        app.responds(to:NSSelectorFromString("setCurrentInteractionOptions:")) else { throw NSError(domain:"EasyWorkVoiceMigrationReceiver",code:1) }
+      voiceSourceInteractionOptions=app.value(forKey:"currentInteractionOptions")
+      app.setValue(NSNumber(value:3),forKey:"currentInteractionOptions")
+      #else
+      throw NSError(domain:"EasyWorkVoiceMigrationReceiver",code:2)
+      #endif
+    }
+    defer { if let voiceSourceInteractionOptions { app.setValue(voiceSourceInteractionOptions,forKey:"currentInteractionOptions") } }
     let port = try XCTUnwrap(config["observerPort"] as? Int)
-    let base = URL(string: "http://127.0.0.1:\(port)")!
+    let base = try XCTUnwrap(URL(string: config["observerBaseURL"] as? String ?? "http://127.0.0.1:\(port)"))
     func evidence(_ thread: String = "") async throws -> [String: Any] {
       var url = URLComponents(url: base.appendingPathComponent("evidence"), resolvingAgainstBaseURL: false)!
       url.queryItems = [URLQueryItem(name: "native", value: "1"), URLQueryItem(name: "threadId", value: thread)]
-      let (data, response) = try await URLSession.shared.data(from: url.url!)
-      XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+      var request = URLRequest(url: try XCTUnwrap(url.url))
+      request.setValue(try XCTUnwrap(config["authorization"] as? String), forHTTPHeaderField: "x-easywork-acceptance")
+      let (data, status) = try await easyWorkExaminerData(for: request)
+      XCTAssertEqual(status, 200)
       let value = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
       XCTAssertEqual(value["desktopOwnerAlive"] as? Bool, true)
       return value
@@ -1420,38 +1801,656 @@ final class CodexManageUITests: XCTestCase {
       request.setValue(try XCTUnwrap(config["authorization"] as? String), forHTTPHeaderField: "x-easywork-acceptance")
       var body = ["operation": name]; if let bindingId { body["bindingId"] = bindingId }
       request.httpBody = try JSONSerialization.data(withJSONObject: body)
-      let (data, response) = try await URLSession.shared.data(for: request)
-      XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+      let (data, status) = try await easyWorkExaminerData(for: request)
+      XCTAssertEqual(status, 200)
       XCTAssertEqual((try JSONSerialization.jsonObject(with: data) as? [String: Any])?["accepted"] as? Bool, true)
     }
-    try await control("desktop.device-offer-create")
-    let before = try await evidence()
+    if ["migration-import-fresh", "notice-test-driver"].contains(config["scenario"] as? String ?? "") {
+      app.launchArguments = ["-ui-testing", "-restore-testing", "-easywork-local-dev"]
+      if let run = config["notificationObservationRun"] as? String {
+        app.launchEnvironment["EASYWORK_NOTIFICATION_OBSERVATION_RUN"] = run
+      }
+      if config["scenario"] as? String=="notice-test-driver",config["noticeUseTallLocalUtility"] as? Bool==true {
+        app.launchEnvironment["EASYWORK_TEST_NOTICE_TALL"]="1"
+      }
+      app.launchChineseTest()
+      if config["scenario"] as? String == "notice-test-driver" {
+        try await runEasyWorkTestNoticeDriver(app: app, config: config, shot: { self.shot($0) })
+        return
+      }
+      try await runEasyWorkMigrationFreshImport(app: app, config: config, shot: { self.shot($0) })
+      return
+    }
+    if config["readingSecondResume"] as? Bool == true {
+      guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+        throw NSError(domain: "EasyWorkReadingResume", code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "The original covered App must still be running; do not relaunch it"])
+      }
+      app.activate()
+      XCTAssertTrue(app.navigationBars["客户端"].waitForExistence(timeout: 10), "Preserve the actual original covering sheet")
+      try await runEasyWorkJointSecondResume(app: app, composer: composer, config: config, shot: { self.shot($0) })
+      return
+    }
+    let before: [String: Any]
+    if config["reuseExistingClient"] as? Bool == true {
+      before = try await evidence()
+      app.launchArguments = ["-ui-testing", "-restore-testing", "-easywork-local-dev"]
+      if config["scenario"] as? String == "voice-pending-migration-export-existing" {
+        app.launchEnvironment["EASYWORK_CONNECTION_NOTICE_DIAGNOSTICS"] = "1"
+      }
+      if config["scenario"] as? String == "voice-pending-migration-source", let audio = config["voiceAudioURL"] as? String {
+        app.launchArguments.append("-voice-file-fixture")
+        app.launchEnvironment["VOICE_FILE_FIXTURE_URL"] = audio
+      }
+      if let run = config["sidebarStateTraceRun"] as? String {
+        app.launchEnvironment["EASYWORK_SIDEBAR_STATE_TRACE"] = run
+      }
+      if config["managementUnknownDelivery"] as? Bool == true {
+        app.launchEnvironment["EASYWORK_MANAGEMENT_DELIVERY_FAULT_ONCE"] = "1"
+      }
+      if ["notice-existing-completed", "notice-active-approval-route", "migration-export-save"].contains(config["scenario"] as? String ?? ""), let run = config["notificationObservationRun"] as? String {
+        app.launchEnvironment["EASYWORK_NOTIFICATION_OBSERVATION_RUN"] = run
+      }
+      app.launchChineseTest()
+      let client = app.buttons["client-switch"]
+      XCTAssertTrue(client.waitForExistence(timeout: 30))
+      let restoredClient = XCTNSPredicateExpectation(
+        predicate: NSPredicate(format: "exists == true AND label CONTAINS %@", "EasyWork"),
+        object: client)
+      guard XCTWaiter.wait(for: [restoredClient], timeout: 60) == .completed else {
+        print("EASYWORK_EXISTING_CLIENT_NOT_READY:" + client.label)
+        throw NSError(domain: "EasyWorkExistingClientRestoration", code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Original EasyWork client did not become ready; no target operation dispatched"])
+      }
+    } else {
+    if config["scenario"] as? String == "voice-pending-migration-source",
+      let originalOffer = config["originalUnclaimedVoiceOfferId"] as? String {
+      let retained = try await evidence()
+      let offer = try XCTUnwrap(retained["deviceOffer"] as? [String:Any])
+      guard offer["offerId"] as? String == originalOffer, offer["claim"] == nil || offer["claim"] is NSNull else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:8) }
+      before = retained
+    } else {
+      try await control("desktop.device-offer-create")
+      before = try await evidence()
+    }
     let link = try XCTUnwrap((before["deviceOffer"] as? [String: Any])?["deepLink"] as? String)
+    let manualCode = config["pairingPresentation"] as? String == "code"
     app.launchArguments = ["-ui-testing", "-easywork-local-dev"]
+    if config["scenario"] as? String == "voice-pending-migration-source" { app.launchArguments.append("-restore-testing") }
     app.launchEnvironment = ["EASYWORK_DEV_LAN_OFFER": link]
+    if manualCode {
+      let parts = try XCTUnwrap(URLComponents(string: link)?.queryItems)
+      app.launchEnvironment["EASYWORK_DEV_RELAY_URL"] = try XCTUnwrap(parts.first { $0.name == "relay" }?.value)
+      app.launchEnvironment["EASYWORK_DEV_RELAY_CODE"] = try XCTUnwrap(parts.first { $0.name == "code" }?.value)
+    }
+    if let audio = config["voiceAudioURL"] as? String {
+      app.launchArguments.append("-voice-file-fixture")
+      app.launchEnvironment["VOICE_FILE_FIXTURE_URL"] = audio
+    }
+    if config["fileCompletionLoss"] as? Bool == true { app.launchEnvironment["EASYWORK_DROP_FILE_COMPLETION_ONCE"] = "1" }
     app.launchChineseTest()
     XCTAssertTrue(app.buttons["client-switch"].waitForExistence(timeout: 20))
-    app.buttons["client-switch"].tap(); app.buttons["add-client"].tap(); app.buttons["EasyWork"].firstMatch.tap()
-    selectConnectionMethod("扫码连接", agent: "easywork")
-    for _ in 0..<5 where !app.buttons["easywork-pair-lan"].isHittable { app.swipeUp() }
-    XCTAssertTrue(app.buttons["easywork-pair-lan"].isHittable); app.buttons["easywork-pair-lan"].tap()
+    if config["scenario"] as? String == "voice-pending-migration-source" {
+      @MainActor func tapStable(_ element: XCUIElement) async throws {
+        let deadline = Date().addingTimeInterval(15)
+        var previous: CGRect?; var count = 0
+        while Date() < deadline {
+          if element.exists, element.isEnabled, element.isHittable {
+            let frame = element.frame
+            if frame == previous, frame.width > 0, frame.height > 0 { count += 1 } else { count = 0 }
+            previous = frame
+            if count >= 3 {
+              guard app.frame.contains(CGPoint(x:frame.midX,y:frame.midY)) else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:12) }
+              // A modern PopUpButton can retain legacy Button coordinates.
+              // Use the verified current App point, not its stale typed origin.
+              app.coordinate(withNormalizedOffset:.zero).withOffset(CGVector(dx:frame.midX-app.frame.minX,dy:frame.midY-app.frame.minY)).tap();return
+            }
+          } else { previous = nil;count = 0 }
+          try await Task.sleep(for:.milliseconds(200))
+        }
+        throw NSError(domain:"EasyWorkVoiceMigrationSource",code:10,userInfo:[NSLocalizedDescriptionKey:app.debugDescription])
+      }
+      try await tapStable(app.descendants(matching:.any).matching(identifier:"client-switch").firstMatch)
+      try await tapStable(app.descendants(matching:.any).matching(identifier:"add-client").firstMatch)
+      let form = app.descendants(matching:.any).matching(identifier:"agent-type").firstMatch
+      guard form.waitForExistence(timeout:15) else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:11,userInfo:[NSLocalizedDescriptionKey:app.debugDescription]) }
+      let agent = app.descendants(matching:.any).matching(identifier:"EasyWork").firstMatch
+      let ready = XCTNSPredicateExpectation(predicate:NSPredicate(format:"exists == true AND isHittable == true AND isEnabled == true"),object:agent)
+      guard XCTWaiter.wait(for:[ready],timeout:20) == .completed else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:9,userInfo:[NSLocalizedDescriptionKey:app.debugDescription]) }
+      try await tapStable(agent)
+      if manualCode {
+        let picker = app.descendants(matching:.any).matching(identifier:"easywork-connection-method").firstMatch
+        // Picker's AX rectangle includes the noninteractive leading form label
+        // and blank space. Its visible trailing value is the actual menu hit area.
+        let value = picker.descendants(matching:.staticText).matching(NSPredicate(format:"label IN %@",["自动发现","手动连接","扫码连接","通过中继连接"])).firstMatch
+        try await tapStable(value)
+        let method = app.descendants(matching:.any).matching(NSPredicate(format:"label == %@","通过中继连接")).firstMatch
+        try await tapStable(method)
+      }
+    } else { app.buttons["client-switch"].tap();app.buttons["add-client"].tap();app.buttons["EasyWork"].firstMatch.tap() }
+    if config["scenario"] as? String != "voice-pending-migration-source" { selectConnectionMethod(manualCode ? "通过中继连接" : "扫码连接", agent: "easywork") }
+    let pair = app.buttons[manualCode ? "easywork-pair-relay" : "easywork-pair-lan"]
+    for _ in 0..<5 where !pair.isHittable { app.swipeUp() }
+    XCTAssertTrue(pair.isHittable); pair.tap()
     let pending = app.descendants(matching: .any).matching(identifier: "easywork-connecting").firstMatch
     let waiting = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS '确认此设备'"), object: pending)
-    XCTAssertEqual(XCTWaiter.wait(for: [waiting], timeout: 60), .completed, app.debugDescription)
+    guard XCTWaiter.wait(for: [waiting], timeout: 60) == .completed else {
+      XCTFail("Original device authorization did not reach pending state: " + app.debugDescription)
+      return
+    }
     XCTAssertFalse(app.buttons["登录 EasyAI"].exists)
     shot("native-ios-device-authorization-pending")
     try await control("desktop.device-claim-approve")
     let online = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true AND label CONTAINS 'EasyWork'"), object: app.buttons["client-switch"])
     XCTAssertEqual(XCTWaiter.wait(for: [online], timeout: 90), .completed, app.debugDescription)
-    chooseDesktopProject(nil)
+    }
+    if config["scenario"] as? String == "voice-pending-migration-export-existing" {
+      guard config["reuseExistingClient"] as? Bool == true, config["newVoiceCapturesAuthorized"] as? Int == 0 else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:13) }
+      let alert = app.alerts.firstMatch
+      if alert.exists {
+        easyWorkExaminerText(alert.debugDescription,name:"easywork-original-voice-export-existing-alert",testCase:self)
+        let dismiss = alert.buttons.allElementsBoundByIndex.filter { ["好","确定","关闭","取消","OK","Cancel"].contains($0.label) && $0.isHittable }
+        guard dismiss.count == 1 else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:14) }
+        dismiss[0].tap()
+      }
+      let waiting = app.buttons["cancel-dictation"]
+      if waiting.exists {
+        XCTAssertTrue(waiting.isEnabled);XCTAssertTrue(waiting.isHittable);waiting.tap()
+        XCTAssertTrue(waiting.waitForNonExistence(timeout:15))
+      }
+      XCTAssertTrue(composer.waitForExistence(timeout:20));XCTAssertEqual(composer.value as? String,config["voiceMigrationDraft"] as? String)
+      if config["originalVoiceInspectOnly"] as? Bool == true {
+        guard config["newSystemExportsAuthorized"] as? Int == 0 else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:15) }
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        try await Task.sleep(for:.seconds(2))
+        XCTAssertEqual(composer.value as? String,config["voiceMigrationDraft"] as? String)
+        shot("native-ios-original-voice-error-dismissal-inspection")
+        easyWorkExaminerText("Only dismiss the original observed authorization alert and retain its original draft/record. No migration export, microphone, retry, pairing or model input.",name:"easywork-original-voice-local-error-inspection",testCase:self)
+        return
+      }
+      easyWorkExaminerText("Continue the exact production-saved pending voice and operation ID. Only end local waiting if present. No microphone, voice retry, pairing, new offer or model input.",name:"easywork-original-pending-voice-readonly-continuation",testCase:self)
+      if config["mixedMigrationFilenames"] != nil {
+        try await prepareEasyWorkOriginalVoiceMixedDraft(app:app,config:config,shot:{ self.shot($0) })
+      }
+      var exportConfig = config;exportConfig["scenario"]="migration-export-save"
+      try await runEasyWorkMigrationExportCancel(app:app,composer:composer,config:exportConfig,evidence:evidence,shot:{ self.shot($0) })
+      return
+    }
+    if config["scenario"] as? String == "voice-pending-migration-source" {
+      let marker = try XCTUnwrap(config["voiceMigrationDraft"] as? String)
+      XCTAssertTrue(composer.waitForExistence(timeout:30))
+      let empty = try XCTUnwrap(composer.value as? String)
+      let allowedEmpty = empty.isEmpty || empty == (composer.placeholderValue ?? "")
+      let knownGenerated = empty == marker || empty == (config["voiceMigrationPreviousDraft"] as? String ?? marker)
+      guard allowedEmpty || knownGenerated else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:3) }
+      if empty != marker { try replaceEasyWorkManagementText(app:app,field:composer,with:marker) }
+      XCTAssertEqual(composer.value as? String,marker)
+      if app.buttons["composer-dismiss-keyboard"].isHittable { app.buttons["composer-dismiss-keyboard"].tap() }
+      let mic = app.buttons["voice-input"];XCTAssertTrue(mic.waitForExistence(timeout:30));mic.tap()
+      if app.buttons["ai-sharing-allow"].waitForExistence(timeout:8), allowTestAISharingIfNeeded() { XCTAssertTrue(mic.waitForExistence(timeout:10));mic.tap() }
+      let stop = app.buttons["stop-dictation"]
+      let recording = XCTNSPredicateExpectation(predicate:NSPredicate(format:"exists == true AND isEnabled == true AND label == %@","结束录音并转写"),object:stop)
+      guard XCTWaiter.wait(for:[recording],timeout:45) == .completed else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:4,userInfo:[NSLocalizedDescriptionKey:app.debugDescription]) }
+      XCTAssertTrue((app.otherElements["dictation-waveform"].value as? String ?? app.descendants(matching:.any).matching(identifier:"dictation-waveform").firstMatch.value as? String ?? "").contains("fixture-file"))
+      XCTAssertEqual(app.staticTexts["dictation-transcript"].label,marker)
+      let observed = try await evidence()
+      let oldBindings = Set(try XCTUnwrap(config["oldBindingIds"] as? [String]))
+      let newBindings = Set((observed["requests"] as? [[String:Any]] ?? []).compactMap { $0["bindingId"] as? String }).subtracting(oldBindings)
+      guard newBindings.count == 1 else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:5) }
+      let binding = try XCTUnwrap(newBindings.first)
+      if let original = config["voiceMigrationBindingId"] as? String { XCTAssertEqual(binding,original) }
+      easyWorkExaminerText(String(decoding:try JSONSerialization.data(withJSONObject:["bindingId":binding,"draft":marker,"knownWavMicrophone":false,"newModelInputs":0],options:[.sortedKeys]),as:UTF8.self),name:"easywork-new-voice-source-before-revocation",testCase:self)
+      try await control("desktop.device-binding-revoke",bindingId:binding)
+      func dismissObservedError() {
+        let alert = app.alerts.firstMatch
+        if alert.exists {
+          easyWorkExaminerText(alert.debugDescription,name:"easywork-new-voice-source-expected-error",testCase:self)
+          let buttons = alert.buttons.allElementsBoundByIndex
+          if buttons.count == 1 && buttons[0].isHittable { buttons[0].tap() }
+        }
+      }
+      dismissObservedError()
+      guard stop.exists, stop.isEnabled, stop.label == "结束录音并转写" else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:6) }
+      stop.tap()
+      let failed = XCTNSPredicateExpectation(predicate:NSPredicate(format:"exists == true AND label == %@","重试转写"),object:stop)
+      guard XCTWaiter.wait(for:[failed],timeout:45) == .completed else { throw NSError(domain:"EasyWorkVoiceMigrationSource",code:7,userInfo:[NSLocalizedDescriptionKey:app.debugDescription]) }
+      dismissObservedError();shot("native-ios-new-original-recording-retained-after-revocation")
+      app.buttons["cancel-dictation"].tap()
+      XCTAssertTrue(composer.waitForExistence(timeout:15));XCTAssertEqual(composer.value as? String,marker)
+      let final = try await evidence()
+      let originalIds = Set((before["requests"] as? [[String:Any]] ?? []).compactMap { ($0["request"] as? [String:Any])?["requestId"] as? String })
+      let newRequests = (final["requests"] as? [[String:Any]] ?? []).compactMap { $0["request"] as? [String:Any] }.filter { !originalIds.contains($0["requestId"] as? String ?? "") }
+      XCTAssertFalse(newRequests.contains { ["turn/start","thread/create","voice/upload"].contains($0["method"] as? String ?? "") })
+      easyWorkExaminerText("New native known-WAV recording retained by production PendingVoiceStore after revoking only its new device authorization. No old operation retried, no microphone/ASR/model pass claimed.",name:"easywork-new-original-pending-voice-prefix",testCase:self)
+      var exportConfig = config;exportConfig["scenario"]="migration-export-save";exportConfig["sidebarThreadId"]=""
+      try await runEasyWorkMigrationExportCancel(app:app,composer:composer,config:exportConfig,evidence:evidence,shot:{ self.shot($0) })
+      return
+    }
+    if config["scenario"] as? String == "migration-authorized-unknown-query" {
+      try await runEasyWorkMigrationAuthorizedUnknownQuery(app:app,config:config,shot:{ self.shot($0) })
+      return
+    }
+    if config["scenario"] as? String == "migration-reauthorize" {
+      try await runEasyWorkMigrationReauthorization(app:app,config:config,evidence:evidence,control:{ try await control($0) },shot:{ self.shot($0) })
+      return
+    }
+    if config["scenario"] as? String == "migration-authorized-restore" {
+      try await runEasyWorkMigrationAuthorizedRestore(app:app,config:config,shot:{ self.shot($0) })
+      return
+    }
+    if ["migration-export-cancel", "migration-export-save"].contains(config["scenario"] as? String ?? "") {
+      try await runEasyWorkMigrationExportCancel(app: app, composer: composer, config: config, evidence: evidence, shot: { self.shot($0) })
+      return
+    }
+    if config["scenario"] as? String == "notice-existing-completed" {
+      try await runEasyWorkOriginalCompletedNoticeSettings(app: app, composer: composer, config: config, shot: { self.shot($0) })
+      return
+    }
+    if config["scenario"] as? String == "notice-active-approval-route" {
+      try await runEasyWorkActiveApprovalNoticeRoute(app: app, composer: composer, config: config, shot: { self.shot($0) })
+      return
+    }
+    if config["scenario"] as? String == "management-rename-existing" {
+      let originalIds=Set((before["requests"] as? [[String:Any]] ?? []).compactMap { ($0["request"] as? [String:Any])?["requestId"] as? String })
+      try await resumeEasyWorkChatManagement(app:app,composer:composer,config:config,beforeIds:originalIds,
+        evidence:evidence,shot:{ self.shot($0) },replace:{ replaceText($0,with:$1) })
+      return
+    }
+    if config["scenario"] as? String == "resource-formats-existing" {
+      try await runEasyWorkResourceFormats(app:app,composer:composer,config:config,evidence:evidence,shot:{ self.shot($0) })
+      return
+    }
+    if config["scenario"] as? String == "complex-fork-existing" {
+      try await runEasyWorkComplexHistoryFork(app:app,composer:composer,config:config,evidence:evidence,
+        shot:{ self.shot($0) },openFork:{ id in self.openFirstForkMenu(id);self.tapForkEnvironment("same-directory",replyId:id) })
+      return
+    }
+    if config["scenario"] as? String == "fork-options-inspect-existing" {
+      try await runEasyWorkForkOptionsInspection(app:app,composer:composer,config:config,evidence:evidence,
+        shot:{ self.shot($0) },openOptions:{ self.openFirstForkMenu($0) })
+      return
+    }
+    let originalForkReadOnly=config["scenario"] as? String == "forks-existing" && config["forkReadOnlyRecovery"] as? Bool == true
+    if originalForkReadOnly || config["scenario"] as? String == "forks-existing" && config["newModelInputsAuthorized"] as? Int == 0 {
+      guard originalForkReadOnly,config["newModelInputsAuthorized"] as? Int == 0,
+        config["existingForkOperation"] is [String:Any] else { throw NSError(domain:"EasyWorkAcceptance",code:19) }
+    }
+    // Xcode 27.1 with this 27.0 simulator can miss the global animation-complete
+    // notification even after the requested UI state is visible. Use the same
+    // opt-in runner facility as the refresh interaction test, with explicit
+    // element/frame readiness below. This changes no App animations or actions.
+    var originalInteractionOptions: Any?
+    if originalForkReadOnly && config["explicitNativeReadiness"] as? Bool == true {
+      guard app.responds(to:NSSelectorFromString("setCurrentInteractionOptions:")),
+        app.responds(to:NSSelectorFromString("currentInteractionOptions")) else {
+        throw NSError(domain:"EasyWorkForkDriver",code:2,userInfo:[NSLocalizedDescriptionKey:"This Xcode lacks the opt-in interaction wait facility"])
+      }
+      originalInteractionOptions=app.value(forKey:"currentInteractionOptions")
+      app.setValue(NSNumber(value:3),forKey:"currentInteractionOptions")
+    }
+    defer { if let originalInteractionOptions { app.setValue(originalInteractionOptions,forKey:"currentInteractionOptions") } }
+    if config["testPath"] as? String == "relay" && !originalForkReadOnly {
+      let clientPicker = app.buttons["client-switch"]
+      if config["scenario"] as? String == "forks-existing" {
+        XCTAssertTrue(app.frame.contains(CGPoint(x:clientPicker.frame.midX,y:clientPicker.frame.midY)))
+        clientPicker.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap()
+      } else { clientPicker.tap() }
+      let edit = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'edit-client-easywork-' ")).firstMatch
+      XCTAssertTrue(edit.waitForExistence(timeout: 15)); edit.tap()
+      app.descendants(matching: .any)["connection-preference"].firstMatch.tap()
+      XCTAssertTrue(app.buttons["仅中继"].firstMatch.waitForExistence(timeout: 10)); app.buttons["仅中继"].firstMatch.tap()
+      app.buttons["cancel-client-form"].tap(); app.navigationBars.buttons["完成"].tap()
+    }
+    if config["scenario"] as? String == "reading-joint" {
+      try await runEasyWorkJointReading(app: app, composer: composer, config: config, shot: { self.shot($0) })
+      return
+    }
+    if !originalForkReadOnly { chooseDesktopProject(nil) }
     let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true AND isHittable == true"), object: app.buttons["generation-settings"])
-    XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 60), .completed)
+    if !originalForkReadOnly { XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 60), .completed) }
+    if ["sidebar-readonly", "reading-authority-existing"].contains(config["scenario"] as? String ?? "") {
+      try await runEasyWorkSidebarReadOnly(app: app, composer: composer, config: config,
+        before: before, evidence: evidence, shot: { shot($0) })
+      return
+    }
+    if let files = config["independentTransferFiles"] as? [String], !files.isEmpty {
+      let selectionMode = config["fileSelectionMode"] as? String ?? "upload"
+      func verifyNoFileWrites() async throws {
+        let oldIds = Set(((before["requests"] as? [[String: Any]] ?? []).compactMap { ($0["request"] as? [String: Any])?["requestId"] as? String }))
+        let observed = try await evidence()
+        let fresh = (observed["requests"] as? [[String: Any]] ?? []).compactMap { $0["request"] as? [String: Any] }.filter { !oldIds.contains($0["requestId"] as? String ?? "") }
+        XCTAssertFalse(fresh.contains { ["resource/upload", "resource/upload-chunk", "resource/upload-complete", "thread/create", "turn/start"].contains($0["method"] as? String ?? "") })
+      }
+      XCTAssertTrue(composer.waitForExistence(timeout: 15))
+      composer.tap(); typeComposerText("EASYWORK_FILES_UNSENT_DRAFT")
+      if app.buttons["composer-dismiss-keyboard"].exists { app.buttons["composer-dismiss-keyboard"].tap() }
+      let original = try XCTUnwrap(composer.value as? String)
+      app.buttons["open-sidebar"].tap(); app.buttons["sidebar-file-transfers"].tap()
+      let select = app.buttons["choose-transfer-files"]
+      let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: select)
+      XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 30), .completed)
+      shot("easywork-file-transfer-empty"); select.tap()
+      let browse = app.buttons.matching(NSPredicate(format: "label == 'Browse' OR label == '浏览'")).firstMatch
+      XCTAssertTrue(browse.waitForExistence(timeout: 15), app.debugDescription); browse.tap()
+      let phone = app.staticTexts.matching(NSPredicate(format: "label == 'On My iPhone' OR label == '我的 iPhone' OR label == '我的iPhone'")).firstMatch
+      if phone.waitForExistence(timeout: 10) { phone.tap() }
+      let folder = app.collectionViews.cells.matching(NSPredicate(format: "label BEGINSWITH 'Agent Hub'")).firstMatch
+      if folder.waitForExistence(timeout: 10) { folder.tap() }
+      if selectionMode == "cancel" {
+        let cancel = app.buttons.matching(NSPredicate(format: "label == 'Cancel' OR label == '取消'")).firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10)); cancel.tap()
+        let idle = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: select)
+        XCTAssertEqual(XCTWaiter.wait(for: [idle], timeout: 15), .completed)
+        shot("easywork-file-picker-cancelled")
+        app.buttons["完成"].tap()
+        if app.buttons["close-sidebar"].exists { app.buttons["close-sidebar"].tap() }
+        XCTAssertEqual(composer.value as? String, original)
+        try await verifyNoFileWrites(); return
+      }
+      for name in files {
+        let file = app.collectionViews.cells.matching(NSPredicate(format: "label CONTAINS %@", (name as NSString).deletingPathExtension)).firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 15), app.debugDescription); file.tap()
+      }
+      shot("easywork-system-file-selection")
+      let open = app.buttons.matching(NSPredicate(format: "label == 'Open' OR label == '打开'")).firstMatch
+      XCTAssertTrue(open.waitForExistence(timeout: 5)); open.tap()
+      if selectionMode == "invalid" {
+        XCTAssertTrue(app.staticTexts["请选择非空且不超过 20 MB 的文件。"].firstMatch.waitForExistence(timeout: 30), app.debugDescription)
+        let idle = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: select)
+        XCTAssertEqual(XCTWaiter.wait(for: [idle], timeout: 15), .completed)
+        for name in files { XCTAssertFalse(app.descendants(matching: .any)["completed-transfer-" + name].firstMatch.exists) }
+        shot("easywork-empty-and-over-limit-files-rejected")
+        app.buttons["完成"].tap()
+        if app.buttons["close-sidebar"].exists { app.buttons["close-sidebar"].tap() }
+        XCTAssertEqual(composer.value as? String, original)
+        try await verifyNoFileWrites(); return
+      }
+      if config["fileCompletionLoss"] as? Bool == true {
+        XCTAssertTrue(app.buttons["查询结果"].firstMatch.waitForExistence(timeout: 90), app.debugDescription)
+        let idle = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: select)
+        XCTAssertEqual(XCTWaiter.wait(for: [idle], timeout: 60), .completed)
+        XCTAssertTrue(app.staticTexts["接收结果待确认 · 文件已保留在手机"].firstMatch.exists)
+        shot("easywork-file-result-unknown-original-retained")
+      } else {
+      for name in files { XCTAssertTrue(app.descendants(matching: .any)["completed-transfer-" + name].firstMatch.waitForExistence(timeout: 90), app.debugDescription) }
+      shot("easywork-file-transfer-received")
+      }
+      app.buttons["完成"].tap()
+      if app.buttons["close-sidebar"].exists { app.buttons["close-sidebar"].tap() }
+      XCTAssertEqual(composer.value as? String, original)
+      app.terminate(); app.launchArguments = ["-ui-testing", "-restore-testing", "-easywork-local-dev"]; app.launchChineseTest()
+      XCTAssertTrue(app.buttons["open-sidebar"].waitForExistence(timeout: 25)); app.buttons["open-sidebar"].tap(); app.buttons["sidebar-file-transfers"].tap()
+      for name in files { XCTAssertTrue(app.descendants(matching: .any)["completed-transfer-" + name].firstMatch.waitForExistence(timeout: 45), app.debugDescription) }
+      XCTAssertFalse(app.buttons["查询结果"].exists)
+      shot("easywork-file-transfer-restored")
+      app.buttons["完成"].tap()
+      if app.buttons["close-sidebar"].exists { app.buttons["close-sidebar"].tap() }
+      XCTAssertEqual(composer.value as? String, original)
+      let observed = try await evidence()
+      let requests = (observed["requests"] as? [[String: Any]] ?? []).compactMap { $0["request"] as? [String: Any] }
+      let starts = requests.filter { $0["method"] as? String == "turn/start" }.count
+      let originalStarts = ((before["requests"] as? [[String: Any]] ?? []).compactMap { $0["request"] as? [String: Any] }).filter { $0["method"] as? String == "turn/start" }.count
+      XCTAssertEqual(starts, originalStarts)
+      let beforeIds = Set(((before["requests"] as? [[String: Any]] ?? []).compactMap { ($0["request"] as? [String: Any])?["requestId"] as? String }))
+      let uploads = requests.filter { $0["method"] as? String == "resource/upload" && !beforeIds.contains($0["requestId"] as? String ?? "") }
+      XCTAssertEqual(uploads.count, files.count)
+      for upload in uploads { XCTAssertTrue((upload["requestId"] as? String ?? "").hasPrefix("file-prepare-")) }
+      let completes = requests.filter { $0["method"] as? String == "resource/upload-complete" && !beforeIds.contains($0["requestId"] as? String ?? "") }
+      XCTAssertEqual(completes.count, files.count)
+      print("EASYWORK_FILES_PROOF:system-multiple-picker;restored;zero-model-inputs")
+      return
+    }
+    if !originalForkReadOnly {
     app.buttons["generation-settings"].tap()
     app.descendants(matching: .any).matching(identifier: "model-picker").firstMatch.tap()
     let model = app.buttons.matching(NSPredicate(format: "label CONTAINS 'GLM-5.2' AND identifier != 'generation-settings'")).firstMatch
     XCTAssertTrue(model.waitForExistence(timeout: 10)); model.tap()
     app.descendants(matching: .any).matching(identifier: "effort-picker").firstMatch.tap(); app.buttons["高"].firstMatch.tap()
     app.navigationBars.buttons["完成"].tap()
+    }
+    if config["scenario"] as? String == "batch-archive-existing" {
+      let beforeIds = Set((before["requests"] as? [[String: Any]] ?? []).compactMap { ($0["request"] as? [String: Any])?["requestId"] as? String })
+      let markers = try XCTUnwrap(config["batchReplyMarkers"] as? [String]); XCTAssertEqual(markers.count, 2)
+      try await runEasyWorkBatchArchive(app: app, composer: composer, config: config, beforeIds: beforeIds, firstMarker: markers[0],
+        evidence: evidence, shot: { shot($0) }, newConversation: { chooseDesktopProject(nil) },
+        replace: { replaceText($0, with: $1) }, send: { tapAISharingAction(app.buttons["send-message"]) })
+      return
+    }
+    if config["scenario"] as? String == "management-existing" {
+      let originalIds = Set((before["requests"] as? [[String: Any]] ?? []).compactMap { ($0["request"] as? [String: Any])?["requestId"] as? String })
+      try await resumeEasyWorkChatManagement(app: app, composer: composer, config: config, beforeIds: originalIds,
+        evidence: evidence, shot: { shot($0) }, replace: { replaceText($0, with: $1) })
+      return
+    }
+    if config["scenario"] as? String == "forks-existing" {
+      let original = try XCTUnwrap(config["forkSource"] as? [String: Any])
+      let source = try XCTUnwrap(original["threadId"] as? String)
+      let selectedRun = try XCTUnwrap(original["selectedRun"] as? String)
+      let forkEnvironment = config["forkEnvironment"] as? String ?? "same-directory"
+      XCTAssertTrue(["same-directory", "worktree"].contains(forkEnvironment))
+      let childFile = "ios-worktree-" + UUID().uuidString.prefix(8).lowercased() + ".txt"
+      let first = try XCTUnwrap(original["firstMarker"] as? String), later = try XCTUnwrap(original["laterMarker"] as? String)
+      let replyID = try XCTUnwrap(original["replyUIId"] as? String)
+      let marker = "IOS_FORK_CHILD_" + UUID().uuidString.prefix(8)
+      let oldRequestIDs = Set((before["requests"] as? [[String: Any]] ?? []).compactMap { ($0["request"] as? [String: Any])?["requestId"] as? String })
+      func freshRequests(_ observed: [String: Any], _ method: String) -> [[String: Any]] {
+        (observed["requests"] as? [[String: Any]] ?? []).filter {
+          guard let request = $0["request"] as? [String: Any], let id = request["requestId"] as? String else { return false }
+          return request["method"] as? String == method && !oldRequestIDs.contains(id)
+        }
+      }
+      func waitForStableButton(_ button:XCUIElement,inside container:XCUIElement) async throws {
+        var previous=CGRect.null
+        for _ in 0..<75 {
+          if button.exists && button.isEnabled {
+            let frame=button.frame
+            if !frame.isEmpty && !frame.isNull && !frame.isInfinite && container.frame.contains(frame) && frame==previous { return }
+            previous=frame
+          } else { previous = .null }
+          try await Task.sleep(for:.milliseconds(200))
+        }
+        throw NSError(domain:"EasyWorkForkDriver",code:3,userInfo:[NSLocalizedDescriptionKey:"Exact native button did not become enabled and geometrically stable"])
+      }
+      func selectSource() async throws {
+        let sidebar = app.buttons["open-sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout:15)); XCTAssertTrue(app.frame.contains(CGPoint(x:sidebar.frame.midX,y:sidebar.frame.midY)))
+        try await waitForStableButton(sidebar,inside:app)
+        sidebar.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap()
+        // The drawer stays mounted while closed. Wait for its actual exposed
+        // panel before deciding whether its retained search field is visible.
+        try await waitForStableButton(app.buttons["close-sidebar"],inside:app)
+        let search = app.textFields["sidebar-search"]
+        if !search.exists {
+          let toggle=app.buttons["sidebar-search-toggle"]
+          try await waitForStableButton(toggle,inside:app);toggle.tap()
+        }
+        let searchTitle = original["sidebarSearchTitle"] as? String ?? first
+        XCTAssertTrue(search.waitForExistence(timeout: 15)); if search.value as? String != searchTitle { try replaceEasyWorkManagementText(app:app,field:search,with:searchTitle) }
+        let prefixes = [original["rowPrefix"] as? String ?? "recent-thread-", "thread-", "recent-thread-", "pinned-thread-"]
+        let rows = Array(Set(prefixes)).sorted().map { app.buttons[$0 + source] }
+        let sidebarList = app.scrollViews["sidebar-list"]
+        for _ in 0..<6 {
+          if rows.contains(where: { $0.exists && sidebarList.frame.contains(CGPoint(x:$0.frame.midX,y:$0.frame.midY)) }) { break }
+          sidebarList.swipeUp()
+        }
+        guard let row = rows.first(where: { $0.exists && sidebarList.frame.contains(CGPoint(x:$0.frame.midX,y:$0.frame.midY)) }) else {
+          shot("easywork-fork-source-sidebar-missing")
+          throw NSError(domain: "EasyWorkForkDriver", code: 1, userInfo: [NSLocalizedDescriptionKey:
+            "Exact source row missing after search value=\(search.value ?? "nil"): " + app.debugDescription])
+        }
+        try await waitForStableButton(row,inside:sidebarList); row.tap()
+        XCTAssertTrue(app.buttons["close-sidebar"].waitForNonExistence(timeout:15),"Wait for the real drawer close transition")
+        XCTAssertTrue(app.staticTexts[later].firstMatch.waitForExistence(timeout: 40))
+      }
+      try await selectSource()
+      let sourceBefore = try await evidence(source)
+      let originalSnapshot = try XCTUnwrap(((sourceBefore["independentDesktop"] as? [String: Any])?["snapshots"] as? [[String: Any]])?.first)
+      let sourceHash = try XCTUnwrap(originalSnapshot["messagesHash"] as? String)
+      let existingOperation = config["existingForkOperation"] as? [String: Any]
+      let draft: String
+      var operation: [String: Any] = [:]
+      if let existingOperation {
+        draft = try XCTUnwrap(composer.value as? String)
+        XCTAssertTrue(draft.hasPrefix("IOS_FORK_UNSENT_IOS_FORK_CHILD_"), "Recover the original unsent source draft; never manufacture it")
+        let operationID = try XCTUnwrap(existingOperation["clientOperationId"] as? String)
+        let query = app.buttons["query-fork-" + operationID]
+        XCTAssertTrue(query.waitForExistence(timeout:30))
+        for _ in 0..<6 where !app.frame.contains(CGPoint(x:query.frame.midX,y:query.frame.midY)) { app.scrollViews["message-list"].swipeUp() }
+        XCTAssertTrue(app.frame.contains(CGPoint(x:query.frame.midX,y:query.frame.midY)))
+        try await waitForStableButton(query,inside:app)
+        query.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap()
+        operation = existingOperation
+      } else {
+        if let retained = composer.value as? String, retained.hasPrefix("IOS_FORK_UNSENT_IOS_FORK_CHILD_") {
+          draft = retained
+        } else {
+          draft = "IOS_FORK_UNSENT_" + String(marker)
+          focusLiveComposer(); typeComposerText(draft)
+        }
+        if app.buttons["composer-dismiss-keyboard"].exists { app.buttons["composer-dismiss-keyboard"].tap() }
+        openFirstForkMenu(replyID); tapForkEnvironment(forkEnvironment, replyId: replyID)
+        for _ in 0..<90 {
+          let observed = try await evidence(source)
+          let writes = freshRequests(observed, "thread/fork")
+          XCTAssertLessThanOrEqual(writes.count, 1, "One explicit fork; do not replay")
+          if let write = writes.first, let result = (write["response"] as? [String: Any])?["result"] as? [String: Any], result["phase"] as? String == "confirmed", let params = (write["request"] as? [String: Any])?["params"] as? [String: Any] { operation = params.merging(result) { _, rhs in rhs }; break }
+          try await Task.sleep(for: .seconds(1))
+        }
+      }
+      XCTAssertEqual(operation["threadId"] as? String, source); XCTAssertEqual(operation["turnId"] as? String, selectedRun)
+      XCTAssertEqual(operation["environment"] as? String, forkEnvironment)
+      let child = try XCTUnwrap(operation["forkedThreadId"] as? String)
+      let childVisible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        self.app.staticTexts[first].firstMatch.exists && !self.app.staticTexts[later].exists
+      }, object: app)
+      guard XCTWaiter.wait(for:[childVisible],timeout:60) == .completed else {
+        XCTFail("Original fork receipt did not finish opening its child: " + app.debugDescription); return
+      }
+      if config["forkReadOnlyRecovery"] as? Bool == true {
+        XCTAssertNotNil(existingOperation, "Recovery requires the original recorded operation")
+        let recoveredMarker = try XCTUnwrap(config["recoveredChildMarker"] as? String)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", first, recoveredMarker)).firstMatch.waitForExistence(timeout: 40))
+        let childEvidence = try await evidence(child)
+        let childSnapshot = try XCTUnwrap(((childEvidence["independentDesktop"] as? [String: Any])?["snapshots"] as? [[String: Any]])?.first)
+        let expectedChildHash = try XCTUnwrap(config["recoveredChildMessagesHash"] as? String)
+        XCTAssertEqual(childSnapshot["messagesHash"] as? String, expectedChildHash)
+        shot("native-ios-easywork-original-fork-readonly-recovered")
+        try await selectSource(); XCTAssertEqual(composer.value as? String, draft)
+        let final = try await evidence(source)
+        let finalSnapshot = try XCTUnwrap(((final["independentDesktop"] as? [String: Any])?["snapshots"] as? [[String: Any]])?.first)
+        XCTAssertEqual(finalSnapshot["messagesHash"] as? String, sourceHash)
+        for method in ["thread/fork", "turn/start", "project/create"] {
+          XCTAssertEqual(freshRequests(final,method).count,0,"Read-only recovery must not replay a write")
+        }
+        let queries = freshRequests(final,"thread/fork-status")
+        XCTAssertFalse(queries.isEmpty)
+        for query in queries {
+          let params = (query["request"] as? [String: Any])?["params"] as? [String: Any]
+          XCTAssertEqual(params?["operationId"] as? String, operation["clientOperationId"] as? String)
+          XCTAssertEqual(params?["threadId"] as? String, source)
+        }
+        let proof: [String: Any] = ["sourceThread":source,"forkedThread":child,"operationId":try XCTUnwrap(operation["clientOperationId"] as? String),"environment":forkEnvironment,"sourceMessagesHash":sourceHash,"childMessagesHash":expectedChildHash,"sourceDraftPreserved":true,"newForkWrites":0,"newModelInputs":0,"newProjectWrites":0,"originalReceiptQueried":true,"wholeF62Passed":false]
+        print("EASYWORK_IOS_FORK_RECOVERY_PROOF:" + String(decoding:try JSONSerialization.data(withJSONObject:proof,options:[.sortedKeys]),as:UTF8.self))
+        shot("native-ios-easywork-readonly-source-draft-preserved"); return
+      }
+      XCTAssertTrue((composer.value as? String ?? "").isEmpty || composer.value as? String == "询问 EasyWork")
+      let inheritedObserved = try await evidence(child)
+      XCTAssertEqual(freshRequests(inheritedObserved, "turn/start").count, 0, "Fork itself never starts a model")
+      shot("native-ios-easywork-exact-old-turn-fork")
+      let childPrompt = forkEnvironment == "worktree"
+        ? "In the current project working directory, use a filesystem tool to create \(childFile) containing exactly \(marker) and a newline. Do not modify any previous file or write outside the current project directory. Then reply with the identifier from the first user message, followed by \(marker)."
+        : "Reply with the identifier from the first user message, followed by \(marker). Do not call tools or modify files."
+      focusLiveComposer(); typeComposerText(childPrompt); sendLiveComposer()
+      let answer = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", first, String(marker))).firstMatch
+      XCTAssertTrue(answer.waitForExistence(timeout: 240))
+      var childRun: String?
+      for _ in 0..<45 {
+        let observed = try await evidence(child)
+        let starts = freshRequests(observed, "turn/start")
+        XCTAssertEqual(starts.count, 1)
+        let result = (starts.first?["response"] as? [String: Any])?["result"] as? [String: Any]
+        if let runID = result?["runId"] as? String, let run = ((observed["independentDesktop"] as? [String: Any])?["executions"] as? [[String: Any]])?.first(where: { $0["id"] as? String == runID }), (run["run"] as? [String: Any])?["status"] as? String == "completed", !(run["providerUsage"] as? [[String: Any]] ?? []).isEmpty { childRun = runID; break }
+        try await Task.sleep(for: .seconds(1))
+      }
+      XCTAssertNotNil(childRun); shot("native-ios-easywork-inherited-context-real-model")
+      try await selectSource(); XCTAssertEqual(composer.value as? String, draft)
+      let final = try await evidence(source)
+      let finalSnapshot = try XCTUnwrap(((final["independentDesktop"] as? [String: Any])?["snapshots"] as? [[String: Any]])?.first)
+      XCTAssertEqual(finalSnapshot["messagesHash"] as? String, sourceHash)
+      XCTAssertEqual(freshRequests(final,"thread/fork").count,existingOperation == nil ? 1 : 0); XCTAssertEqual(freshRequests(final,"turn/start").count,1)
+      let proof: [String: Any] = ["sourceThread":source,"selectedRun":selectedRun,"forkedThread":child,"operationId":try XCTUnwrap(operation["clientOperationId"] as? String),"childRun":try XCTUnwrap(childRun),"sourceMessagesHash":sourceHash,"newForkWrites":existingOperation == nil ? 1 : 0,"originalForkReused":existingOperation != nil,"sourceInputsReplayed":0,"newChildInputs":1,"sourceDraftPreserved":true,"environment":forkEnvironment,"childFile":forkEnvironment == "worktree" ? childFile : "","childFileContent":forkEnvironment == "worktree" ? String(marker) + "\n" : "","wholeF62Passed":false]
+      print("EASYWORK_IOS_FORK_PROOF:" + String(decoding:try JSONSerialization.data(withJSONObject:proof,options:[.sortedKeys]),as:UTF8.self))
+      shot("native-ios-easywork-source-draft-preserved"); return
+    }
+    if config["scenario"] as? String == "stop-resume-only" {
+      let marker = "IOS_STOP_" + UUID().uuidString.prefix(8)
+      let originalIds = Set((before["requests"] as? [[String: Any]] ?? []).compactMap { ($0["request"] as? [String: Any])?["requestId"] as? String })
+      func fresh(_ observed: [String: Any], _ method: String, threadId: String? = nil) -> [[String: Any]] {
+        (observed["requests"] as? [[String: Any]] ?? []).filter {
+          guard let request = $0["request"] as? [String: Any], let id = request["requestId"] as? String else { return false }
+          guard request["method"] as? String == method && !originalIds.contains(id), let params = request["params"] as? [String: Any] else { return false }
+          if let threadId { return params["threadId"] as? String == threadId }
+          // The bounded witness omits input bodies. This first stage requires
+          // one exclusive writer and fails closed if another start appears.
+          // All subsequent observations use the confirmed exact thread.
+          return true
+        }
+      }
+      composer.tap(); typeComposerText("先使用终端工具等待90秒，然后只回复 \(marker)。后续若收到继续任务的消息，不再等待或调用工具，只回复 \(marker)_RESUMED。")
+      if app.buttons["composer-dismiss-keyboard"].exists { app.buttons["composer-dismiss-keyboard"].tap() }
+      tapAISharingAction(app.buttons["send-message"])
+      let tool = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tool-' AND label BEGINSWITH '正在'")).firstMatch
+      var stoppedRun: String?, stoppedThread: String?
+      for _ in 0..<480 {
+        if app.buttons["approval-approve"].exists && app.buttons["approval-approve"].isEnabled { app.buttons["approval-approve"].tap() }
+        let observed = try await evidence()
+        let starts = fresh(observed, "turn/start")
+        XCTAssertLessThanOrEqual(starts.count, 1, "One explicit original submission")
+        if let start = starts.first, tool.exists, app.buttons["stop-turn"].exists {
+          let result = (start["response"] as? [String: Any])?["result"] as? [String: Any]
+          let params = (start["request"] as? [String: Any])?["params"] as? [String: Any]
+          stoppedRun = result?["runId"] as? String
+          stoppedThread = params?["threadId"] as? String
+          if stoppedRun != nil && stoppedThread != nil { break }
+        }
+        try await Task.sleep(for: .seconds(1))
+      }
+      let originalRun = try XCTUnwrap(stoppedRun), thread = try XCTUnwrap(stoppedThread)
+      shot("native-ios-actual-tool-before-stop")
+      app.buttons["stop-turn"].tap()
+      XCTAssertTrue(app.buttons["resume-task"].waitForExistence(timeout: 60), app.debugDescription)
+      var stoppedUsage = 0
+      for _ in 0..<45 {
+        let observed = try await evidence(thread)
+        let executions = (observed["independentDesktop"] as? [String: Any])?["executions"] as? [[String: Any]] ?? []
+        if let run = executions.first(where: { $0["id"] as? String == originalRun }), (run["run"] as? [String: Any])?["status"] as? String == "cancelled" {
+          stoppedUsage = (run["providerUsage"] as? [[String: Any]] ?? []).count
+          if stoppedUsage > 0 { break }
+        }
+        try await Task.sleep(for: .seconds(1))
+      }
+      XCTAssertGreaterThan(stoppedUsage, 0, "Cancelled model Run must have actual persisted Provider usage")
+      guard stoppedUsage > 0 else { return }
+      shot("native-ios-stopped-working-run")
+      app.buttons["resume-task"].tap()
+      XCTAssertTrue(app.staticTexts[String(marker) + "_RESUMED"].firstMatch.waitForExistence(timeout: 240), app.debugDescription)
+      var resumedRun: String?
+      for _ in 0..<30 {
+        let observed = try await evidence(thread)
+        let starts = fresh(observed, "turn/start", threadId: thread)
+        XCTAssertEqual(starts.count, 2, "Original task plus one explicit resume")
+        let executions = (observed["independentDesktop"] as? [String: Any])?["executions"] as? [[String: Any]] ?? []
+        let newRuns = executions.filter { $0["id"] as? String != originalRun && ($0["run"] as? [String: Any])?["threadId"] as? String == thread }
+        if let actual = newRuns.first, (actual["run"] as? [String: Any])?["status"] as? String == "completed", !(actual["providerUsage"] as? [[String: Any]] ?? []).isEmpty {
+          resumedRun = actual["id"] as? String; break
+        }
+        try await Task.sleep(for: .seconds(1))
+      }
+      XCTAssertNotNil(resumedRun); XCTAssertNotEqual(originalRun, resumedRun)
+      shot("native-ios-explicit-resume-completed")
+      print("EASYWORK_STOP_PROOF:" + String(decoding: try JSONSerialization.data(withJSONObject: ["threadId": thread, "stoppedRunId": originalRun, "resumedRunId": try XCTUnwrap(resumedRun), "cancelledRunProviderUsage": stoppedUsage, "inProgressToolObservedBeforeStop": true, "baselineAndQueueNotRepeated": true], options: [.sortedKeys]), as: UTF8.self))
+      return
+    }
     let marker = "IOS_DEVICE_" + UUID().uuidString.prefix(8)
     let text = "Only reply \(marker). Do not call tools or modify files."
     let beforeIds = Set((before["requests"] as? [[String: Any]] ?? []).compactMap { ($0["request"] as? [String: Any])?["requestId"] as? String })
@@ -1487,6 +2486,47 @@ final class CodexManageUITests: XCTestCase {
     }
     XCTAssertNotNil(proof); shot("native-ios-device-grant-real-reply")
     print("EWDAP_IOS_PROOF:" + String(decoding: try JSONSerialization.data(withJSONObject: proof!, options: [.sortedKeys]), as: UTF8.self))
+    if config["scenario"] as? String == "batch-archive" {
+      try await runEasyWorkBatchArchive(app: app, composer: composer, config: config, beforeIds: beforeIds, firstMarker: String(marker),
+        evidence: evidence, shot: { shot($0) }, newConversation: { chooseDesktopProject(nil) },
+        replace: { replaceText($0, with: $1) }, send: { tapAISharingAction(app.buttons["send-message"]) })
+      return
+    }
+    if config["scenario"] as? String == "management" {
+      let observed = try await evidence()
+      let start = try XCTUnwrap((observed["requests"] as? [[String: Any]])?.first { row in
+        guard let request = row["request"] as? [String: Any], let id = request["requestId"] as? String else { return false }
+        return request["method"] as? String == "turn/start" && !beforeIds.contains(id)
+      })
+      let thread = try XCTUnwrap(((start["request"] as? [String: Any])?["params"] as? [String: Any])?["threadId"] as? String)
+      try await runEasyWorkChatManagement(app: app, composer: composer, threadId: thread, config: config, beforeIds: beforeIds,
+        evidence: evidence, shot: { shot($0) }, replace: { replaceText($0, with: $1) })
+      return
+    }
+    if config["voiceAudioURL"] is String {
+      XCTAssertTrue(composer.waitForExistence(timeout: 20))
+      composer.tap(); typeComposerText("EASYWORK_VOICE_UNSENT_DRAFT")
+      if app.buttons["composer-dismiss-keyboard"].exists { app.buttons["composer-dismiss-keyboard"].tap() }
+      let mic = app.buttons["voice-input"]
+      XCTAssertTrue(mic.waitForExistence(timeout: 35)); mic.tap()
+      if app.buttons["ai-sharing-allow"].waitForExistence(timeout: 8) && allowTestAISharingIfNeeded() { mic.tap() }
+      let stop = app.buttons["stop-dictation"]
+      let recording = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true AND label == %@", "结束录音并转写"), object: stop)
+      XCTAssertEqual(XCTWaiter.wait(for: [recording], timeout: 40), .completed, app.debugDescription)
+      XCTAssertEqual(app.staticTexts["dictation-transcript"].label, "EASYWORK_VOICE_UNSENT_DRAFT")
+      stop.tap()
+      XCTAssertTrue(composer.waitForExistence(timeout: 120), app.debugDescription)
+      let result = try XCTUnwrap(composer.value as? String)
+      XCTAssertTrue(result.hasPrefix("EASYWORK_VOICE_UNSENT_DRAFT\n"), result)
+      XCTAssertTrue(result.localizedCaseInsensitiveContains(try XCTUnwrap(config["voiceExpectedPhrase"] as? String)), result)
+      let observed = try await evidence()
+      let requests = (observed["requests"] as? [[String: Any]] ?? []).compactMap { $0["request"] as? [String: Any] }
+      XCTAssertEqual(requests.filter { $0["method"] as? String == "voice/prepare" }.count, 1)
+      XCTAssertEqual(requests.filter { $0["method"] as? String == "voice/upload" }.count, 1)
+      XCTAssertEqual(requests.filter { $0["method"] as? String == "turn/start" }.count, 1, "Transcription must leave the result unsent")
+      shot("native-ios-easywork-voice-original-draft")
+      print("EWDAP_IOS_VOICE_PROOF:original-draft-prefixed;actual-host-ASR;single-upload;zero-extra-turns;known-WAV-not-microphone")
+    }
     try await control("desktop.device-binding-revoke", bindingId: try XCTUnwrap(bindingId))
     app.buttons["chat-menu"].tap(); app.buttons["刷新历史"].tap()
     let revoked = XCTNSPredicateExpectation(predicate: NSPredicate { [self] _, _ in
@@ -4043,10 +5083,27 @@ final class CodexManageUITests: XCTestCase {
 
   private func shot(_ name: String, fullScreen: Bool = false) {
     let screenshot = fullScreen ? XCUIScreen.main.screenshot() : app.screenshot()
-    let attachment = XCTAttachment(screenshot: screenshot)
-    attachment.name = name
-    attachment.lifetime = .keepAlways
-    add(attachment)
+    if ProcessInfo.processInfo.environment["EASYWORK_EXAMINER_FILE_BRIDGE_RUN"] == nil {
+      let attachment = XCTAttachment(screenshot: screenshot)
+      attachment.name = name
+      attachment.lifetime = .keepAlways
+      add(attachment)
+    }
+    if let run = ProcessInfo.processInfo.environment["EASYWORK_NATIVE_ARTIFACT_RUN"],
+      ProcessInfo.processInfo.environment["EASYWORK_GRANT_EXAMINER_CONFIG_JSON"] != nil,
+      Bundle.main.bundleIdentifier == "com.easyai.agenthub.easyworkacceptance.uitests.xctrunner" {
+      guard run.range(of: #"^[a-zA-Z0-9_-]{1,80}$"#, options: .regularExpression) != nil,
+        name.range(of: #"^[a-zA-Z0-9_-]{1,160}$"#, options: .regularExpression) != nil else {
+        XCTFail("Invalid independent EasyWork artifact name"); return
+      }
+      do {
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+          .appendingPathComponent("easywork-acceptance").appendingPathComponent(run)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try screenshot.pngRepresentation.write(to: directory.appendingPathComponent(name + ".png"),
+          options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+      } catch { XCTFail("Could not preserve independent EasyWork screenshot: \(error)") }
+    }
     if name.hasPrefix("approval-") || name.hasPrefix("real-desktop-question-") || name.hasPrefix("async-question-") {
       let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
       try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -5790,7 +6847,7 @@ final class CodexManageUITests: XCTestCase {
     if app.buttons["composer-dismiss-keyboard"].exists { app.buttons["composer-dismiss-keyboard"].tap() }
     XCTAssertFalse(app.descendants(matching: .any)["outbox-pending"].firstMatch.exists)
     let content = composer.value as? String ?? ""
-    if content.isEmpty || content == "询问 Codex" {
+    if content.isEmpty || content == "输入消息，长按语音输入" {
       XCTAssertFalse(app.segmentedControls["reply-mode"].exists)
     }
     shot("physical-reply-wait-cleared")
@@ -6514,6 +7571,54 @@ final class CodexManageUITests: XCTestCase {
     let ax = XCTAttachment(string: app.debugDescription); ax.name = "existing-real-voice-AX"; ax.lifetime = .keepAlways; add(ax)
   }
 
+  @MainActor func testComposerLongPressStartsVoiceInput() {
+    launchVoiceFixture()
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    XCTAssertTrue((composer.placeholderValue ?? "").contains("长按语音输入"))
+    shot("voice-long-press-empty-placeholder", fullScreen: true)
+    composer.press(forDuration: 0.7)
+    let stop = app.buttons["stop-dictation"]
+    XCTAssertTrue(stop.waitForExistence(timeout: 5), "Long pressing the input must start recording")
+    guard stop.exists else { return }
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: stop)], timeout: 5), .completed)
+    shot("voice-long-press-recording", fullScreen: true)
+    app.buttons["cancel-dictation"].tap()
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    composer.tap(); typeComposerText("long-press-retained-draft")
+    composer.press(forDuration: 0.7)
+    XCTAssertTrue(stop.waitForExistence(timeout: 5))
+    guard stop.exists else { return }
+    XCTAssertEqual(app.staticTexts["dictation-transcript"].label, "long-press-retained-draft")
+    app.buttons["cancel-dictation"].tap()
+    XCTAssertEqual(composer.value as? String, "long-press-retained-draft")
+  }
+
+  @MainActor func testDictationFailureKeepsVisibleRecovery() {
+    app.terminate()
+    app.launchArguments = ["-ui-testing", "-voice-input-fixture", "-voice-transcription-failed"]
+    app.launchChineseTest()
+    app.buttons["voice-input"].tap()
+    let stop = app.buttons["stop-dictation"]
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: stop)], timeout: 5), .completed)
+    stop.tap()
+    shot("voice-empty-draft-after-desktop-failure", fullScreen: true)
+    XCTAssertTrue(app.staticTexts["voice-failure-title"].waitForExistence(timeout: 5), "Failure must remain visible in the input")
+    XCTAssertEqual(stop.label, "重试转写", "The icon must keep its accessibility label")
+    XCTAssertFalse(app.alerts.firstMatch.exists)
+    XCTAssertTrue(app.staticTexts["voice-status"].label.contains("录音已保留"))
+    stop.tap()
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@ AND isEnabled == true", "重试转写"), object: stop)], timeout: 5), .completed)
+    XCTAssertTrue(app.staticTexts["voice-failure-title"].exists)
+    shot("voice-empty-draft-retry-still-failed", fullScreen: true)
+    let failureMessage = app.staticTexts["voice-status"].label
+    XCUIDevice.shared.press(.home)
+    app.activate()
+    XCTAssertTrue(app.staticTexts["voice-failure-title"].waitForExistence(timeout: 5))
+    XCTAssertEqual(app.staticTexts["voice-status"].label, failureMessage)
+    app.buttons["cancel-dictation"].tap()
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+  }
+
   @MainActor func testDictationFailureOffersRetryAndLocalTranscription() {
     app.terminate()
     app.launchArguments = ["-ui-testing", "-voice-input-fixture", "-voice-transcription-failed"]
@@ -6526,25 +7631,77 @@ final class CodexManageUITests: XCTestCase {
     let stop = app.buttons["stop-dictation"]
     XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: stop)], timeout: 5), .completed)
     stop.tap()
-    let failure = app.alerts["转写失败"]
-    XCTAssertTrue(failure.waitForExistence(timeout: 5))
-    XCTAssertEqual(Set(failure.buttons.allElementsBoundByIndex.map(\.label)), Set(["重试转写", "使用本地转写"]))
-    XCTAssertTrue(failure.buttons["使用本地转写"].exists)
-    shot("voice-failure-two-recovery-options")
-    failure.buttons["重试转写"].firstMatch.tap()
-    if failure.waitForExistence(timeout: 5) {
-      XCTAssertEqual(app.staticTexts["dictation-transcript"].label, "retained-fallback-draft")
-      failure.buttons["使用本地转写"].firstMatch.tap()
-    } else {
-      XCTAssertEqual(app.buttons["stop-dictation"].label, "重试转写")
-      XCTAssertEqual(app.staticTexts["dictation-transcript"].label, "retained-fallback-draft")
-      app.buttons["voice-local-transcription-inline"].tap()
-    }
+    XCTAssertTrue(app.staticTexts["voice-failure-title"].waitForExistence(timeout: 5))
+    XCTAssertFalse(app.alerts.firstMatch.exists)
+    XCTAssertEqual(stop.label, "重试转写")
+    XCTAssertTrue(app.buttons["voice-local-transcription-inline"].exists)
+    shot("voice-failure-inline-recovery-options", fullScreen: true)
+    stop.tap()
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@ AND isEnabled == true", "重试转写"), object: stop)], timeout: 5), .completed)
+    XCTAssertTrue(app.staticTexts["voice-failure-title"].exists)
+    XCTAssertEqual(app.staticTexts["dictation-transcript"].label, "retained-fallback-draft")
+    app.buttons["voice-local-transcription-inline"].tap()
     XCTAssertTrue(composer.waitForExistence(timeout: 5))
     XCTAssertEqual(composer.value as? String, "retained-fallback-draft\n语音输入测试")
     XCTAssertFalse(app.buttons["stop-dictation"].exists)
     XCTAssertFalse(app.staticTexts["retained-fallback-draft\n语音输入测试"].exists)
     shot("voice-local-fallback-unsent-draft")
+  }
+
+  @MainActor func testDiscardPendingRecordingDoesNotRestoreAfterRestart() {
+    app.terminate()
+    app.launchArguments = ["-ui-testing", "-voice-input-fixture", "-voice-transcription-failed"]
+    // One second of synthetic PCM WAV, saved through the production pending store.
+    var wav = Data([82,73,70,70,36,125,0,0,87,65,86,69,102,109,116,32,16,0,0,0,1,0,1,0,128,62,0,0,0,125,0,0,2,0,16,0,100,97,116,97,0,125,0,0])
+    wav.append(Data(repeating: 0, count: 32000))
+    app.launchEnvironment["VOICE_PENDING_FIXTURE_WAV"] = wav.base64EncodedString()
+    app.launchChineseTest()
+    let draft = "discard-recording-" + UUID().uuidString.lowercased()
+    XCTAssertTrue(composer.waitForExistence(timeout: 10))
+    composer.tap(); typeComposerText(draft)
+    func startNewRecording() {
+      app.buttons["voice-input"].tap()
+      let stop = app.buttons["stop-dictation"]
+      XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: stop)], timeout: 5), .completed)
+      XCTAssertEqual(stop.label, "结束录音并转写", "Discarded audio must not replace a new recording")
+      XCTAssertFalse(app.alerts.firstMatch.exists)
+    }
+    func discardWaiting() {
+      let cancel = app.buttons["cancel-dictation"]
+      XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+      XCTAssertEqual(cancel.label, "丢弃录音")
+      cancel.tap()
+      XCTAssertTrue(composer.waitForExistence(timeout: 5))
+      XCTAssertEqual(composer.value as? String, draft)
+    }
+    func relaunch() {
+      app.terminate()
+      app.launchArguments = ["-ui-testing", "-restore-testing", "-voice-input-fixture", "-voice-transcription-failed"]
+      app.launchChineseTest()
+      XCTAssertTrue(composer.waitForExistence(timeout: 10))
+      XCTAssertEqual(composer.value as? String, draft)
+    }
+    startNewRecording()
+    app.buttons["stop-dictation"].tap()
+    discardWaiting()
+    startNewRecording()
+    app.buttons["cancel-dictation"].tap()
+    relaunch()
+    startNewRecording()
+    app.buttons["stop-dictation"].tap()
+    // Leaving the app without pressing × must still retain recovery.
+    relaunch()
+    app.buttons["voice-input"].tap()
+    XCTAssertTrue(app.staticTexts["voice-failure-title"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["voice-record-again"].exists)
+    app.buttons["stop-dictation"].tap()
+    discardWaiting()
+    relaunch()
+    startNewRecording()
+    app.buttons["cancel-dictation"].tap()
+    XCTAssertEqual(composer.value as? String, draft)
+    XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label == %@", draft)).firstMatch.exists)
+    shot("discard-pending-recording-restart-unsent-draft", fullScreen: true)
   }
 
   func testDictationCancelFinishAndSend() {
@@ -6562,7 +7719,13 @@ final class CodexManageUITests: XCTestCase {
     XCTAssertEqual(composer.value as? String, "original-draft")
     app.buttons["voice-input"].tap()
     XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: app.buttons["stop-dictation"])], timeout: 5), .completed)
-    app.buttons["stop-dictation"].tap()
+    let tapStop = app.buttons["dictation-waveform"]
+    XCTAssertEqual(tapStop.label, "轻触停止录音")
+    XCTAssertTrue(tapStop.isHittable)
+    XCTAssertGreaterThanOrEqual(tapStop.frame.height, 44)
+    XCTAssertFalse(tapStop.frame.intersects(app.buttons["cancel-dictation"].frame))
+    XCTAssertFalse(tapStop.frame.intersects(app.buttons["stop-dictation"].frame))
+    tapStop.tap()
     XCTAssertTrue(composer.waitForExistence(timeout: 5))
     XCTAssertEqual(composer.value as? String, "original-draft\n语音输入测试")
     XCTAssertFalse(app.staticTexts["original-draft\n语音输入测试"].exists)
@@ -6574,6 +7737,25 @@ final class CodexManageUITests: XCTestCase {
     app.buttons["send-message"].tap()
     XCTAssertTrue(app.staticTexts["original-draft\n语音输入测试\n语音输入测试"].waitForExistence(timeout: 5))
     XCTAssertFalse((composer.value as? String ?? "").contains("original-draft"))
+  }
+
+  func testDictationStopHintEnglish() {
+    app.terminate()
+    app.launchArguments = ["-ui-testing", "-voice-input-fixture", "-app-language", "en", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+    app.launch()
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    composer.tap(); typeComposerText("retained-English-draft")
+    app.buttons["voice-input"].tap()
+    let tapStop = app.buttons["dictation-waveform"]
+    XCTAssertTrue(tapStop.waitForExistence(timeout: 5))
+    XCTAssertEqual(tapStop.label, "Tap to stop recording")
+    XCTAssertTrue(tapStop.isHittable)
+    shot("dictation-tap-stop-english")
+    tapStop.tap()
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    XCTAssertEqual(composer.value as? String, "retained-English-draft\n语音输入测试")
+    XCTAssertFalse(app.buttons["dictation-waveform"].exists)
+    XCTAssertFalse(app.staticTexts["retained-English-draft\n语音输入测试"].exists)
   }
 
   func testDictationSwitchAndBackgroundKeepOriginalTarget() {
@@ -6607,8 +7789,15 @@ final class CodexManageUITests: XCTestCase {
     composer.tap()
     typeComposerText("retained-draft")
     app.buttons["voice-input"].tap()
-    XCTAssertTrue(app.alerts["无法完成操作"].waitForExistence(timeout: 3))
-    app.alerts.buttons["好"].tap()
+    XCTAssertTrue(app.staticTexts["voice-failure-title"].waitForExistence(timeout: 3))
+    XCTAssertEqual(app.staticTexts["voice-failure-title"].label, "录音未完成")
+    XCTAssertTrue(app.staticTexts["voice-status"].label.contains("麦克风权限"))
+    XCTAssertEqual(app.buttons["stop-dictation"].label, "重新录音")
+    XCTAssertEqual(app.staticTexts["dictation-transcript"].label, "retained-draft")
+    shot("voice-preparation-failed-retains-draft", fullScreen: true)
+    app.buttons["stop-dictation"].tap()
+    XCTAssertTrue(app.staticTexts["voice-failure-title"].waitForExistence(timeout: 3))
+    app.buttons["cancel-dictation"].tap()
     XCTAssertEqual(composer.value as? String, "retained-draft")
     XCTAssertTrue(app.buttons["voice-input"].isEnabled)
     launchVoiceFixture()
@@ -6619,8 +7808,14 @@ final class CodexManageUITests: XCTestCase {
     app.buttons["完成"].tap()
     app.buttons["voice-input"].tap()
     XCTAssertTrue(app.staticTexts["dictation-transcript"].waitForExistence(timeout: 3))
+    let tapStop = app.buttons["dictation-waveform"]
+    XCTAssertTrue(tapStop.waitForExistence(timeout: 5))
+    XCTAssertEqual(tapStop.label, "轻触停止录音")
+    XCTAssertTrue(tapStop.isHittable)
     shot("dictation-listening-dark")
-    app.buttons["cancel-dictation"].tap()
+    tapStop.tap()
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    XCTAssertEqual(composer.value as? String, "语音输入测试")
   }
 
   func testDictationUnavailableAutomaticallyUsesLocal() {
@@ -6945,7 +8140,7 @@ final class CodexManageUITests: XCTestCase {
     XCTAssertEqual(counters["desktopOpens"] as? Int, 1, "The next Send must query the saved connection ID")
     XCTAssertEqual(counters["desktopOpenQueries"] as? Int, 2)
     XCTAssertEqual(counters["replies"] as? Int, 1)
-    XCTAssertTrue(composer.value as? String == "" || composer.value as? String == "询问 Codex")
+    XCTAssertTrue(composer.value as? String == "" || composer.value as? String == "输入消息，长按语音输入")
     XCTAssertTrue(history.exists)
     shot("history-readable-and-send-connects-once")
   }
@@ -6964,7 +8159,7 @@ final class CodexManageUITests: XCTestCase {
     XCTAssertEqual(counters["desktopOpens"] as? Int, 1)
     XCTAssertEqual(counters["desktopOpenQueries"] as? Int, 2)
     XCTAssertEqual(counters["replies"] as? Int, 1)
-    XCTAssertTrue(composer.value as? String == "" || composer.value as? String == "询问 Codex")
+    XCTAssertTrue(composer.value as? String == "" || composer.value as? String == "输入消息，长按语音输入")
     shot("late-desktop-owner-single-send")
   }
 
@@ -6995,7 +8190,7 @@ final class CodexManageUITests: XCTestCase {
     XCTAssertTrue((app.buttons["client-switch"].value as? String ?? "").contains("发送时自动连接"))
     if let reply = env["HISTORY_ACCEPTANCE_REPLY"] {
       let original = composer.value as? String ?? ""
-      XCTAssertTrue(original.isEmpty || original == "询问 Codex" || original == "输入消息…", "Preserve any existing user draft")
+      XCTAssertTrue(original.isEmpty || original == "输入消息，长按语音输入" || original == "输入消息…", "Preserve any existing user draft")
       focusLiveComposer()
       typeComposerText("仅原样回复 \(reply)，不要使用工具。")
       sendLiveComposer()
@@ -7024,7 +8219,7 @@ final class CodexManageUITests: XCTestCase {
     XCTAssertTrue(row.waitForExistence(timeout: 30)); row.tap()
     XCTAssertFalse(app.buttons["connect-desktop-thread"].exists)
     let original = composer.value as? String ?? ""
-    XCTAssertTrue(original.isEmpty || original == "询问 Codex" || original == "输入消息…", "Preserve any existing user draft")
+    XCTAssertTrue(original.isEmpty || original == "输入消息，长按语音输入" || original == "输入消息…", "Preserve any existing user draft")
     focusLiveComposer()
     typeComposerText("真实手机历史优化回复回归：仅原样回复 \(reply)，不要使用工具。")
     sendLiveComposer()
@@ -8711,6 +9906,13 @@ final class CodexManageUITests: XCTestCase {
     app.buttons["generation-done"].tap()
     XCTAssertTrue(settings.label.contains("Fixture Fast"))
     XCTAssertTrue(settings.label.contains("低"))
+    XCTAssertTrue(settings.label.contains("速度，快速"))
+    // These are next-input previews: no message has been sent yet, and the
+    // independently reported owner settings must still show the old values.
+    openSettings()
+    XCTAssertTrue(app.descendants(matching: .any)["current-model"].firstMatch.label.contains("Fixture Quality"))
+    XCTAssertTrue(app.descendants(matching: .any)["current-effort"].firstMatch.label.contains("极高"))
+    app.buttons["generation-done"].tap()
     XCTAssertTrue(app.buttons["permission-settings"].label.contains("完全访问"))
     let secondarySearch = openDesktopSidebarSearch()
     if app.buttons["清除搜索"].exists { app.buttons["清除搜索"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
@@ -8721,14 +9923,17 @@ final class CodexManageUITests: XCTestCase {
     secondary.tap()
     XCTAssertTrue(settings.waitForExistence(timeout: 10))
     XCTAssertTrue(settings.label.contains("Fixture Quality"))
+    XCTAssertTrue(settings.label.contains("速度，标准"))
     XCTAssertTrue(app.buttons["permission-settings"].label.contains("请求批准"))
     openDesktopTestConversation(fixture)
     XCTAssertTrue(settings.label.contains("Fixture Fast"))
+    XCTAssertTrue(settings.label.contains("速度，快速"))
     app.terminate()
     app.launchArguments = ["-ui-testing", "-restore-testing"]
     app.launchChineseTest()
     XCTAssertTrue(settings.waitForExistence(timeout: 15))
     XCTAssertTrue(settings.label.contains("Fixture Fast"))
+    XCTAssertTrue(settings.label.contains("速度，快速"))
     XCTAssertTrue(app.buttons["permission-settings"].label.contains("完全访问"))
     focusLiveComposer()
     typeComposerText("Settings first")
@@ -8794,6 +9999,8 @@ final class CodexManageUITests: XCTestCase {
   @MainActor func testOriginalDesktopGenerationPreferences() async throws {
     let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:8805")!)
     let fixture = try JSONDecoder().decode(LiveFixture.self, from: data)
+    let ultra = fixture.generationUltrafast == true
+    let modelName = ultra ? "GPT-6.1-Sol" : "GPT-6-Sol"
     connectLive(fixture)
     chooseDesktopProject(nil)
     let settings = app.buttons["generation-settings"]
@@ -8807,16 +10014,26 @@ final class CodexManageUITests: XCTestCase {
     let model = app.descendants(matching: .any)["model-picker"].firstMatch
     XCTAssertTrue(model.waitForExistence(timeout: 15))
     model.tap()
-    let chosen = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "GPT-6-Sol")).firstMatch
+    let chosen = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", modelName)).firstMatch
     XCTAssertTrue(chosen.waitForExistence(timeout: 15))
     chosen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     app.descendants(matching: .any)["effort-picker"].firstMatch.tap()
     app.buttons["低"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     let fast = app.switches["fast-mode-toggle"]
-    XCTAssertTrue(fast.waitForExistence(timeout: 10))
-    if !fast.isHittable { app.swipeUp() }
-    fast.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-    XCTAssertEqual(fast.value as? String, "1")
+    func selectSpeed(_ label: String) {
+      let picker = app.descendants(matching: .any)["speed-picker"].firstMatch
+      XCTAssertTrue(picker.waitForExistence(timeout: 10))
+      if !picker.isHittable { app.swipeUp() }
+      picker.tap()
+      app.buttons[label].tap()
+    }
+    if ultra { selectSpeed("极速") }
+    else {
+      XCTAssertTrue(fast.waitForExistence(timeout: 10))
+      if !fast.isHittable { app.swipeUp() }
+      fast.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+      XCTAssertEqual(fast.value as? String, "1")
+    }
     let full = app.buttons["permission-full-access"]
     if !full.isHittable { app.swipeUp() }
     full.tap()
@@ -8830,33 +10047,60 @@ final class CodexManageUITests: XCTestCase {
       let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["stop-turn"])
       XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 45), .completed)
     }
-    sendMarker("GEN_FAST_ONE_" + fixture.nonce)
+    sendMarker((ultra ? "GEN_ULTRA_ONE_" : "GEN_FAST_ONE_") + fixture.nonce)
     chooseDesktopProject(try XCTUnwrap(fixture.creationProjectId))
-    XCTAssertTrue(settings.label.contains("GPT-6-Sol"))
+    XCTAssertTrue(settings.label.contains(modelName))
     XCTAssertTrue(settings.label.contains("低"))
     XCTAssertTrue(app.buttons["permission-settings"].label.contains("完全访问"))
     app.terminate()
     app.launchArguments = ["-ui-testing", "-restore-testing"]
     app.launchChineseTest()
     XCTAssertTrue(settings.waitForExistence(timeout: 20))
-    XCTAssertTrue(settings.label.contains("GPT-6-Sol"))
+    XCTAssertTrue(settings.label.contains(modelName))
     openSettings()
-    XCTAssertTrue(fast.waitForExistence(timeout: 10))
-    XCTAssertEqual(fast.value as? String, "1")
+    if ultra {
+      let picker = app.descendants(matching: .any)["speed-picker"].firstMatch
+      XCTAssertTrue(picker.waitForExistence(timeout: 10))
+      XCTAssertTrue(picker.label.contains("极速") || (picker.value as? String)?.contains("极速") == true)
+    } else {
+      XCTAssertTrue(fast.waitForExistence(timeout: 10))
+      XCTAssertEqual(fast.value as? String, "1")
+    }
     app.buttons["generation-done"].tap()
-    sendMarker("GEN_FAST_TWO_" + fixture.nonce)
+    sendMarker((ultra ? "GEN_ULTRA_TWO_" : "GEN_FAST_TWO_") + fixture.nonce)
     chooseDesktopProject(nil)
     openSettings()
-    XCTAssertTrue(fast.waitForExistence(timeout: 10))
-    XCTAssertEqual(fast.value as? String, "1")
-    if !fast.isHittable { app.swipeUp() }
-    fast.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+    if ultra {
+      let picker = app.descendants(matching: .any)["speed-picker"].firstMatch
+      XCTAssertTrue(picker.waitForExistence(timeout: 10))
+      XCTAssertTrue(picker.label.contains("极速") || (picker.value as? String)?.contains("极速") == true)
+    } else {
+      XCTAssertTrue(fast.waitForExistence(timeout: 10))
+      XCTAssertEqual(fast.value as? String, "1")
+    }
+    if ultra {
+      selectSpeed("快速")
+      app.buttons["generation-done"].tap()
+      sendMarker("GEN_FAST_" + fixture.nonce)
+      chooseDesktopProject(nil)
+      openSettings()
+      selectSpeed("标准")
+    } else {
+      if !fast.isHittable { app.swipeUp() }
+      fast.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+    }
     app.buttons["generation-done"].tap()
     sendMarker("GEN_STANDARD_" + fixture.nonce)
     chooseDesktopProject(nil)
     openSettings()
-    XCTAssertTrue(fast.waitForExistence(timeout: 10))
-    XCTAssertEqual(fast.value as? String, "0")
+    if ultra {
+      let picker = app.descendants(matching: .any)["speed-picker"].firstMatch
+      XCTAssertTrue(picker.waitForExistence(timeout: 10))
+      XCTAssertTrue(picker.label.contains("标准") || (picker.value as? String)?.contains("标准") == true)
+    } else {
+      XCTAssertTrue(fast.waitForExistence(timeout: 10))
+      XCTAssertEqual(fast.value as? String, "0")
+    }
     shot("original-desktop-speed-standard-remembered")
     app.buttons["generation-done"].tap()
   }
@@ -8931,11 +10175,16 @@ final class CodexManageUITests: XCTestCase {
     app.descendants(matching: .any)["effort-picker"].firstMatch.tap()
     app.buttons["低"].tap()
     app.buttons["generation-done"].tap()
-    matches("6.1", "极高", "draft-low-does-not-replace-owner")
+    matches("6.1", "低", "draft-low-previews-next-input")
     try await openThread(fixture.second)
     matches(fixture.alternateModelName, "高", "other-thread")
     try await openThread(fixture.connection)
-    matches("6.1", "极高", "return-keeps-owner")
+    matches("6.1", "低", "return-keeps-next-input")
+    app.buttons["generation-settings"].tap()
+    XCTAssertTrue(app.descendants(matching: .any)["current-effort"].firstMatch.label.contains("极高"))
+    app.buttons["reset-effort"].tap()
+    app.buttons["generation-done"].tap()
+    matches("6.1", "极高", "reset-follows-owner")
     try await control("desktop-low")
     matches("6.1", "低", "desktop-effort-changed")
     try await control("desktop-alternate")
@@ -9608,6 +10857,7 @@ final class CodexManageUITests: XCTestCase {
     var notificationKind: String?
     var reuseDeliveredNotification: Bool?
     var suggestionText: String?
+    var generationUltrafast: Bool?
     var originalReplyId: String?
     var sharedExistingOutcome: String?
     var sharedLifecycleDone: Bool?
@@ -9648,7 +10898,7 @@ final class CodexManageUITests: XCTestCase {
     XCTAssertFalse(app.buttons["dismiss-receipt-" + fixture.nonce].exists)
     let marker = "RECEIPT_LOCAL_DRAFT_" + fixture.nonce
     let originalDraft = composer.value as? String ?? ""
-    let draft = (originalDraft == "询问 Codex" ? "" : originalDraft) + marker
+    let draft = (originalDraft == "输入消息，长按语音输入" ? "" : originalDraft) + marker
     composer.tap(); typeComposerText(marker)
     XCUIDevice.shared.press(.home)
     app.activate()
@@ -9802,14 +11052,17 @@ final class CodexManageUITests: XCTestCase {
       let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true AND isEnabled == true"), object: option)
       XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
       option.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-      if title == "手动连接" {
-        let addressId = agent == "easywork" ? "easywork-manual-address" : "client-address"
-        if !app.textFields[addressId].waitForExistence(timeout: 3) {
+      let formFieldId: String? = title == "手动连接"
+        ? (agent == "easywork" ? "easywork-manual-address" : "client-address")
+        : (title == "扫码连接" && agent == "codex" ? "codex-qr-description" : nil)
+      if let formFieldId {
+        if !app.textFields[formFieldId].waitForExistence(timeout: 3), !option.isSelected {
           // Discovery can finish while the connection sheet is presenting.
           // Selecting this same local form again does not submit a connection.
+          print("CONNECTION_FORM_RESELECT", agent, title)
           option.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         }
-        XCTAssertTrue(app.textFields[addressId].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields[formFieldId].waitForExistence(timeout: 10))
       }
       return
     }
@@ -10269,6 +11522,255 @@ final class CodexManageUITests: XCTestCase {
     print("SLOW_SYNC_PHYSICAL_RESTORE_RESTART passed")
   }
 
+  private struct SuggestionWarmupFixture: Decodable {
+    let bundleId: String
+    let hostId: String
+    let endpoint: String
+    let token: String
+    let bootstrapThreadId: String
+    let bootstrapThreadTitle: String
+    let slot: String
+    let nonce: String
+    let prompt: String
+    let requireSavedClient: Bool?
+    var resumeConsentDraft: Bool?
+  }
+
+  /// Connect only the task-owned App through the ordinary Host Key UI.
+  @MainActor func testOriginalDesktopReadOnlySuggestionsDEVConnect() throws {
+    let encoded = try XCTUnwrap(ProcessInfo.processInfo.environment["SUGGESTION_DEV_FIXTURE_JSON"])
+    let fixture = try JSONDecoder().decode(SuggestionWarmupFixture.self, from: Data(encoded.utf8))
+    guard fixture.bundleId == "com.easyai.agenthub.traceacceptance.repair20261030",
+      UUID(uuidString: fixture.hostId) != nil, UUID(uuidString: fixture.bootstrapThreadId) != nil,
+      !fixture.endpoint.isEmpty, !fixture.token.isEmpty else {
+      throw NSError(domain: "SuggestionWarmupConnect", code: 1)
+    }
+    let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+    var ownSettingsVerified = false
+    let networkMonitor = addUIInterruptionMonitor(withDescription: "Owned suggestion acceptance network permission") { _ in
+      guard self.app.state == .runningForeground ||
+        (ownSettingsVerified && settings.state == .runningForeground) else { return false }
+      // SpringBoard may expose this permission as a Sheet. Use the existing
+      // title query instead of indexing stale Alert static-text snapshots.
+      let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+      let title = system.staticTexts.matching(NSPredicate(format:
+        "(label CONTAINS[c] '本地网络' OR label CONTAINS[c] 'local network' OR label CONTAINS '无线数据') AND label CONTAINS 'Agent Hub'")).firstMatch
+      guard title.exists else { return false }
+      self.allowAcceptanceLocalNetworkPermission()
+      guard !title.exists else { return false }
+      print("SUGGESTION_DEV_OWN_NETWORK_ALLOWED")
+      return true
+    }
+    defer { removeUIInterruptionMonitor(networkMonitor) }
+    // The preceding failed attempt's native log confirms XCTest dismissed this
+    // independent App's first wireless-data prompt with Don't Allow. Open only
+    // this exact bundle's own settings; restore its network access, then return
+    // to the real (non-fixture) App state before inspecting connections.
+    app.terminate()
+    app.launchArguments = ["-ui-testing", "-restore-testing", "-voice-open-settings"]
+    app.launchChineseTest()
+    XCTAssertTrue(settings.wait(for: .runningForeground, timeout: 15))
+    let wireless = settings.buttons[fixture.bundleId + ".wireless"]
+    XCTAssertTrue(wireless.waitForExistence(timeout: 10))
+    ownSettingsVerified = true
+    allowAcceptanceLocalNetworkPermission()
+    let localNetwork = settings.switches["本地网络"].firstMatch
+    if localNetwork.exists && (localNetwork.value as? String) == "0" { localNetwork.tap() }
+    wireless.tap()
+    let wifi = settings.staticTexts.matching(NSPredicate(format: "label IN %@",
+      ["无线局域网", "WLAN", "Wi-Fi"])).firstMatch
+    XCTAssertTrue(wifi.waitForExistence(timeout: 10)); wifi.tap()
+    ownSettingsVerified = false
+    app.terminate(); app.launchArguments = []; app.activate()
+    allowAcceptanceLocalNetworkPermission()
+    XCTAssertTrue(openReadOnlySuggestionClientPicker(step: "warmup-connect-check"))
+    // A fresh isolated App has no selected client. Prove that empty state
+    // before applying the existing scanner's one-selected-client invariant.
+    let rows = app.collectionViews.firstMatch.buttons.matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "client-")).allElementsBoundByIndex
+    let add = app.buttons["add-client"]
+    let empty = add.exists && add.isHittable && rows.filter { $0.exists }.isEmpty
+    let ids: Set<String>
+    if empty {
+      ids = []
+      print("SUGGESTION_CONNECT_EMPTY_CONFIRMED")
+    } else {
+      ids = try XCTUnwrap(scanReadOnlySuggestionClients()).ids
+    }
+    guard fixture.requireSavedClient != true || ids.contains(fixture.hostId) else {
+      print("SUGGESTION_SAVED_CLIENT_MISSING", fixture.hostId)
+      throw NSError(domain: "SuggestionWarmupSavedClient", code: 3)
+    }
+    if ids.contains(fixture.hostId) {
+      let row = try XCTUnwrap(findReadOnlySuggestionClient(fixture.hostId))
+      XCTAssertTrue(tapReadOnlySuggestionControl(row, step: "warmup-select-host", allowSheet: true))
+      XCTAssertTrue(closeReadOnlySuggestionClientPicker(step: "warmup-select-close", automatic: true))
+    } else {
+      XCTAssertTrue(closeReadOnlySuggestionClientPicker(step: "warmup-before-add"))
+      XCTAssertTrue(openReadOnlySuggestionClientPicker(step: "warmup-discovery-picker"))
+      let addClient = app.buttons["add-client"]
+      // Three saved clients can push Add below the half-sheet's visible edge.
+      // Scroll the actual picker until the existing full-frame guard can pass.
+      for _ in 0..<4 {
+        if addClient.exists && addClient.isHittable &&
+          app.windows.firstMatch.frame.contains(addClient.frame) { break }
+        app.collectionViews.firstMatch.swipeUp()
+      }
+      XCTAssertTrue(tapReadOnlySuggestionControl(addClient, step: "warmup-add-discovery", allowSheet: true))
+      selectConnectionMethod("自动发现", agent: "codex")
+      allowAcceptanceLocalNetworkPermission()
+      let host = app.buttons["codex-discovered-" + fixture.hostId]
+      XCTAssertTrue(host.waitForExistence(timeout: 60), "Require this exact real Host through native discovery")
+      for _ in 0..<6 where !host.isHittable { app.collectionViews.firstMatch.swipeUp() }
+      XCTAssertTrue(tapReadOnlySuggestionControl(host, step: "warmup-discovered-host", allowSheet: true))
+      let key = app.secureTextFields["codex-host-key"]
+      XCTAssertTrue(key.waitForExistence(timeout: 20))
+      XCTAssertTrue(tapReadOnlySuggestionControl(key, step: "warmup-host-key", allowSheet: true))
+      key.typeText(fixture.token)
+      if app.buttons["完成输入"].exists { app.buttons["完成输入"].tap() }
+      XCTAssertTrue(tapReadOnlySuggestionControl(app.buttons["codex-authorize-connect"], step: "warmup-authorize-once", allowSheet: true))
+      // Use the normal certificate-pinned device-credential flow exactly once.
+      guard key.waitForNonExistence(timeout: 90) else {
+        captureSuggestionUIFailure("warmup-discovery-connect")
+        throw NSError(domain: "SuggestionWarmupConnect", code: 2)
+      }
+      dismissPhysicalPasswordPrompt()
+    }
+    XCTAssertTrue(openReadOnlySuggestionClientPicker(step: "warmup-connected-check"))
+    let selected = try XCTUnwrap(scanReadOnlySuggestionClients())
+    XCTAssertEqual(selected.selectedId, fixture.hostId)
+    XCTAssertTrue(closeReadOnlySuggestionClientPicker(step: "warmup-connected-close"))
+    print("SUGGESTION_WARMUP_CONNECT_VERIFIED", fixture.hostId)
+  }
+
+  /// One ordinary projectless UI submission. Never retry an uncertain send.
+  @MainActor func testOriginalDesktopReadOnlySuggestionsDEVWarmup() throws {
+    let encoded = try XCTUnwrap(ProcessInfo.processInfo.environment["SUGGESTION_DEV_FIXTURE_JSON"])
+    let fixture = try JSONDecoder().decode(SuggestionWarmupFixture.self, from: Data(encoded.utf8))
+    func require(_ condition: Bool, _ step: String) throws {
+      guard condition else {
+        if fixture.bundleId == "com.easyai.agenthub.traceacceptance.repair20261030",
+          app.state == .runningForeground {
+          let evidence = XCTAttachment(screenshot: app.screenshot())
+          evidence.name = "SUGGESTION_WARMUP_" + step
+          evidence.lifetime = .keepAlways
+          add(evidence)
+          print("SUGGESTION_WARMUP_FAILURE_STATE", step,
+            "projectless", app.staticTexts["开始一个无项目对话"].exists,
+            "emptyDraft", normalizedSuggestionDraftText().isEmpty,
+            "pendingCreation", app.otherElements["desktop-creation-pending"].exists)
+        }
+        throw NSError(domain: "SuggestionWarmup", code: 1,
+          userInfo: [NSLocalizedDescriptionKey: step])
+      }
+    }
+    try require(fixture.bundleId == "com.easyai.agenthub.traceacceptance.repair20261030", "bundle")
+    try require(!fixture.hostId.isEmpty && !fixture.endpoint.isEmpty && !fixture.token.isEmpty
+      && !fixture.bootstrapThreadId.isEmpty && !fixture.bootstrapThreadTitle.isEmpty, "fixture")
+    try require(["A", "B"].contains(fixture.slot), "slot")
+    try require(fixture.nonce.range(of: #"^[A-Za-z0-9_-]{16,80}$"#, options: .regularExpression) != nil, "nonce")
+    let answer = "WARMUP_DONE_" + fixture.nonce
+    let planningTask = fixture.slot == "A"
+      ? "请设计一个离线待办清单同步方案。先给出第一阶段的三条方案要点；第二阶段的冲突解决细节等我确认后再展开。"
+      : "请设计一个照片整理工具的批量重命名方案。先给出第一阶段的三条方案要点；第二阶段的撤销和重复命名细节等我确认后再展开。"
+    let expectedPrompt = fixture.nonce + "\n" + planningTask + "\n最后一行输出" + answer + "\n不要使用工具，也不要创建或修改文件。"
+    try require(!expectedPrompt.hasSuffix(answer), "prompt-ends-with-answer")
+    try require(fixture.prompt == expectedPrompt, "fixed-prompt")
+    print("SUGGESTION_WARMUP", fixture.nonce, "start")
+
+    // The previous first-send click was synchronously blocked by requireAISharing
+    // before any creation/receipt existed. Resume only the exact unsent draft.
+    if fixture.resumeConsentDraft == true, app.navigationBars["AI 数据共享"].exists {
+      let cancel = app.navigationBars["AI 数据共享"].buttons["取消"]
+      try require(cancel.exists && cancel.isHittable, "resume-consent-cancel")
+      cancel.tap()
+    }
+
+    // Require an already configured task connection; never infer host identity
+    // from a display name or write into the bootstrap conversation.
+    let switcher = app.buttons["client-switch"]
+    try require(switcher.waitForExistence(timeout: 20), "client-switch")
+    switcher.tap()
+    let row = app.buttons["client-" + fixture.hostId]
+    let list = app.collectionViews.firstMatch
+    for _ in 0..<12 {
+      if row.exists && row.isHittable { break }
+      guard list.exists else { break }
+      list.swipeUp()
+    }
+    try require(row.exists && row.isHittable && row.isSelected, "selected-host")
+    let done = app.navigationBars["客户端"].buttons["完成"]
+    try require(done.waitForExistence(timeout: 10), "client-picker")
+    done.tap()
+    // A restored projectless draft is connected and writable before it owns a
+    // desktop thread. modeLabel exposes that exact ready-to-create state.
+    let newChatReady = "Codex 新聊天 · 首条发送时创建"
+    let online = XCTNSPredicateExpectation(predicate: NSPredicate(
+      format: "value CONTAINS %@ OR value CONTAINS %@", "Codex · 实时连接", newChatReady), object: switcher)
+    try require(XCTWaiter.wait(for: [online], timeout: 60) == .completed, "host-connected-or-new-chat-ready")
+    print("SUGGESTION_WARMUP", fixture.nonce, "host-verified")
+
+    if fixture.resumeConsentDraft != true {
+      let newChat = app.buttons["new-chat"]
+      let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true AND isHittable == true"), object: newChat)
+      try require(XCTWaiter.wait(for: [ready], timeout: 30) == .completed, "new-chat-ready")
+      newChat.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+      let projectless = app.buttons["choose-projectless"]
+      if projectless.waitForExistence(timeout: 5) {
+        try require(projectless.isHittable, "projectless-choice")
+        projectless.tap()
+      }
+    }
+    // SwiftUI may omit a layout-only VStack from the Other accessibility class.
+    // Assert the actual visible projectless state, then the untouched local draft.
+    let projectlessState = app.staticTexts["开始一个无项目对话"]
+    try require(projectlessState.waitForExistence(timeout: 15)
+      && projectlessState.frame.intersects(app.frame), "projectless-empty-state")
+    if fixture.resumeConsentDraft == true {
+      try require(normalizedSuggestionDraftText() == expectedPrompt
+        && app.buttons["send-message"].isEnabled
+        && !app.otherElements["desktop-creation-pending"].exists, "exact-unsent-consent-draft")
+    } else {
+      try require(normalizedSuggestionDraftText().isEmpty && !app.buttons["send-message"].isEnabled
+        && !app.otherElements["desktop-creation-pending"].exists, "empty-draft")
+    }
+    try require((switcher.value as? String ?? "").contains(newChatReady), "new-chat-ready-before-send")
+    print("SUGGESTION_WARMUP", fixture.nonce, "new-chat-verified")
+    if fixture.resumeConsentDraft != true {
+      let composerReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true AND isHittable == true"), object: composer)
+      try require(XCTWaiter.wait(for: [composerReady], timeout: 60) == .completed, "composer-ready")
+      composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+      try require(app.keyboards.firstMatch.waitForExistence(timeout: 10), "keyboard")
+      composer.typeText(expectedPrompt)
+      try require((composer.value as? String) == expectedPrompt, "draft-mismatch")
+      if app.buttons["composer-dismiss-keyboard"].exists { app.buttons["composer-dismiss-keyboard"].tap() }
+    }
+    let send = app.buttons["send-message"]
+    let sendReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true AND isHittable == true"), object: send)
+    try require(XCTWaiter.wait(for: [sendReady], timeout: 30) == .completed, "send-ready")
+    print("SUGGESTION_WARMUP", fixture.nonce, "send-action")
+    send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+    if allowTestAISharingIfNeeded() {
+      // Permission changes only; the product explicitly retains the draft and
+      // requires a new deliberate submit. Never repeat an uncertain operation.
+      try require(normalizedSuggestionDraftText() == expectedPrompt
+        && !app.otherElements["desktop-creation-pending"].exists
+        && (switcher.value as? String ?? "").contains(newChatReady)
+        && send.isEnabled && send.isHittable, "consent-retained-exact-draft")
+      print("SUGGESTION_WARMUP", fixture.nonce, "consent-granted-before-first-submission")
+      send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+    }
+    let reply = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", answer)).firstMatch
+    try require(reply.waitForExistence(timeout: 210), "reply-unknown-check-receipt")
+    let idle = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["stop-turn"])
+    try require(XCTWaiter.wait(for: [idle], timeout: 45) == .completed
+      && !app.buttons["查询状态"].exists && !app.alerts.firstMatch.exists, "completion-unknown-check-receipt")
+    let createdOnline = XCTNSPredicateExpectation(predicate: NSPredicate(
+      format: "value CONTAINS %@", "Codex · 实时连接"), object: switcher)
+    try require(XCTWaiter.wait(for: [createdOnline], timeout: 45) == .completed, "created-thread-live-owner")
+    print("SUGGESTION_WARMUP", fixture.nonce, "completed")
+  }
+
   private struct ReadOnlySuggestionFixture: Decodable {
     let endpoint: String
     let token: String
@@ -10633,6 +12135,144 @@ final class CodexManageUITests: XCTestCase {
 
   /// Ordinary installed App, real Host reads only. The runner separately checks
   /// source Turn IDs in HTTP requests and unchanged original-owner input counts.
+  /// Real remote Host response, ordinary independent App, no execution send.
+  @MainActor func testOriginalDesktopReadOnlySuggestionsDEVHostRepair() throws {
+    #if targetEnvironment(simulator)
+    throw XCTSkip("Requires the explicitly paired physical iPhone")
+    #else
+    let encoded = try XCTUnwrap(ProcessInfo.processInfo.environment["SUGGESTION_DEV_FIXTURE_JSON"])
+    let fixture = try JSONDecoder().decode(ReadOnlySuggestionFixture.self, from: Data(encoded.utf8))
+    XCTAssertEqual(fixture.bundleId, "com.easyai.agenthub.hostrepair20261026")
+    XCTAssertNotEqual(fixture.threadAId, fixture.threadBId)
+    let fixtureMetadata = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: Any])
+    let expectsEmptyNative = fixtureMetadata["expectsEmptyNativeSuggestions"] as? Bool == true
+    let connectionOnly = fixtureMetadata["connectionOnly"] as? Bool == true
+    let historyMarkers = fixtureMetadata["expectedHistoryMarkers"] as? [String: String] ?? [:]
+    app.terminate(); app.launchArguments = []; app.launchChineseTest()
+    dismissPhysicalPasswordPrompt()
+    XCTAssertTrue(openReadOnlySuggestionClientPicker(step: "host-repair-start"))
+    let initialClientIds = Set(app.collectionViews.firstMatch.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "client-")).allElementsBoundByIndex.map { String($0.identifier.dropFirst("client-".count)) })
+    if let own = findReadOnlySuggestionClient(fixture.hostId) {
+      own.tap()
+      XCTAssertTrue(closeReadOnlySuggestionClientPicker(step: "host-repair-existing", automatic: true))
+    } else {
+      XCTAssertTrue(closeReadOnlySuggestionClientPicker(step: "host-repair-new"))
+      let metadata = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: Any])
+      if let pairing = metadata["pairingURI"] as? String {
+        app.buttons["client-switch"].tap(); app.buttons["add-client"].tap()
+        selectConnectionMethod("扫码连接", agent: "codex")
+        let field = app.textFields["codex-qr-description"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10)); field.tap(); field.typeText(pairing)
+        if app.buttons["完成输入"].exists { app.buttons["完成输入"].tap() }
+        app.buttons["codex-connect-qr"].tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deadline = Date().addingTimeInterval(90)
+        while Date() < deadline && app.buttons["codex-connect-qr"].exists {
+          let alert = springboard.alerts.firstMatch
+          if alert.exists {
+            let text = alert.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " ")
+            if text.contains("Agent Hub") && (text.contains("网络") || text.localizedCaseInsensitiveContains("network")) {
+              let allow = alert.buttons.matching(NSPredicate(format: "label IN %@", ["允许", "Allow", "好", "OK", "无线局域网与蜂窝网络", "无线局域网与蜂窝数据"])).firstMatch
+              if allow.exists { allow.tap() }
+            }
+          }
+          if app.staticTexts["client-form-error"].exists { break }
+          Thread.sleep(forTimeInterval: 0.3)
+        }
+        XCTAssertFalse(app.buttons["codex-connect-qr"].exists, "The pinned ordinary QR connection must finish")
+      } else {
+        connectLive(try fixture.connection(threadId: fixture.threadAId, title: fixture.threadATitle), supportsCreation: false)
+      }
+    }
+    for (index, useA) in [true, false, true, false].enumerated() {
+      // Reassert the exact test App after the bounded read-only settling window.
+      app.activate()
+      XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+      let threadId = useA ? fixture.threadAId : fixture.threadBId
+      let title = useA ? fixture.threadATitle : fixture.threadBTitle
+      let expected = useA ? fixture.textA : fixture.textB
+      openDesktopTestConversation(try fixture.connection(threadId: threadId, title: title))
+      XCTAssertTrue(composer.waitForExistence(timeout: 30))
+      let before = normalizedSuggestionDraftText()
+      if connectionOnly {
+        let marker = try XCTUnwrap(historyMarkers[useA ? "A" : "B"])
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch.waitForExistence(timeout: 60))
+        XCTAssertEqual(normalizedSuggestionDraftText(), before)
+        XCTAssertFalse(app.staticTexts["readonly-note"].exists)
+        XCTAssertFalse(app.staticTexts["离线 · 草稿保留在此对话"].exists)
+        shot("host-repair-connection-history-\(index)")
+        print("HOST_REPAIR_CONNECTION_HISTORY", index, threadId)
+        continue
+      }
+      if expectsEmptyNative {
+        let marker = try XCTUnwrap(historyMarkers[useA ? "A" : "B"])
+        let message = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 60), "The real source history must render")
+        let settling = Date().addingTimeInterval(15)
+        while Date() < settling {
+          XCTAssertFalse(app.buttons["suggestion-details"].exists)
+          XCTAssertFalse(app.buttons["suggestion-entry"].exists)
+          XCTAssertFalse(app.buttons["suggestion-apply"].exists)
+          XCTAssertEqual(normalizedSuggestionDraftText(), before)
+          Thread.sleep(forTimeInterval: 0.3)
+        }
+        XCTAssertFalse(app.staticTexts["readonly-note"].exists)
+        XCTAssertFalse(app.staticTexts["离线 · 草稿保留在此对话"].exists)
+        shot("host-repair-native-empty-\(index)")
+        print("HOST_REPAIR_NATIVE_EMPTY", index, threadId)
+        continue
+      }
+      let entry = app.buttons[before.isEmpty ? "suggestion-details" : "suggestion-entry"]
+      XCTAssertTrue(entry.waitForExistence(timeout: 60), "The actual current source must provide its own native suggestion")
+      if before.isEmpty {
+        XCTAssertEqual(app.descendants(matching: .any)["suggestion-text"].firstMatch.label, expected)
+        XCTAssertFalse(app.buttons["send-message"].isEnabled)
+      }
+      shot("host-repair-native-source-\(index)")
+      entry.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+      let full = app.descendants(matching: .any)["suggestion-full-text"].firstMatch
+      XCTAssertTrue(full.waitForExistence(timeout: 10))
+      XCTAssertEqual(full.label, expected)
+      shot("host-repair-native-full-\(index)")
+      app.buttons["suggestion-apply"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+      expectSuggestionDraft(before.isEmpty ? expected : before + "\n\n" + expected)
+      app.buttons["suggestion-undo"].tap()
+      expectSuggestionDraft(before)
+      if app.buttons["composer-dismiss-keyboard"].exists { app.buttons["composer-dismiss-keyboard"].tap() }
+      print("HOST_REPAIR_NATIVE_SOURCE_ADOPT_UNDO", index, threadId)
+    }
+    app.terminate(); app.launchArguments = []; app.launchChineseTest()
+    XCTAssertTrue(openReadOnlySuggestionClientPicker(step: "host-repair-cold-reconnect"))
+    let clients = try XCTUnwrap(scanReadOnlySuggestionClients())
+    XCTAssertTrue(clients.ids.isSuperset(of: initialClientIds.union([fixture.hostId]))); XCTAssertEqual(clients.selectedId, fixture.hostId)
+    XCTAssertTrue(closeReadOnlySuggestionClientPicker(step: "host-repair-end"))
+    XCTAssertTrue(composer.waitForExistence(timeout: 30))
+    if connectionOnly {
+      let marker = try XCTUnwrap(historyMarkers["B"])
+      XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch.waitForExistence(timeout: 60))
+      XCTAssertFalse(app.staticTexts["readonly-note"].exists)
+      XCTAssertFalse(app.staticTexts["离线 · 草稿保留在此对话"].exists)
+    } else if expectsEmptyNative {
+      let marker = try XCTUnwrap(historyMarkers["B"])
+      XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch.waitForExistence(timeout: 60))
+      let settling = Date().addingTimeInterval(15)
+      while Date() < settling {
+        XCTAssertFalse(app.buttons["suggestion-details"].exists)
+        XCTAssertFalse(app.buttons["suggestion-entry"].exists)
+        Thread.sleep(forTimeInterval: 0.3)
+      }
+      XCTAssertFalse(app.staticTexts["readonly-note"].exists)
+      XCTAssertFalse(app.staticTexts["离线 · 草稿保留在此对话"].exists)
+    } else {
+      let coldSuggestion = app.buttons[normalizedSuggestionDraftText().isEmpty ? "suggestion-details" : "suggestion-entry"]
+      XCTAssertTrue(coldSuggestion.waitForExistence(timeout: 60), "A cold launch must obtain a fresh native suggestion")
+      XCTAssertEqual(app.descendants(matching: .any)["suggestion-text"].firstMatch.label, fixture.textB)
+    }
+    shot("host-repair-cold-connection-source-B")
+    print(connectionOnly ? "HOST_REPAIR_PHYSICAL_CONNECTION_COMPLETE" : "HOST_REPAIR_PHYSICAL_COMPLETE", fixture.hostId)
+    #endif
+  }
+
   @MainActor func testOriginalDesktopReadOnlySuggestionsDEV() throws {
     let encoded = try XCTUnwrap(ProcessInfo.processInfo.environment["SUGGESTION_DEV_FIXTURE_JSON"])
     let fixture = try JSONDecoder().decode(ReadOnlySuggestionFixture.self, from: Data(encoded.utf8))
@@ -10706,7 +12346,7 @@ final class CodexManageUITests: XCTestCase {
         clearVerifiedSuggestionDraft(ownedText)
         print("SUGGESTION_DEV_RECOVERED_OWN_ADOPTED_DRAFT", threadId, sourceTurnId)
       }
-      let before = composer.value as? String ?? ""
+      let before = normalizedSuggestionDraftText()
       if let previous = drafts[threadId] { XCTAssertEqual(before, previous, "Navigation must preserve the original draft") }
       else { drafts[threadId] = before }
       let entry = app.buttons[before.isEmpty ? "suggestion-details" : "suggestion-entry"]
@@ -10727,7 +12367,7 @@ final class CodexManageUITests: XCTestCase {
       XCTAssertEqual(XCTWaiter.wait(for: [matches], timeout: 15), .completed)
       XCTAssertEqual(text.label, expectedText, "Original suggestion bytes must belong to this source")
       XCTAssertFalse(app.buttons["suggestion-send"].exists)
-      XCTAssertEqual(composer.value as? String ?? "", drafts[threadId], "Reading/expanding must not change the draft")
+      XCTAssertEqual(normalizedSuggestionDraftText(), drafts[threadId], "Reading/expanding must not change the draft")
       shot("read-only-desktop-suggestion-\(index)")
       print("SUGGESTION_DEV_MATCH", index, threadId, sourceTurnId)
       let close = app.buttons["suggestion-details-close"]
@@ -10760,12 +12400,12 @@ final class CodexManageUITests: XCTestCase {
 
   private func normalizedSuggestionDraftText() -> String {
     let value = composer.value as? String ?? ""
-    return value == "询问 Codex" ? "" : value
+    return value == "输入消息，长按语音输入" ? "" : value
   }
 
   private func expectSuggestionDraft(_ text: String) {
     let predicate = text.isEmpty
-      ? NSPredicate(format: "value == '' OR value == nil OR value == '询问 Codex'")
+      ? NSPredicate(format: "value == '' OR value == nil OR value == '输入消息，长按语音输入'")
       : NSPredicate(format: "value == %@", text)
     let expected = XCTNSPredicateExpectation(predicate: predicate, object: composer)
     let result = XCTWaiter.wait(for: [expected], timeout: 15)
@@ -12991,27 +14631,17 @@ final class CodexManageUITests: XCTestCase {
     XCTAssertEqual(answer.value as? String, "保留问题草稿")
     startRecording()
     mic.tap()
-    let failure = app.alerts["转写失败"]
-    XCTAssertTrue(failure.waitForExistence(timeout: 5))
-    XCTAssertEqual(Set(failure.buttons.allElementsBoundByIndex.map(\.label)), Set(["重试转写", "使用本地转写"]))
+    XCTAssertTrue(app.staticTexts["question-voice-failure-long"].waitForExistence(timeout: 5))
+    XCTAssertFalse(app.alerts.firstMatch.exists)
+    XCTAssertEqual(mic.label, "重试转写")
     XCTAssertEqual(app.state, .runningForeground)
-    shot("question-voice-failure-two-recovery-options", fullScreen: true)
-    if app.state == .runningBackground || app.state == .runningBackgroundSuspended { app.activate() }
-    XCTAssertEqual(app.state, .runningForeground)
-    failure.buttons["重试转写"].firstMatch.tap()
-    if app.state == .runningBackground || app.state == .runningBackgroundSuspended { app.activate() }
-    XCTAssertEqual(app.state, .runningForeground)
-    if failure.waitForExistence(timeout: 5) {
-      XCTAssertEqual(answer.value as? String, "保留问题草稿")
-      failure.buttons["使用本地转写"].firstMatch.tap()
-    } else {
-      let local = app.buttons["question-local-transcription-long"]
-      XCTAssertTrue(local.waitForExistence(timeout: 5))
-      XCTAssertEqual(mic.label, "重试转写")
-      XCTAssertEqual(answer.value as? String, "保留问题草稿")
-      shot("question-voice-inline-recovery")
-      local.tap()
-    }
+    shot("question-voice-inline-recovery-options", fullScreen: true)
+    mic.tap()
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label == %@ AND isEnabled == true", "重试转写"), object: mic)], timeout: 5), .completed)
+    XCTAssertTrue(app.staticTexts["question-voice-failure-long"].exists)
+    XCTAssertEqual(answer.value as? String, "保留问题草稿")
+    app.buttons["question-local-transcription-long"].tap()
     XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
       predicate: NSPredicate(format: "value == %@", "保留问题草稿\n语音输入测试"), object: answer)], timeout: 5), .completed)
     XCTAssertEqual(mic.label, "语音输入回复")
@@ -13070,7 +14700,7 @@ final class CodexManageUITests: XCTestCase {
       if app.buttons["open-async-questions"].exists { app.buttons["open-async-questions"].tap() }
       XCTAssertTrue(mic.waitForExistence(timeout: 5)); mic.tap()
     }
-    let waveform = app.otherElements["question-dictation-long"]
+    let waveform = app.descendants(matching: .any)["question-dictation-long"].firstMatch
     XCTAssertTrue(waveform.waitForExistence(timeout: 5))
     XCTAssertEqual(field.value as? String, "保留草稿", "Recording leaves the original answer unchanged until remote transcription completes")
     XCTAssertFalse(submit.isEnabled, "Finish dictation before submitting the answer")
@@ -13078,7 +14708,8 @@ final class CodexManageUITests: XCTestCase {
     XCTAssertEqual(field.value as? String, "保留草稿")
     mic.tap()
     XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@ AND isEnabled == true", "结束录音并转写"), object: mic)], timeout: 5), .completed)
-    mic.tap()
+    XCTAssertEqual(waveform.label, "轻触停止录音")
+    app.buttons["question-dictation-long"].tap()
     XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "语音输入回复"), object: mic)], timeout: 5), .completed)
     XCTAssertEqual(field.value as? String, "保留草稿\n语音输入测试")
     XCTAssertGreaterThanOrEqual(field.frame.height, 38, "Two lines of draft text must remain visible")
@@ -13128,7 +14759,7 @@ final class CodexManageUITests: XCTestCase {
     let (statusData, _) = try await URLSession.shared.data(from: URL(string: fixture.endpoint + "/status")!)
     let status = try XCTUnwrap(JSONSerialization.jsonObject(with: statusData) as? [String: Any])
     XCTAssertEqual(status["answers"] as? Int, 3, "Answers and skip must each submit once")
-    XCTAssertTrue((composer.value as? String ?? "").isEmpty || composer.value as? String == "询问 Codex")
+    XCTAssertTrue((composer.value as? String ?? "").isEmpty || composer.value as? String == "输入消息，长按语音输入")
   }
   @MainActor private func openDesktopSidebarSearch() -> XCUIElement {
     dismissLiveQuestionPresentation()
@@ -15754,5 +17385,573 @@ extension CodexManageUITests {
     XCTAssertFalse(app.buttons["file-preview-close"].exists, "Other file types retain system preview")
     shot("markdown-preview-plain-file-system-fallback")
     done.tap()
+  }
+}
+
+extension CodexManageUITests {
+  @MainActor func testVisualizationPhysicalDEV() async throws {
+    struct Fixture: Decodable {
+      let bundleId: String
+      let connection: LiveFixture
+      let visualizationLabel: String
+      let pairingUri: String?
+    }
+    let raw = try XCTUnwrap(ProcessInfo.processInfo.environment["VISUALIZATION_FIXTURE"])
+    let fixture = try JSONDecoder().decode(Fixture.self, from: Data(raw.utf8))
+    XCTAssertTrue(fixture.bundleId.hasPrefix("com.easyai.agenthub.visualization."))
+    if let pairingUri = fixture.pairingUri {
+      allowAcceptanceLocalNetworkPermission()
+      app.buttons["client-switch"].tap()
+      let add = app.buttons["add-client"]
+      for _ in 0..<6 where !add.isHittable { app.swipeUp() }
+      XCTAssertTrue(add.waitForExistence(timeout: 15)); add.tap()
+      selectConnectionMethod("扫码连接", agent: "codex")
+      let qr = app.textFields["codex-qr-description"]
+      XCTAssertTrue(qr.waitForExistence(timeout: 15)); qr.tap(); qr.typeText(pairingUri)
+      if app.buttons["完成输入"].exists { app.buttons["完成输入"].tap() }
+      app.buttons["codex-connect-qr"].tap()
+      XCTAssertTrue(qr.waitForNonExistence(timeout: 90), app.debugDescription)
+      dismissSystemPasswordOffer()
+    } else {
+      connectLive(fixture.connection, supportsCreation: false, nickname: "Visualization DEV")
+    }
+    openDesktopTestConversation(fixture.connection)
+    let timeline = app.scrollViews["message-list"]
+    func openVisualization() {
+      let link = app.links.matching(NSPredicate(format: "label == %@", fixture.visualizationLabel)).firstMatch
+      let text = app.staticTexts.matching(NSPredicate(format: "label == %@", fixture.visualizationLabel)).firstMatch
+      let button = app.buttons.matching(NSPredicate(format: "label == %@", fixture.visualizationLabel)).firstMatch
+      for _ in 0..<10 where !link.isHittable && !text.isHittable && !button.isHittable { timeline.swipeUp() }
+      if link.isHittable { link.tap() }
+      else if button.isHittable { button.tap() }
+      else { XCTAssertTrue(text.isHittable, app.debugDescription); text.tap() }
+      XCTAssertTrue(app.otherElements["visualization-preview-screen"].waitForExistence(timeout: 30), app.debugDescription)
+      XCTAssertTrue(app.buttons["visualization-preview-close"].waitForExistence(timeout: 30), app.debugDescription)
+      XCTAssertTrue(app.webViews["visualization-web"].waitForExistence(timeout: 30), app.debugDescription)
+    }
+    openVisualization()
+    let web = app.webViews["visualization-web"]
+    XCTAssertTrue(web.staticTexts["可视化真机验收"].waitForExistence(timeout: 20), app.debugDescription)
+    XCTAssertTrue(web.staticTexts["当前值 80%"].waitForExistence(timeout: 10), app.debugDescription)
+    let increment = web.buttons["增加阈值"]
+    XCTAssertTrue(increment.waitForExistence(timeout: 10), app.debugDescription)
+    increment.tap()
+    XCTAssertTrue(web.staticTexts["当前值 90%"].waitForExistence(timeout: 10), app.debugDescription)
+    shot("visualization-interaction")
+    let graph = web.otherElements.matching(NSPredicate(format: "label BEGINSWITH %@", "横向图表")).firstMatch
+    XCTAssertTrue(graph.waitForExistence(timeout: 10), app.debugDescription)
+    let chart = graph.images["阈值图表"]
+    XCTAssertTrue(chart.waitForExistence(timeout: 10), app.debugDescription)
+    let initialChartX = chart.frame.minX
+    graph.swipeLeft()
+    XCTAssertLessThan(chart.frame.minX, initialChartX, "The wide chart must actually scroll horizontally")
+    let end = web.staticTexts["长内容末尾"]
+    XCTAssertTrue(end.waitForExistence(timeout: 10), app.debugDescription)
+    let initialEndY = end.frame.minY
+    for _ in 0..<8 where !web.frame.contains(CGPoint(x: end.frame.midX, y: end.frame.midY)) { web.swipeUp() }
+    XCTAssertLessThan(end.frame.minY, initialEndY, "Long content must actually scroll vertically")
+    XCTAssertTrue(web.frame.contains(CGPoint(x: end.frame.midX, y: end.frame.midY)), app.debugDescription)
+    shot("visualization-scroll")
+    app.buttons["visualization-preview-close"].tap()
+    XCTAssertTrue(app.buttons["visualization-preview-close"].waitForNonExistence(timeout: 10))
+    openVisualization()
+    XCTAssertTrue(web.staticTexts["可视化真机验收"].waitForExistence(timeout: 20), app.debugDescription)
+    app.buttons["visualization-preview-close"].tap()
+    XCTAssertTrue(app.buttons["visualization-preview-close"].waitForNonExistence(timeout: 10))
+  }
+}
+
+extension CodexManageUITests {
+  @MainActor func testFileSizeLimitsPhysicalDEV() throws {
+    struct Fixture: Decodable {
+      let connection: LiveFixture
+      let plainLabel: String
+      let fileName: String
+      let displayName: String
+      let pairingUri: String?
+    }
+    let raw = try XCTUnwrap(ProcessInfo.processInfo.environment["FILE_PREVIEW_FIXTURE"])
+    let fixture = try JSONDecoder().decode(Fixture.self, from: Data(raw.utf8))
+    if let pairingUri = fixture.pairingUri {
+    allowAcceptanceLocalNetworkPermission()
+    app.buttons["client-switch"].tap()
+    let add = app.buttons["add-client"]
+    for _ in 0..<6 where !add.isHittable { app.swipeUp() }
+    XCTAssertTrue(add.waitForExistence(timeout: 15)); add.tap()
+    selectConnectionMethod("扫码连接", agent: "codex")
+    let qr = app.textFields["codex-qr-description"]
+    XCTAssertTrue(qr.waitForExistence(timeout: 15)); qr.tap(); qr.typeText(pairingUri)
+    if app.buttons["完成输入"].exists { app.buttons["完成输入"].tap() }
+    app.buttons["codex-connect-qr"].tap()
+    XCTAssertTrue(qr.waitForNonExistence(timeout: 90), app.debugDescription)
+    dismissSystemPasswordOffer()
+    } else {
+      connectLive(fixture.connection, supportsCreation: false, nickname: fixture.displayName)
+    }
+    app.buttons["open-sidebar"].tap()
+    XCTAssertTrue(app.buttons["sidebar-file-transfers"].waitForExistence(timeout: 15))
+    app.buttons["sidebar-file-transfers"].tap()
+    let select = app.buttons["choose-transfer-files"]
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: select)], timeout: 60), .completed)
+    let completed = app.descendants(matching: .any)["completed-transfer-" + fixture.fileName].firstMatch
+    // A resumed acceptance run observes the completed original transfer rather than uploading again.
+    if !completed.exists {
+      select.tap()
+      let browse = app.buttons.matching(NSPredicate(format: "label IN %@", ["Browse", "浏览"])).firstMatch
+      if browse.waitForExistence(timeout: 3) { browse.tap() }
+      let phone = app.staticTexts.matching(NSPredicate(format: "label IN %@", ["On My iPhone", "我的 iPhone", "我的iPhone"])).firstMatch
+      if phone.waitForExistence(timeout: 3) { phone.tap() }
+      let folder = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", fixture.displayName)).firstMatch
+      if folder.waitForExistence(timeout: 3) { folder.tap() }
+      let file = app.collectionViews.cells.matching(NSPredicate(format: "label CONTAINS %@", (fixture.fileName as NSString).deletingPathExtension)).firstMatch
+      XCTAssertTrue(file.waitForExistence(timeout: 15), app.debugDescription); file.tap()
+      let open = app.buttons.matching(NSPredicate(format: "label IN %@", ["Open", "打开"])).firstMatch
+      if open.waitForExistence(timeout: 2), open.isEnabled { open.tap() }
+      XCTAssertTrue(app.descendants(matching: .any)["completed-transfer-" + fixture.fileName].firstMatch.waitForExistence(timeout: 180), app.debugDescription)
+    }
+    app.buttons["完成"].tap()
+    if app.buttons["close-sidebar"].exists { app.buttons["close-sidebar"].tap() }
+    openDesktopTestConversation(fixture.connection)
+    let link = app.links.matching(NSPredicate(format: "label == %@", fixture.plainLabel)).firstMatch
+    let fallback = app.staticTexts.matching(NSPredicate(format: "label == %@", fixture.plainLabel)).firstMatch
+    let timeline = app.scrollViews["message-list"]
+    for _ in 0..<10 where !link.isHittable && !fallback.isHittable { timeline.swipeUp() }
+    if link.isHittable { link.tap() } else { XCTAssertTrue(fallback.isHittable, app.debugDescription); fallback.tap() }
+    let done = app.buttons.matching(NSPredicate(format: "identifier IN %@ OR label IN %@", ["QLOverlayDoneButtonAccessibilityIdentifier", "QLDoneButton"], ["关闭", "Close", "Done", "完成"])).firstMatch
+    XCTAssertTrue(done.waitForExistence(timeout: 180), app.debugDescription)
+    XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", (fixture.fileName as NSString).deletingPathExtension)).firstMatch.waitForExistence(timeout: 30), app.debugDescription)
+    shot("large-file-system-preview", fullScreen: true)
+    // Terminate this isolated test App after capturing the system preview.
+    // Closing QuickLook via its accessibility tree is outside this size-limit scenario.
+    app.terminate()
+  }
+}
+
+/// No legacy setup, reset, pairing or business input. The caller first launches
+/// the ordinary frozen lifecycle process and installs this separate UI runner.
+final class EasyWorkSimulatorNotificationPermissionUITests: XCTestCase {
+  @MainActor func testExpandOnlyFrozenExistingSimulatorNotificationGroup() throws {
+    #if !targetEnvironment(simulator)
+    throw XCTSkip("Frozen Simulator-only existing notification group expansion")
+    #else
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_SIMULATOR_NOTIFICATION_UI_CONFIG_JSON"],
+      let c = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let run = c["caseId"] as? String, UUID(uuidString: run) != nil,
+      c["targetBundleIdentifier"] as? String == "com.easyai.agenthub.easyworkacceptance",
+      c["maximumHomePressesAuthorized"] as? Int == 0,
+      c["maximumNotificationCenterGesturesAuthorized"] as? Int == 0,
+      c["maximumGroupExpansionTapsAuthorized"] as? Int == 1,
+      c["maximumNoticeTapsAuthorized"] as? Int == 0,
+      c["newModelsAuthorized"] as? Int == 0, c["newBusinessCommandsAuthorized"] as? Int == 0 else {
+      throw XCTSkip("Explicit single group expansion with zero task selection required")
+    }
+    continueAfterFailure = false
+    let app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+    guard app.state == .runningBackground || app.state == .runningBackgroundSuspended else {
+      XCTFail("Only the existing background App's system group may be expanded"); return
+    }
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    let groups = springboard.descendants(matching: .any).matching(identifier: "NotificationShortLookView")
+      .matching(NSPredicate(format: "label BEGINSWITH %@", "AGENT HUB, 已分组"))
+    guard groups.count == 1 else { XCTFail("No unique observed own collapsed group"); return }
+    let button = groups.element(boundBy: 0).buttons.matching(identifier: "ShortLook.Platter.Content.Seamless")
+    guard button.count == 1, button.element(boundBy: 0).isHittable else {
+      XCTFail("Observed own group expansion button is unavailable"); return
+    }
+    button.element(boundBy: 0).tap()
+    let expanded = springboard.descendants(matching: .any).matching(identifier: "NotificationShortLookView")
+    let end = Date().addingTimeInterval(5)
+    while expanded.count <= 1, Date() < end { Thread.sleep(forTimeInterval: 0.2) }
+    let background = app.state == .runningBackground || app.state == .runningBackgroundSuspended
+    let hierarchy = XCTAttachment(string: String(springboard.debugDescription.prefix(98_304)))
+    hierarchy.name = "expanded-own-notification-group-" + run
+    hierarchy.lifetime = .keepAlways; add(hierarchy)
+    let screenshot = XCTAttachment(screenshot: springboard.screenshot())
+    screenshot.name = "expanded-own-notification-group-screen-" + run
+    screenshot.lifetime = .keepAlways; add(screenshot)
+    let report: [String: Any] = ["caseId": run, "groupExpansionTaps": 1,
+      "noticeTaps": 0, "homePresses": 0, "notificationCenterGestures": 0,
+      "appStayedBackground": background, "collapsedGroupNoLongerPresent": groups.count == 0,
+      "expandedNoticeElementCount": expanded.count,
+      "newModels": 0, "newBusinessCommands": 0, "wholeFeaturePassed": false]
+    let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), uniformTypeIdentifier: "public.json")
+    attachment.name = "own-group-expansion-result-" + run
+    attachment.lifetime = .keepAlways; add(attachment)
+    XCTAssertTrue(background); XCTAssertGreaterThan(expanded.count, 1)
+    #endif
+  }
+
+  @MainActor func testTapOnlyExactFrozenNoticeInExistingSimulatorCenter() throws {
+    #if !targetEnvironment(simulator)
+    throw XCTSkip("Frozen Simulator-only exact existing system notice tap")
+    #else
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_SIMULATOR_NOTIFICATION_UI_CONFIG_JSON"],
+      let c = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let run = c["caseId"] as? String, UUID(uuidString: run) != nil,
+      c["targetBundleIdentifier"] as? String == "com.easyai.agenthub.easyworkacceptance",
+      c["maximumHomePressesAuthorized"] as? Int == 0,
+      c["maximumNotificationCenterGesturesAuthorized"] as? Int == 0,
+      c["maximumGroupExpansionTapsAuthorized"] as? Int == 0,
+      c["maximumNoticeTapsAuthorized"] as? Int == 1,
+      c["newModelsAuthorized"] as? Int == 0, c["newBusinessCommandsAuthorized"] as? Int == 0,
+      let label = c["expectedExactAccessibilityLabel"] as? String,
+      label.hasPrefix("AGENT HUB,"), !label.contains("已分组") else {
+      throw XCTSkip("Explicit exact observed own notice label and single tap required")
+    }
+    continueAfterFailure = false
+    let app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+    guard app.state == .runningBackground || app.state == .runningBackgroundSuspended else {
+      XCTFail("The original ordinary App must remain background until the system tap"); return
+    }
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    let notices = springboard.descendants(matching: .any).matching(identifier: "NotificationShortLookView")
+      .matching(NSPredicate(format: "label == %@", label))
+    guard notices.count == 1, notices.element(boundBy: 0).isHittable else {
+      XCTFail("No unique hittable exact prequalified notice; no tap performed"); return
+    }
+    notices.element(boundBy: 0).tap()
+    let foreground = app.wait(for: .runningForeground, timeout: 15)
+    let report: [String: Any] = ["caseId": run, "noticeTaps": 1,
+      "groupExpansionTaps": 0, "homePresses": 0, "notificationCenterGestures": 0,
+      "exactObservedLabelMatched": true, "appForegroundAfterTap": foreground,
+      "newModels": 0, "newBusinessCommands": 0, "wholeFeaturePassed": false]
+    let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), uniformTypeIdentifier: "public.json")
+    attachment.name = "exact-own-notice-tap-result-" + run
+    attachment.lifetime = .keepAlways; add(attachment)
+    XCTAssertTrue(foreground)
+    #endif
+  }
+
+  @MainActor func testTapFrozenExistingNoticeIgnoringOnlySystemRelativeAge() throws {
+    #if !targetEnvironment(simulator)
+    throw XCTSkip("Frozen Simulator-only existing system notice tap")
+    #else
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_SIMULATOR_NOTIFICATION_UI_CONFIG_JSON"],
+      let c = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let run = c["caseId"] as? String, UUID(uuidString: run) != nil,
+      c["targetBundleIdentifier"] as? String == "com.easyai.agenthub.easyworkacceptance",
+      c["maximumHomePressesAuthorized"] as? Int == 0,
+      c["maximumNotificationCenterGesturesAuthorized"] as? Int == 0,
+      c["maximumGroupExpansionTapsAuthorized"] as? Int == 0,
+      c["maximumNoticeTapsAuthorized"] as? Int == 1,
+      c["newModelsAuthorized"] as? Int == 0, c["newBusinessCommandsAuthorized"] as? Int == 0,
+      c["systemRelativeAgeIsOnlyIgnoredLabelField"] as? Bool == true,
+      let prefix = c["expectedStableLabelPrefix"] as? String, prefix == "AGENT HUB, ",
+      let suffix = c["expectedStableLabelSuffix"] as? String,
+      suffix.hasPrefix(", "), suffix.hasSuffix("任务执行失败，请查看详情"),
+      !suffix.contains("已分组") else {
+      throw XCTSkip("Explicit stable own label and one tap required")
+    }
+    continueAfterFailure = false
+    let app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    var report: [String: Any] = ["caseId": run, "noticeTaps": 0, "noticeTapAttempts": 0,
+      "groupExpansionTaps": 0, "homePresses": 0, "notificationCenterGestures": 0,
+      "systemRelativeAgeIsOnlyIgnoredLabelField": true,
+      "newModels": 0, "newBusinessCommands": 0, "wholeFeaturePassed": false]
+    defer {
+      if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) {
+        let result = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        result.name = "stable-own-notice-tap-result-" + run
+        result.lifetime = .keepAlways; add(result)
+      }
+    }
+    let hierarchy = XCTAttachment(string: String(springboard.debugDescription.prefix(98_304)))
+    hierarchy.name = "before-stable-notice-tap-hierarchy-" + run
+    hierarchy.lifetime = .keepAlways; add(hierarchy)
+    guard app.state == .runningBackground || app.state == .runningBackgroundSuspended else {
+      XCTFail("Original ordinary App must remain background until the system tap"); return
+    }
+    let notices = springboard.descendants(matching: .any).matching(identifier: "NotificationShortLookView")
+      .matching(NSPredicate(format: "label BEGINSWITH %@ AND label ENDSWITH %@", prefix, suffix))
+    report["stableLabelMatchCount"] = notices.count
+    guard notices.count == 1 else { XCTFail("No unique stable own notice; no tap performed"); return }
+    let notice = notices.element(boundBy: 0)
+    let age = String(notice.label.dropFirst(prefix.count).dropLast(suffix.count))
+    guard age.range(of: "^[0-9]+(秒|分钟|小时|天)前$", options: .regularExpression) != nil else {
+      XCTFail("The ignored field is not a system relative age; no tap performed"); return
+    }
+    let content = notice.buttons.matching(identifier: "ShortLook.Platter.Content.Seamless")
+    guard content.count == 1, content.element(boundBy: 0).isHittable else {
+      XCTFail("Prequalified notice content is not uniquely hittable; no tap performed"); return
+    }
+    report["exactStableLabelMatched"] = true
+    report["noticeTapAttempts"] = 1
+    content.element(boundBy: 0).tap()
+    report["noticeTaps"] = 1
+    let foreground = app.wait(for: .runningForeground, timeout: 15)
+    report["appForegroundAfterTap"] = foreground
+    XCTAssertTrue(foreground)
+    #endif
+  }
+
+  @MainActor func testOpenFrozenExistingNoticeUsingOneSystemHintedRightSwipe() throws {
+    #if !targetEnvironment(simulator)
+    throw XCTSkip("Frozen Simulator-only system-hinted notice opening")
+    #else
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_SIMULATOR_NOTIFICATION_UI_CONFIG_JSON"],
+      let c = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let run = c["caseId"] as? String, UUID(uuidString: run) != nil,
+      c["targetBundleIdentifier"] as? String == "com.easyai.agenthub.easyworkacceptance",
+      c["maximumHomePressesAuthorized"] as? Int == 0,
+      c["maximumNotificationCenterGesturesAuthorized"] as? Int == 0,
+      c["maximumGroupExpansionTapsAuthorized"] as? Int == 0,
+      c["maximumOwnNoticeRightSwipesAuthorized"] as? Int == 1,
+      c["maximumObservedOwnOpenButtonTapsAuthorized"] as? Int == 1,
+      c["priorSystemDefaultActionDidExecute"] as? Bool == false,
+      c["newModelsAuthorized"] as? Int == 0, c["newBusinessCommandsAuthorized"] as? Int == 0,
+      let prefix = c["expectedStableLabelPrefix"] as? String, prefix == "AGENT HUB, ",
+      let suffix = c["expectedStableLabelSuffix"] as? String,
+      suffix.hasPrefix(", "), suffix.hasSuffix("任务执行失败，请查看详情"), !suffix.contains("已分组") else {
+      throw XCTSkip("Exact own notice and prior nonexecution receipt required")
+    }
+    continueAfterFailure = false
+    let app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    var report: [String: Any] = ["caseId": run, "ownNoticeRightSwipes": 0, "openButtonTaps": 0,
+      "homePresses": 0, "notificationCenterGestures": 0, "groupExpansionTaps": 0,
+      "newModels": 0, "newBusinessCommands": 0, "wholeFeaturePassed": false]
+    func capture(_ stage: String) {
+      let hierarchy = XCTAttachment(string: String(springboard.debugDescription.prefix(98_304)))
+      hierarchy.name = stage + "-system-hinted-notice-hierarchy-" + run
+      hierarchy.lifetime = .keepAlways; add(hierarchy)
+      let screenshot = XCTAttachment(screenshot: springboard.screenshot())
+      screenshot.name = stage + "-system-hinted-notice-screen-" + run
+      screenshot.lifetime = .keepAlways; add(screenshot)
+      if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) {
+        let result = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        result.name = stage + "-system-hinted-notice-result-" + run
+        result.lifetime = .keepAlways; add(result)
+      }
+    }
+    guard app.state == .runningBackground || app.state == .runningBackgroundSuspended else {
+      capture("not-background"); XCTFail("Original App must still be background"); return
+    }
+    let query = springboard.descendants(matching: .any).matching(identifier: "NotificationShortLookView")
+      .matching(NSPredicate(format: "label BEGINSWITH %@ AND label ENDSWITH %@", prefix, suffix))
+    guard query.count == 1 else { capture("no-unique-notice"); XCTFail("No unique own notice"); return }
+    let notice = query.element(boundBy: 0)
+    let age = String(notice.label.dropFirst(prefix.count).dropLast(suffix.count))
+    guard age.range(of: "^[0-9]+(秒|分钟|小时|天)前$", options: .regularExpression) != nil,
+      notice.isHittable else { capture("not-hittable"); XCTFail("No safe own notice gesture"); return }
+    capture("before")
+    report["ownNoticeRightSwipes"] = 1
+    notice.swipeRight(velocity: .slow)
+    if !app.wait(for: .runningForeground, timeout: 3) {
+      capture("after-right-swipe")
+      // Only an actual observed Open button inside this same identified notice
+      // may be tapped; Clear/Options and other notification rows are excluded.
+      let opens = notice.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "打开", "Open"))
+      report["observedOwnOpenButtonCount"] = opens.count
+      if opens.count == 1, opens.element(boundBy: 0).isHittable {
+        report["openButtonTaps"] = 1
+        opens.element(boundBy: 0).tap()
+      }
+    }
+    let foreground = app.wait(for: .runningForeground, timeout: 15)
+    report["appForegroundAfterSystemAction"] = foreground
+    capture("after")
+    XCTAssertTrue(foreground)
+    #endif
+  }
+
+  @MainActor func testInspectOnlyFrozenExistingSimulatorNotificationCenter() throws {
+    #if !targetEnvironment(simulator)
+    throw XCTSkip("Frozen Simulator-only system hierarchy observation")
+    #else
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_SIMULATOR_NOTIFICATION_UI_CONFIG_JSON"],
+      let config = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let run = config["caseId"] as? String, UUID(uuidString: run) != nil,
+      config["targetBundleIdentifier"] as? String == "com.easyai.agenthub.easyworkacceptance",
+      config["maximumHomePressesAuthorized"] as? Int == 0,
+      config["maximumNotificationCenterGesturesAuthorized"] as? Int == 0,
+      config["maximumNoticeTapsAuthorized"] as? Int == 0,
+      config["newModelsAuthorized"] as? Int == 0,
+      config["newBusinessCommandsAuthorized"] as? Int == 0 else {
+      throw XCTSkip("Explicit zero-action existing system observation required")
+    }
+    let app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    let hierarchy = XCTAttachment(string: String(springboard.debugDescription.prefix(98_304)))
+    hierarchy.name = "existing-notification-center-hierarchy-" + run
+    hierarchy.lifetime = .keepAlways; add(hierarchy)
+    let screenshot = XCTAttachment(screenshot: springboard.screenshot())
+    screenshot.name = "existing-notification-center-screen-" + run
+    screenshot.lifetime = .keepAlways; add(screenshot)
+    let report: [String: Any] = ["caseId": run, "appState": app.state.rawValue,
+      "homePresses": 0, "notificationCenterGestures": 0, "noticeTaps": 0,
+      "launchOrActivationCalls": 0, "newModels": 0, "newBusinessCommands": 0,
+      "observationOnlyNotRouteAcceptance": true, "wholeFeaturePassed": false]
+    let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+    let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+    attachment.name = "existing-system-observation-" + run
+    attachment.lifetime = .keepAlways; add(attachment)
+    #endif
+  }
+
+  @MainActor func testTapOnlyFrozenSimulatorFailedNoticeAfterRealHome() throws {
+    #if !targetEnvironment(simulator)
+    throw XCTSkip("Frozen Simulator-only actual notification tap")
+    #else
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_SIMULATOR_NOTIFICATION_UI_CONFIG_JSON"],
+      let config = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let run = config["caseId"] as? String, UUID(uuidString: run) != nil,
+      config["targetBundleIdentifier"] as? String == "com.easyai.agenthub.easyworkacceptance",
+      config["maximumHomePressesAuthorized"] as? Int == 1,
+      config["maximumNotificationCenterGesturesAuthorized"] as? Int == 1,
+      config["maximumNoticeTapsAuthorized"] as? Int == 1,
+      config["newModelsAuthorized"] as? Int == 0,
+      config["newBusinessCommandsAuthorized"] as? Int == 0,
+      config["ownActualDeliveredNoticesPrequalified"] as? Bool == true,
+      let title = config["expectedSystemNoticeTitle"] as? String, !title.isEmpty,
+      let fragment = config["expectedAccessibilityFragment"] as? String, fragment.count >= 8 else {
+      throw XCTSkip("Explicit actual delivered notice identity and action budgets required")
+    }
+    continueAfterFailure = false
+    let app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+    guard app.state == .runningForeground else {
+      XCTFail("Only the caller's already-ready ordinary App may be sent Home"); return
+    }
+    XCUIDevice.shared.press(.home)
+    guard app.wait(for: .runningBackground, timeout: 8)
+      || app.wait(for: .runningBackgroundSuspended, timeout: 3) else {
+      XCTFail("Actual Home background not observed"); return
+    }
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    let top = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.01))
+    let bottom = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+    top.press(forDuration: 0.05, thenDragTo: bottom)
+    let predicate = NSPredicate(format: "label CONTAINS[c] %@ AND label CONTAINS %@ AND label CONTAINS %@",
+      "Agent Hub", title, fragment)
+    let query = springboard.descendants(matching: .any).matching(predicate)
+    let deadline = Date().addingTimeInterval(8)
+    var matches: [XCUIElement] = []
+    repeat {
+      matches = query.allElementsBoundByIndex.filter { $0.exists && $0.isHittable }
+      if !matches.isEmpty { break }
+      Thread.sleep(forTimeInterval: 0.2)
+    } while Date() < deadline
+    let hierarchy = XCTAttachment(string: String(springboard.debugDescription.prefix(65_536)))
+    hierarchy.name = "own-notification-center-before-tap-" + run
+    hierarchy.lifetime = .keepAlways; add(hierarchy)
+    guard matches.count == 1, let notice = matches.first else {
+      XCTFail("Expected exactly one visible prequalified own failed notice; no tap performed"); return
+    }
+    let selectedLabel = notice.label
+    notice.tap()
+    let foreground = app.wait(for: .runningForeground, timeout: 15)
+    let report: [String: Any] = ["caseId": run, "homePresses": 1,
+      "notificationCenterGestures": 1, "noticeTaps": 1, "matchedNoticeCount": 1,
+      "selectedAccessibilityLabel": selectedLabel,
+      "alreadyRunningAppQueriedWithoutLaunchOrActivation": true,
+      "ordinaryAppForegroundAfterTap": foreground, "newModels": 0,
+      "newBusinessCommands": 0, "naturalPhysicalSuspensionClaimed": false,
+      "fullRouteRequiresIndependentActualResponseAndStoreTarget": true,
+      "wholeFeaturePassed": false]
+    let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+    let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+    attachment.name = "own-system-notice-tap-" + run
+    attachment.lifetime = .keepAlways; add(attachment)
+    XCTAssertTrue(foreground)
+    #endif
+  }
+
+  @MainActor func testHomeOnlyExistingFrozenSimulatorAppWithoutBusinessInput() throws {
+    #if !targetEnvironment(simulator)
+    throw XCTSkip("Frozen Simulator-only ordinary App Home operation")
+    #else
+    guard let raw = ProcessInfo.processInfo.environment["EASYWORK_SIMULATOR_NOTIFICATION_UI_CONFIG_JSON"],
+      let config = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let run = config["caseId"] as? String, UUID(uuidString: run) != nil,
+      config["targetBundleIdentifier"] as? String == "com.easyai.agenthub.easyworkacceptance",
+      config["activateExistingFrozenLifecycleApp"] as? Bool == true,
+      config["maximumHomePressesAuthorized"] as? Int == 1,
+      config["newModelsAuthorized"] as? Int == 0,
+      config["newBusinessCommandsAuthorized"] as? Int == 0 else {
+      throw XCTSkip("Explicit existing ordinary-App Home case required")
+    }
+    continueAfterFailure = false
+    let app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+    guard app.state != .notRunning, app.state != .unknown else {
+      XCTFail("The frozen ordinary App must already be running; never launch an unconfigured process")
+      return
+    }
+    guard app.state == .runningForeground else {
+      XCTFail("Only the already-foreground frozen App may be sent Home"); return
+    }
+    XCUIDevice.shared.press(.home)
+    let background = app.wait(for: .runningBackground, timeout: 8)
+      || app.wait(for: .runningBackgroundSuspended, timeout: 3)
+    XCTAssertTrue(background)
+    let report: [String: Any] = ["caseId": run, "runnerPID": ProcessInfo.processInfo.processIdentifier,
+      "targetBundleIdentifier": "com.easyai.agenthub.easyworkacceptance", "homePresses": 1,
+      "existingAppQueriedWithoutLaunchOrActivation": true, "observedAppBackground": background,
+      "naturalPhysicalSuspensionClaimed": false, "newModels": 0,
+      "newBusinessCommands": 0, "wholeFeaturePassed": false]
+    let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+    let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+    attachment.name = "easywork-simulator-system-home-" + run
+    attachment.lifetime = .keepAlways; add(attachment)
+    #endif
+  }
+
+  @MainActor func testAllowOnlyOwnFrozenSimulatorNotificationPrompt() throws {
+    #if !targetEnvironment(simulator)
+    throw XCTSkip("Frozen Simulator-only notification system interaction")
+    #else
+    let env = ProcessInfo.processInfo.environment
+    guard let raw = env["EASYWORK_SIMULATOR_NOTIFICATION_UI_CONFIG_JSON"],
+      let config = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let run = config["caseId"] as? String, UUID(uuidString: run) != nil,
+      config["targetBundleIdentifier"] as? String == "com.easyai.agenthub.easyworkacceptance",
+      config["activateExistingFrozenLifecycleApp"] as? Bool == true,
+      config["maximumSystemAllowTapsAuthorized"] as? Int == 1,
+      config["newModelsAuthorized"] as? Int == 0,
+      config["newBusinessCommandsAuthorized"] as? Int == 0 else {
+      throw XCTSkip("Explicit same-existing-App system permission case required")
+    }
+    continueAfterFailure = false
+    let app = XCUIApplication(bundleIdentifier: "com.easyai.agenthub.easyworkacceptance")
+    guard app.state != .notRunning, app.state != .unknown else {
+      XCTFail("The independently verified frozen lifecycle App must already be running")
+      return
+    }
+    // The standalone runner has no target App or matching App build product.
+    // Query the already-foreground frozen process; never launch or activate it.
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    let deadline = Date().addingTimeInterval(35)
+    var ownedAlert: XCUIElement?
+    repeat {
+      for alerts in [app.alerts, springboard.alerts] {
+        let count = min(alerts.count, 4)
+        for index in 0..<count {
+          let alert = alerts.element(boundBy: index)
+          let title = alert.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " ")
+          if title.contains("Agent Hub") &&
+            (title.localizedCaseInsensitiveContains("notification") || title.contains("通知")) {
+            ownedAlert = alert; break
+          }
+        }
+        if ownedAlert != nil { break }
+      }
+      if ownedAlert != nil { break }
+      Thread.sleep(forTimeInterval: 0.1)
+    } while Date() < deadline
+    let alert = try XCTUnwrap(ownedAlert, "Expected only this independent App's real notification prompt")
+    let allow = alert.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Allow", "允许")).firstMatch
+    XCTAssertTrue(allow.exists); XCTAssertTrue(allow.isHittable)
+    allow.tap()
+    XCTAssertFalse(alert.waitForExistence(timeout: 0.5))
+    let report: [String: Any] = ["caseId": run, "runnerPID": ProcessInfo.processInfo.processIdentifier,
+      "targetBundleIdentifier": "com.easyai.agenthub.easyworkacceptance",
+      "existingAppQueriedWithoutLaunchOrActivation": true, "ownedNotificationAlertObserved": true,
+      "systemAllowTaps": 1, "newModels": 0, "newBusinessCommands": 0,
+      "systemAuthorizationStatusStillRequiresIndependentRead": true,
+      "cloudRegistrationAndDeliveryNotClaimed": true, "wholeFeaturePassed": false]
+    let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+    let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+    attachment.name = "easywork-simulator-system-allow-" + run
+    attachment.lifetime = .keepAlways; add(attachment)
+    #endif
   }
 }

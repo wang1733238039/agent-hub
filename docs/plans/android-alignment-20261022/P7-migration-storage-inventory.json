@@ -1,0 +1,226 @@
+{
+  "phase": "P7-followup-storage-inventory",
+  "sourceBase": "8666a29dfefcaf65aa77671d85f6291968951b93",
+  "basis": "Source inventory plus explicit phase references; each status retains its verification scope",
+  "entries": [
+    {
+      "id": "root-text",
+      "actualStorage": "metadata; Codex Vault; original operations/submissions; draft-file; history index/parts; thumbnails; old AI grants",
+      "status": "supported within internal text archive",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/NativeMigrationCandidate.kt",
+      "sourceSha256": "9f384213fb91b727577d161ccc69402baaed02d63c09a23919335ce6cd8ff5d0",
+      "boundary": "Retain exact immutable intent/result and manifests; imported grants reset and operations observe-only"
+    },
+    {
+      "id": "sealed-voice",
+      "actualStorage": "voice-index-v1; voice-recording:<uuid>; voice-audio:<uuid>",
+      "status": "Implemented and native-auxiliary verified for bounded matching Codex sealed voice in P7-5n; full-size/provisional/provider/system UI remain open",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/VoiceRecordingStore.kt",
+      "sourceSha256": "24a8b0c642911999b92d5371b230e13146cf9c330a5a3466b7e1326cbe9dd420",
+      "boundary": "Original exact ID/target/certificate/draft/manifest and attempt/receipt flags retained; migrationReadOnly forbids prepare/upload, original receipt queries only. Payload/count quotas remain initial bounds."
+    },
+    {
+      "id": "provisional-voice",
+      "actualStorage": "noBackupFilesDir/voice-recordings-v1/<uuid>.wav",
+      "status": "separate global raw directory; not covered by root archive",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/VoiceRecordingStore.kt",
+      "sourceSha256": "24a8b0c642911999b92d5371b230e13146cf9c330a5a3466b7e1326cbe9dd420",
+      "boundary": "Need owner/namespace inventory, capture synchronization and explicit pending/corrupt policy; no deletion or implicit seal/upload during export"
+    },
+    {
+      "id": "recent-photo-preferences",
+      "actualStorage": "recent-photos child: preferences(version1,ignored)",
+      "status": "child not covered by root archive",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/NativeRecentPhotoLibrary.kt",
+      "sourceSha256": "e6ce99ecc6af1e6259726345357050ca009401fe8f08e448098f5735fb070670",
+      "boundary": "Media content URIs are device-local; do not copy OS access or attach another local image under an old URI"
+    },
+    {
+      "id": "photo-permission",
+      "actualStorage": "photo-permission child: attempt-external/images/selected",
+      "status": "installation-local authority; not portable",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/NativePhotoAuthorization.kt",
+      "sourceSha256": "aa8c8a3dd8631fd453a661e0e11d45df25501ad51230587ffaae1fafb1a23c4a",
+      "boundary": "Archive audit separately; new installation OS permission remains independent"
+    },
+    {
+      "id": "document-photo-camera-results",
+      "actualStorage": "document-results/photo-results/camera-results children: document-requests-v1(version1/2)",
+      "status": "child schema not covered",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/NativeDocumentJournal.kt",
+      "sourceSha256": "d42dffff545d5d164ca58bbb96c9699dba214b9c7377a008f440ed9a884a1255",
+      "boundary": "Retain original IDs/destination/quota/status for audit; old ActivityResultRegistry requests and content URI grants never relaunched/inherited"
+    },
+    {
+      "id": "selected-payloads",
+      "actualStorage": "each results child/payloads: external-inbox-index-v1(version1/2) and draft-file:<uuid>",
+      "status": "nested child not covered",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/NativeDocumentRecovery.kt",
+      "sourceSha256": "851b0162b9332d9669b43c21a2595c9cbba46ff447d2a4a75c12a16afdc7a285",
+      "boundary": "Preserve already-read original bytes/order/hash; do not query another device content URI or automatically attach to a changed draft"
+    },
+    {
+      "id": "camera-outputs",
+      "actualStorage": "camera-results/outputs output-v1-<uuid> claims and filesDir/camera-output-v1/<scope>/photo-<uuid>.jpg",
+      "status": "encrypted claims and separate raw files not covered",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/NativeCameraOutputs.kt",
+      "sourceSha256": "f656dcfbaa06c959f0f168a304452877c7807819de9ff21623c7ce469e3e19d6",
+      "boundary": "Claim must prove ownership; old URI grant not portable; retain unresolved owned output; no sweep of unclaimed files"
+    },
+    {
+      "id": "external-inbox",
+      "actualStorage": "external-inbox child: external-inbox-index-v1 and draft-file:<uuid>",
+      "status": "child not covered",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/NativeAttachmentInboxStore.kt",
+      "sourceSha256": "34a33188bc2ad53a0b5aea40954f53bc2e74e90d1aa052c585e041ed3162a85f",
+      "boundary": "Preserve maximum5/legacy10, partial slots, consumed status, destination binding and exact manifests; unknown source is not replayed"
+    },
+    {
+      "id": "easywork-device",
+      "actualStorage": "easywork-device-identity; easywork-credential:<ref>",
+      "status": "root provider schema not supported by current Codex candidate",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/EasyWorkCrypto.kt",
+      "sourceSha256": "e6e48453741aa3d5fd10a059f5325910a1e0dd34451d74507a1955d2258ba091",
+      "boundary": "Provider device identity and EWDAP authorization use separate protocol rules; do not inherit Codex account policy"
+    },
+    {
+      "id": "easywork-oidc",
+      "actualStorage": "easywork-oidc:<issuer/subject hash>; easywork-oidc-last; easywork-oidc-pending",
+      "status": "root provider schema not covered",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/EasyWorkLogin.kt",
+      "sourceSha256": "0b63f3f51435986be1f9b6f413a26a31dbf9a7ce6fb25789e81f183d4a0db99d",
+      "boundary": "Issuer/subject/device scopes stay exact; pending browser nonce/callback is local authority, never relaunch/complete automatically"
+    },
+    {
+      "id": "ordinary-chat-notifications",
+      "actualStorage": "No native Android NotificationManager/FirebaseMessaging/POST_NOTIFICATIONS implementation found by current Android/core source scan",
+      "status": "P9 dependency and implementation still open",
+      "source": "apps/android/src/main/kotlin/com/agenthub/android/MainActivity.kt",
+      "sourceSha256": "4e188173006145ca5fed55be663917e57fb66f372073304250dc710c7edb02aa",
+      "boundary": "Do not claim iOS notification key/binding/sound/seen/revocation payload coverage; task/project notification business remains paused"
+    }
+  ],
+  "iosComparison": {
+    "sources": [
+      "apps/ios/Sources/EncryptedMigration.swift",
+      "apps/ios/Sources/SessionStore.swift",
+      "apps/ios/Sources/VoiceInput.swift"
+    ],
+    "finding": "iOS migrationPayload includes saved state/attachments/credentials/notification records but not independent PendingVoiceStore. Android P7-5n supports a bounded matching Codex sealed-voice subset; full dual-end voice migration remains open."
+  },
+  "sequence": [
+    "Typed sealed voice archive/candidate/generation implemented within initial quota; actual process-cold importer next",
+    "Full-size/multiple/provisional voice, ownership and streaming quotas",
+    "Nested inbox/callback/camera originals, provider/device/OIDC and notification dependency",
+    "Native system file export/import and cold session replacement, then voice/unread/lifecycle matrix"
+  ],
+  "productionMigrationUi": false,
+  "newModelInputs": 0,
+  "unknownOperationsReplayed": false,
+  "updatedBy": "P7-5n",
+  "source82Checkpoint": {
+    "record": "records/source82-p7-aggregate-quota.md",
+    "sourceBase": "ded38c8de10cc8bc34af61e18429434ba24f0f28",
+    "scope": "Documentation checkpoint only; historical source pins and entry statuses above retain their original verification scope. Use the 24-domain system inventory for current coverage.",
+    "boundedOwnedQuotaAssertionsAndDataAccepted": true,
+    "nativeAssertionsPass": true,
+    "originalCollectorCaptureAccepted": false,
+    "strictOriginalEntireRootBoundaryPassed": false,
+    "completeQuotaAcceptancePending": true,
+    "underSeededPairs": 10,
+    "underBinaryBodies": 20,
+    "underBinaryBytes": 192000880,
+    "overSeededPairs": 11,
+    "overBinaryBodies": 22,
+    "overBinaryBytes": 211200968,
+    "shippingAggregateQuotaBytes": 201326592,
+    "actualNativeMaxMemoryBytes": 201326592,
+    "ownedMembers": 50,
+    "ownedDirectories": 5,
+    "ownedRegulars": 45,
+    "originalCaptures": 90,
+    "originalFullStreams": 180,
+    "snapshotCount": 4,
+    "archiveBytes": 403498508,
+    "extraMarker": {
+      "path": "files/profileInstalled",
+      "bytes": 24,
+      "sha256": "239230d97145a83b54b38bd3784411be1779dec40194bd487a707b9ab3533789",
+      "staticSourceAndOriginalVerified": true,
+      "format": "ProfileVerifier Cache >iiqq",
+      "decoded": [1, 327680, 1793526531290, 0],
+      "dynamicWriterOrFirstStartupProven": false,
+      "packageMillisIndependentlyConfirmed": false
+    },
+    "rootReviewSha256": "001c39d49f72595cb7f0d393779158ad2bd73ea876050fffe929bde492ec5eb3",
+    "actual48MiBAccepted": false,
+    "realVoiceSealAccepted": false,
+    "productionMigrationUiAccepted": false,
+    "realHostOrModelInputs": 0,
+    "recentProjectsPolicy": {
+      "inventoryNode": "root-session",
+      "sourceCommit": "85d90f6753c57774aa6c558204768c3aee6b0000",
+      "status": "Pending explicit local navigation metadata retention or exclusion policy; iOS optional recentProjects enters Payload.state. No cross-format interoperability claim."
+    }
+  },
+  "source83Checkpoint": {
+    "record": "records/source83-p7-low-heap-quota.md",
+    "sourceBase": "08e895c3dc4643adf60549be893b6055ba91fd72",
+    "boundedSeededAggregateQuotaAccepted": true,
+    "originalCollectorCaptureAccepted": true,
+    "strictEntireRootBoundaryPassed": true,
+    "actual48MiBAccepted": true,
+    "actualNativeMaxMemoryBytes": 50331648,
+    "underBinaryBytes": 192000880,
+    "overBinaryBytes": 211200968,
+    "shippingAggregateQuotaBytes": 201326592,
+    "beforeRootMembers": 6,
+    "afterRootMembers": 56,
+    "ownedMembers": 50,
+    "sourceMembers": 44,
+    "captures": 90,
+    "fullStreams": 180,
+    "tarBytes": 403512320,
+    "rootReviewSha256": "971df0052d13aaf8e94b310832623bbef5d17f63f6866cf742bcd5724d3ed41b",
+    "readbackReportSha256": "3a8417621e4f75ec83cdf75c80e605933bd7d6bd9bbb94fec3169cb0a488486f",
+    "originalSource82FailureUnchanged": true,
+    "fullQuotaMatrixPending": true,
+    "realVoiceSealFaultAccepted": false,
+    "realRowIOFaultAccepted": false,
+    "processDeathAccepted": false,
+    "activationAccepted": false,
+    "productionMigrationUiAccepted": false,
+    "fullP7Accepted": false,
+    "newModelInputs": 0,
+    "unknownOperationsReplayed": false
+  },
+  "source86Checkpoint": {
+    "phase": 59,
+    "source": "Source86",
+    "record": "records/source86-p7-recent-projects.md",
+    "sourcePins": {
+      "apps/android/src/androidTest/kotlin/com/agenthub/android/NativeRecentProjectsTest.kt": "455e6a09c59e7f2426a304d9030b39d48030c407c91131136f08bfab57b1404b",
+      "apps/android/src/main/kotlin/com/agenthub/android/MobileSession.kt": "82a70e353839fe75836c02edb68d5d13b52e70894c1ddfb18917b3943bd30862",
+      "apps/android/src/main/kotlin/com/agenthub/android/NativeMigrationMetadata.kt": "2e625aae436e2812445447d45f1ae1dd0e4184eaf4a449cdd8080c400a079b24",
+      "apps/android/src/main/kotlin/com/agenthub/android/NativeRecentProjects.kt": "3c39346f111b2c4e4226e0dade6e0fc9223de6666592f5bbf985d617e2a715e1",
+      "apps/android/src/main/kotlin/com/agenthub/android/NativeSheets.kt": "6f1c2c280a53fe08fae125aa28c6cc0e3fc1edfa8f209fed06ea52d2c39d10b8",
+      "apps/android/src/main/kotlin/com/agenthub/android/Sidebar.kt": "96ea0a07e68400c088a059ca57141d07d9824a8a7942fb1f3c7e0c1886a39776"
+    },
+    "appSha256": "9a8e85fd445d397ced958db1f3efbabc43e77524a45a722bc6e9e0e2d2686ab7",
+    "runnerSha256": "b0c963c5082265df4ce051d95042f451bfd1f11c5580d1bf9fdc01a1a825b796",
+    "nativeAuxiliaryMethodsPassed": 7,
+    "actualOriginalPngsViewed": 3,
+    "boundedVisualSourceContractAssertionsAccepted": true,
+    "sameProcessEncryptedMetadataRestore": true,
+    "maxRecentPerScope": 5,
+    "maxScopes": 10000,
+    "oldMissingOptionalFieldAccepted": true,
+    "oldStrictReaderForwardCompatibilityClaimed": false,
+    "fullP7Complete": false,
+    "physicalOrDEVOrOSColdAccepted": false,
+    "previousFailuresRetained": true,
+    "newModelInputs": 0,
+    "cumulativeConfirmedInputs": 221,
+    "finalRootReviewSha256": "04b9ab10d572e015a97fbc371c22abcf14276e12fb1a0c9d348af3dd1b15782f"
+  }
+}

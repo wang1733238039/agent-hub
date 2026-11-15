@@ -291,6 +291,8 @@ Codex 公开描述可声明 `connectionMode: automatic`。此时私网 `POST /co
 
 EasyWork 局域网接入通过 HTTPS `GET /host` 获取 `connectionMode: automatic`、完整目标、公钥与证书摘要；`POST /connections` 只接受手机设备 ID、公钥及名称，不要求配对码或桌面确认。服务仅接受本地网络来源，拒绝网页 Origin 和额外字段，保留输入大小及频率限制。手机首次自动保存同一连接取得的证书，后续使用证书固定校验；不允许跳转到其他地址。二维码还须核对其中的目标、公钥和证书。既有配对接口保持兼容，撤销设备不能通过自动连接重新授权。
 
+2026-10-31 发现展示扩展：v1 `/host` 与直连二维码描述可选提供 `computer: { name, username?, platform }`，分别来自电脑主机名、运行桌面进程的系统用户名及平台；`name` 保留兼容。手机只读描述并显示电脑／用户名称及入口地址，不由这些展示字段生成授权目标，不把系统用户名当作 EasyWork 登录账号。未声明 `connectionMode: automatic` 时不提交自动连接申请，提示使用既有扫码配对；不能仅由该缺省值推断具体安装包版本。实现与逐环境结果见[专项记录](acceptance/easywork-discovery-20261031.md)。
+
 中继固定连接密码沿用既有 `/pairing/claim` 契约；已激活绑定直接返回，不进入临时配对的等待确认流程。手机首次保存绑定及私有身份，重启后恢复连接，无需再次输入固定密码。上述为已实现行为，当前验收范围见 局域网连接验收（本地文件 `docs/acceptance/lan-connection.md`）。
 
 2026-10-10：`generation-speed` 声明速度设置已接入回复、排队及桌面首条创建。领域 `speed` 为 `standard`、`fast` 或 `ultrafast`，省略继承电脑；模型目录返回 `supportedSpeeds` / `defaultSpeed`。Adapter 按当前模型目录将档位映射为上游 serviceTier（例如 Fast 的 priority），关闭时明确提交 default，不能用省略表示关闭。无效类型、模型未提供的档位及 steer 改档均在提交前拒绝；创建／回复指纹包含所选速度，未知结果恢复保留原意图。owner 快照中的速度只表示该线程设置，不承诺实际加速倍数。
@@ -376,3 +378,13 @@ UM04 客户端迁移补充：`codex-host-discovery-v1.schema.json` 新增具名 
 `attachments:resolve-current`、原消息解析和下载继续使用现有路径／来源授权与 SHA-256 契约，不添加新写操作。仅 ctime 改变导致的快照失配允许 Host 最多三次重新授权并完整读取，重试固定首次文件身份；同大小改写并恢复 mtime 仍须重新哈希，不得复用旧缓存或放行旧摘要。持续元数据漂移返回 HTTP 409、`FILE_METADATA_UNSTABLE` 和现有 requestId；它表示未取得稳定快照，不宣称文件内容已变化。实际摘要不符仍返回 `FILE_CHANGED`，目标替换、越权、删除及系统读取错误保持原拒绝。私有日志可核对 `fileChange` 的固定 stat 字段与重试阶段，公共错误不输出这些内部字段。
 
 2026-10-26 阅读版本补充：`contentVersion`校验的是手机实际收到的最终正文，包含`codex-attachment://`链接改写后的内容。原桌面原文与传输正文不同时，Adapter在完整投影原子发布时更新最新版本，以内部持久原文摘要防止后续同一摘要将版本回退。协议字段不变；同ID新内容、旧版本冲突和按阅读者隔离保持。
+
+### Host 历史窗口游标的归属
+
+`desktop-page-v1:` 是 Host 生成的 presentation cursor，包含 Host、thread 与消息锚点的 base64url 编码，长度最多 8192 字符。该前缀在历史读取和已有对话打开的读取分支中具有固定归属，即使下一页省略 `window=latest-v1` 也不能透传到 native RPC。有效匹配的缓存页仍返回原 `historyWindow` 结构标注的早期页及有界消息；格式错误为 HTTP 400 / `HOST_HISTORY_CURSOR_INVALID`，Host/thread 不同为 409 / `HOST_HISTORY_CURSOR_TARGET_MISMATCH`，未知缓存或锚点已失效为 409 / `HOST_HISTORY_CURSOR_EXPIRED`，不支持该窗口的运行时为 400 / `HOST_HISTORY_CURSOR_UNSUPPORTED`。调用方重新取得首页后使用新游标，不重放写操作。Host 身份与设备鉴权仍先由原路由校验。读缓存不表示 IPC 已就绪，也不授予原 owner 控制。
+
+## iOS / EasyWork 本任务主线整合（2026-11-05）
+
+仅整合 iOS 与 EasyWork 的协议、数据、权限及执行差异。原清单保留75项范围、51项对接/16项纯手机免重验/8项排除及14条补充；68个限定场景通过与21项Native失败均按原指纹保留，整项通过数不据此扩大。详见 [原清单](acceptance/codex-easywork-feature-matrix.md)。
+
+本批包含完整目标的 usage/read、project/git/status/files、原回执与队列恢复及问题元数据；旧桌面未准入项仅读，未知输入不重发。isSecret只控制输入遮罩，回答仍按正常工具结果和会话留存。本批优先保留主线现有读取目标、建议接口、启动、附件和迁移行为；Android源码及纯手机端重复验收不开展。合并后的检查与真实DEV结果另回填，不将旧指纹通过当作新主线全量通过。

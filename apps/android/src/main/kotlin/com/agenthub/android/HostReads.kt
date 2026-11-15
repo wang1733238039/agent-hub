@@ -15,6 +15,11 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 internal fun JSONObject.optional(name: String): String? = if (has(name) && !isNull(name)) getString(name) else null
+internal fun JSONObject.resourceIdentityOrNull(): String? = when(val value=opt("resourceId")) {
+    null,JSONObject.NULL -> null
+    is String -> value.takeIf { it.isNotEmpty() } ?: error("文件资源身份无效")
+    else -> error("文件资源身份无效")
+}
 internal fun JSONArray.objects(): List<JSONObject> = (0 until length()).map { getJSONObject(it) }
 internal fun JSONArray.strings(): List<String> = (0 until length()).map { getString(it) }
 
@@ -22,12 +27,15 @@ data class MobileProject(val id: String, val hostId: String, val name: String, v
 data class MobileThread(val id: String, val hostId: String, val title: String, val state: String,
     val projectId: String? = null, val projectIds: List<String> = emptyList(), val unread: Boolean = false,
     val archived: Boolean? = null, val lastTurnStatus: String? = null,
-    val pendingAsyncQuestionCount: Int? = null, val archiveUnavailableReason: String? = null) {
+    val pendingAsyncQuestionCount: Int? = null, val archiveUnavailableReason: String? = null,
+    val readState: ThreadReadState? = null) {
     fun belongs(project: MobileProject) = hostId == project.hostId && (projectId == project.id || project.id in projectIds)
     val showsUnread get() = unread && state !in listOf("running", "waiting-for-approval")
 }
 data class MobileFile(val id: String, val name: String, val mediaType: String, val sizeBytes: Long,
-    val hostId: String, val threadId: String, val sha256: String)
+    val hostId: String, val threadId: String, val sha256: String,val resourceId: String?=null) {
+    val resourceIdentity get()=resourceId ?: id
+}
 data class MobileWorkspace(val hostId: String, val name: String, val mode: String,
     val projects: List<MobileProject>, val threads: List<MobileThread>,
     val nextProjectCursor: String?, val nextThreadCursor: String?, val scope: TargetScope?,
@@ -37,7 +45,8 @@ data class MobileHistory(val hostId: String, val threadId: String, val messages:
     val nextCursor: String?, val scope: TargetScope?, val state: String, val turnId: String?, val wire: String,
     val runtimePresent: Boolean = false, val runtime: MobileRuntime? = null, val epoch: String? = null, val cursor: Long? = null,
     val windowed: Boolean = false, val historyRevision: Long? = null,
-    val historyWindowKind: String? = null, val synchronization: MobileHistorySynchronization? = null)
+    val historyWindowKind: String? = null, val synchronization: MobileHistorySynchronization? = null,
+    val readState: ThreadReadState? = null)
 data class MobileHistorySynchronization(val state: String, val checkedAt: String? = null)
 
 /** Bounded pre-revision V9 compatibility only; it is not a history stability proof. */
@@ -73,13 +82,14 @@ object HostReadCodec {
         it.getString("title"), it.getString("state"), it.optional("projectId"),
         it.optJSONArray("projectIds")?.strings().orEmpty(), it.optBoolean("hasUnreadTurn"),
         MobileWorkspaceMetadata.boolean(it,"archived"), MobileWorkspaceMetadata.text(it,"lastTurnStatus"),
-        MobileWorkspaceMetadata.count(it,"pendingAsyncQuestionCount"), MobileWorkspaceMetadata.text(it,"archiveUnavailableReason"))
+        MobileWorkspaceMetadata.count(it,"pendingAsyncQuestionCount"), MobileWorkspaceMetadata.text(it,"archiveUnavailableReason"),NativeThreadReadingWire.state(it))
     fun message(it: JSONObject): MobileMessage = MobileMessage(it.getString("id"), it.getString("role"),
         NativeHistoryStrings.share(it.getString("text")), it.optional("status"), it.optional("kind"), it.optional("detail")?.let(NativeHistoryStrings::share),
         it.optional("runId"), it.optional("replyPhase"), it.optional("replyMessageId"),
         it.optJSONArray("files")?.strings().orEmpty(), it.optJSONArray("attachments")?.objects()?.map { file ->
             MobileFile(file.getString("id"), file.getString("name"), file.getString("mediaType"),
-                file.getLong("sizeBytes"), file.getString("hostId"), file.getString("threadId"), file.getString("sha256"))
+                file.getLong("sizeBytes"), file.getString("hostId"), file.getString("threadId"), file.getString("sha256"),
+                    file.resourceIdentityOrNull())
         }.orEmpty(), it.optJSONArray("blocks")?.toString()?.let(NativeHistoryStrings::share))
     private fun validated(wire: String, definition: String): JSONObject {
         require(CodexHttpContract.validate(wire, definition) == null) { "电脑返回的数据格式无效" }
@@ -111,12 +121,14 @@ object HostReadCodec {
         require((scope == null || scope.hostId == host) && messages.flatMap { m -> m.attachments }.all { f ->
             f.hostId == host && f.threadId == thread }) { "电脑或附件身份不匹配" }
         val runtime = it.optJSONObject("runtime")
+        val readingThread=it.optJSONObject("thread")
+        require(readingThread==null || readingThread.getString("hostId")==host && readingThread.getString("id")==thread) { "阅读摘要不属于当前电脑或对话" }
         // Decoded messages own the content. Retaining the full raw report as
         // well doubles a long live thread in memory; the wire is cache metadata.
         it.put("messages", JSONArray())
         return MobileHistory(host, thread, messages, it.optional("nextCursor"), scope,
             runtime?.optional("state") ?: "idle", runtime?.optional("turnId"), it.toString(), runtime != null,
-            runtime?.let { MobileRuntime.decode(it,host,thread) },it.optional("epoch"),if(it.has("cursor") && !it.isNull("cursor")) it.getLong("cursor") else null,windowed,revision,windowKind,synchronization)
+            runtime?.let { MobileRuntime.decode(it,host,thread) },it.optional("epoch"),if(it.has("cursor") && !it.isNull("cursor")) it.getLong("cursor") else null,windowed,revision,windowKind,synchronization,readingThread?.let(NativeThreadReadingWire::state))
     }
 }
 
@@ -125,6 +137,8 @@ interface AgentReads {
     suspend fun workspace(client: MobileClient, projectCursor: String? = null, threadCursor: String? = null): MobileWorkspace
     suspend fun history(client: MobileClient, threadId: String, cursor: String? = null): MobileHistory
     suspend fun searchHistory(client: MobileClient,threadId: String,cursor: String? = null): MobileHistory = history(client,threadId,cursor)
+    suspend fun nextTurnSuggestion(client: MobileClient,scope: SuggestionScope): MobileDesktopSuggestionResponse =
+        throw HostReadError("电脑尚未提供桌面建议读取")
 }
 typealias HostReads = AgentReads
 
@@ -139,7 +153,7 @@ class NativeHostReads(private val token: (String) -> String) : HostReads {
             return uri
         }
         fun url(endpoint: String, path: String, query: Map<String, String>): URI {
-            require(path in listOf("v1/workspace", "v1/history", "v1/threads/search-history", "host"))
+            require(path in listOf("v1/workspace", "v1/history", "v1/threads/search-history", "v1/threads/next-turn-suggestion", "host"))
             val base = baseAddress(endpoint).toString().trimEnd('/')
             val encoded = query.entries.joinToString("&") { (k, v) -> URLEncoder.encode(k, "UTF-8") + "=" + URLEncoder.encode(v, "UTF-8") }
             return URI("$base/$path" + if (encoded.isEmpty()) "" else "?$encoded")
@@ -149,7 +163,7 @@ class NativeHostReads(private val token: (String) -> String) : HostReads {
         readResponse(client,path,query,descriptorBudget) { input,active -> NativeWireReader.read(input,if(path=="host") 65_536 else 64*1024*1024,active) }
     private suspend fun <T> readResponse(client: MobileClient, path: String, query: Map<String, String>,descriptorBudget: CodexConnectionReadBudget=CodexConnectionReadBudget.BACKGROUND_DISCOVERY,decode: (java.io.InputStream,()->Boolean)->T): T = suspendCancellableCoroutine { continuation ->
         val active = AtomicReference<HttpURLConnection?>()
-        val future = executor.submit {
+        val future = NativeMigrationIoWork.submit(executor,continuation.context) {
             var connection: HttpURLConnection? = null
             try {
                 if (!continuation.isActive) return@submit
@@ -162,11 +176,12 @@ class NativeHostReads(private val token: (String) -> String) : HostReads {
                     PairedCodexTLS.configure(connection as javax.net.ssl.HttpsURLConnection, endpoint, paired)
                 }
                 connection.instanceFollowRedirects = false
-                connection.connectTimeout = if(path == "host") descriptorBudget.millis else 10_000
-                connection.readTimeout = if(path == "host") descriptorBudget.millis else 35_000
+                connection.connectTimeout = if(path == "host") descriptorBudget.millis else if(path=="v1/threads/next-turn-suggestion")8_000 else 10_000
+                connection.readTimeout = if(path == "host") descriptorBudget.millis else if(path=="v1/threads/next-turn-suggestion")8_000 else 35_000
                 connection.useCaches = false; connection.requestMethod = "GET"
                 token(client.id).takeIf { it.isNotEmpty() }?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
                 connection.setRequestProperty("Accept", "application/json")
+                connection.setRequestProperty("X-Agent-Hub-Approvals", "mcp-v1")
                 val status = connection.responseCode
                 if (status != 200) throw HostReadError(when (status) {
                     401, 403 -> "客户端密钥无效或未获得读取权限"
@@ -180,9 +195,9 @@ class NativeHostReads(private val token: (String) -> String) : HostReads {
                 if (continuation.isActive) continuation.resumeWithException(if (error is HostReadError || error is IllegalArgumentException) error else HostReadError("无法连接电脑，请检查网络或稍后重试", error, transient))
             } catch (failure: OutOfMemoryError) {
                 if(continuation.isActive) continuation.resumeWithException(HostReadError("手机内存不足，未能读取完整历史；原缓存和草稿已保留"))
-            } finally { active.getAndSet(null)?.disconnect(); connection?.disconnect() }
+            } finally { NativeMigrationIoWork.finishHttp(continuation.context,active) }
         }
-        continuation.invokeOnCancellation { active.getAndSet(null)?.disconnect(); future.cancel(true) }
+        continuation.invokeOnCancellation { NativeMigrationIoWork.cancelHttp(continuation.context,active,future) }
     }
     override suspend fun workspace(client: MobileClient, projectCursor: String?, threadCursor: String?): MobileWorkspace {
         val query = buildMap { projectCursor?.let { put("projectCursor", it) }; threadCursor?.let { put("threadCursor", it) }; client.readerId?.let { put("readerId", nativeReaderId(it)) } }
@@ -191,6 +206,15 @@ class NativeHostReads(private val token: (String) -> String) : HostReads {
         if (client.id.isNotEmpty() && result.hostId != client.id) throw HostReadError("电脑身份不匹配，未保存连接")
         if (client.requiresReadTarget && result.scope == null || client.scope != null && result.scope != null && !sameScope(client.scope, result.scope)) throw HostReadError("电脑运行时身份已改变，请重新连接")
         return result
+    }
+    override suspend fun nextTurnSuggestion(client: MobileClient,scope: SuggestionScope): MobileDesktopSuggestionResponse = boundedDesktopSuggestionRead {
+        require(scope.target.agentId=="codex"&&client.id==scope.target.hostId&&sameScope(client.scope,scope.target)&&
+            scope.threadId.isNotEmpty()&&scope.sourceTurnId.isNotEmpty()) { "桌面建议目标不匹配" }
+        val target=CodexCommandCodec.target(scope.target).apply { remove("account") }
+        val query=mapOf("hostId" to client.id,"target" to target.toString(),"threadId" to scope.threadId,"sourceTurnId" to scope.sourceTurnId)
+        readResponse(client,"v1/threads/next-turn-suggestion",query) { input,active ->
+            MobileDesktopSuggestionResponse.decode(JSONObject(NativeWireReader.read(input,512*1024,active)),scope)
+        }
     }
     suspend fun descriptor(client: MobileClient): CodexDescriptor=readDescriptor(client,CodexConnectionReadBudget.BACKGROUND_DISCOVERY)
     internal suspend fun connectionDescriptor(client: MobileClient): CodexDescriptor=readDescriptor(client,CodexConnectionReadBudget.EXPLICIT_CONNECTION)

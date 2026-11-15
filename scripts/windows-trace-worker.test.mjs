@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join, basename, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -23,6 +23,7 @@ import {
   decodeTraceSnapshotBatch,
   parseTraceSnapshotBatchJSON,
   traceSnapshotBatchFits,
+  createTraceSnapshotBatchSender,
 } from '../packages/codex-adapter/dist/desktop-trace-native.js';
 
 // Source/target fencing and worker lifecycle also run on macOS; NTFS cases stay native.
@@ -839,6 +840,12 @@ for (const mode of ['prefix-append-after', 'prefix-rewrite-after', 'ordinary-rew
       fs.mkdirSync(local(bundle));
       fs.writeFileSync(local(first), 'AAAA');
       fs.writeFileSync(local(second), 'CCCC');
+      // This interleaving exercises metadata drift after the native byte read.
+      // Linux may coalesce immediate same-size rewrites into one timestamp tick;
+      // an old, exactly representable mtime makes the real write observable.
+      fs.utimesSync(local(first), 1_700_000_000, 1_700_000_000);
+      const before = fs.statSync(local(first), { bigint: true });
+      let after;
       const snapshot = new TraceSnapshot();
       snapshot.root(root);
       snapshot.directory(bundle);
@@ -849,10 +856,20 @@ for (const mode of ['prefix-append-after', 'prefix-rewrite-after', 'ordinary-rew
         if (when === 'after' && index === 0 && item.path === first) {
           if (mode === 'prefix-append-after') fs.appendFileSync(local(first), 'APPEND');
           else fs.writeFileSync(local(first), 'BBBB');
+          after = fs.statSync(local(first), { bigint: true });
         }
       });
       if (mode === 'prefix-append-after') snapshot.verify();
-      else assert.throws(() => snapshot.verify());
+      else assert.throws(() => snapshot.verify(), { message: 'Unavailable prediction trace' });
+      assert(after, 'The intended post-read mutation must actually occur');
+      assert.equal(after.dev, before.dev);
+      assert.equal(after.ino, before.ino);
+      assert.notEqual(after.mtimeNs, before.mtimeNs, 'The write must produce metadata drift');
+      assert.equal(after.size, mode === 'prefix-append-after' ? 10n : before.size);
+      assert.equal(
+        fs.readFileSync(local(first), 'utf8'),
+        mode === 'prefix-append-after' ? 'AAAAAPPEND' : 'BBBB',
+      );
       assert.equal(counts.batch, 2);
       assert.equal(counts.single, 0);
       assert.equal(counts.snapshots, 4);
@@ -896,7 +913,7 @@ for (const mode of [
   'clock-forward',
   'clock-backward',
 ])
-  test(`actual Worker batch transport: ${mode}`, async () => {
+  test(`actual Worker batch transport: ${mode}`, async (t) => {
     const result = await batchTransportFixture(mode);
     assert(result.allRetired, 'The actual owner/native Worker and its child must retire');
     if (mode === 'owner-close') assert.equal(result.answer, undefined);
@@ -909,8 +926,24 @@ for (const mode of [
     if (mode === 'duplicate-late' || mode === 'stale-while-next')
       assert.equal(result.answer.firstPassed, true);
     if (mode === 'batch-timeout') {
+      let observation = JSON.stringify({
+        elapsed: result.answer.elapsed,
+        owner: result.answer.timing,
+        native: result.nativeTimers,
+        incomplete: result.diagnosticIncomplete,
+      });
+      if (Buffer.byteLength(observation) > 1900)
+        observation = JSON.stringify({
+          elapsed: result.answer.elapsed,
+          incomplete: true,
+          detail: 'Original fixture result contains oversized diagnostics',
+        });
+      t.diagnostic('batch-timeout observation: ' + observation);
       assert(result.partialExecuted);
-      assert(result.answer.elapsed < 1000, '750ms is for the entire batch, not each item');
+      assert(
+        result.answer.elapsed < 1000,
+        '750ms is for the entire batch, not each item; ' + observation,
+      );
     }
     if (mode === 'budget')
       assert(result.answer.elapsed < 2200, 'Batch consumes the existing whole-read deadline');
@@ -1029,9 +1062,20 @@ class SnapshotFixture {
       eightValues.map((item) => item.identity),
       Array.from({ length: 8 }, (_, index) => expected[index % 2]),
     );
-    const nine = structuredClone(eight);
-    nine.items.push({ ...nine.items[0], index: 8 });
-    assert.deepEqual(raw(JSON.stringify(nine)), { error: 'SYNTHETIC_REJECTED' });
+    const sixtyFour = structuredClone(eight);
+    sixtyFour.items = Array.from({ length: 64 }, (_, index) => ({
+      ...request.items[index % 2],
+      index,
+    }));
+    assert.deepEqual(
+      decodeTraceSnapshotBatch(raw(JSON.stringify(sixtyFour)), sixtyFour).map(
+        (item) => item.identity,
+      ),
+      Array.from({ length: 64 }, (_, index) => expected[index % 2]),
+    );
+    const overflow = structuredClone(sixtyFour);
+    overflow.items.push({ ...overflow.items[0], index: 64 });
+    assert.deepEqual(raw(JSON.stringify(overflow)), { error: 'SYNTHETIC_REJECTED' });
     const junction = join(directory, 'alias');
     fs.symlinkSync(directory, junction, 'junction');
     try {
@@ -1513,24 +1557,26 @@ test('Reader replacement waits for actual retirement instead of the old one-seco
   }
 });
 
-test('batch8 protocol retains the old byte/item bounds and rejects a genuine ninth indexed item', () => {
+test('batch64 accepts small items while preserving byte bounds and rejecting the 65th item', () => {
   const request = {
     schemaVersion: 1,
     kind: 'snapshot-many',
     id: 1,
-    items: Array.from({ length: 8 }, (_, index) => ({
+    items: Array.from({ length: 64 }, (_, index) => ({
       index,
       path: `C:\\fixture\\traces\\small-${index}`,
-      maximum: 16_384,
+      maximum: 64,
     })),
   };
   assert(encodeTraceSnapshotBatch(request).startsWith('B\t'));
   const overflow = structuredClone(request);
-  overflow.items.push({ ...overflow.items[0], index: 8 });
+  overflow.items.push({ ...overflow.items[0], index: 64 });
   assert.throws(() => encodeTraceSnapshotBatch(overflow));
   const large = structuredClone(request);
-  large.items[7].maximum = 16 * 1024 * 1024;
+  large.items[63].maximum = 16 * 1024 * 1024;
   assert.throws(() => encodeTraceSnapshotBatch(large));
+  const wideBodies = request.items.map((item) => ({ ...item, maximum: 16_384 }));
+  assert.equal(traceSnapshotBatchFits(wideBodies), false, 'The 256 KiB response cap is unchanged');
   const deep = request.items.map((item) => ({
     ...item,
     path: 'C:\\' + 'a\\'.repeat(200) + `file-${item.index}`,
@@ -1538,7 +1584,7 @@ test('batch8 protocol retains the old byte/item bounds and rejects a genuine nin
   assert.equal(
     traceSnapshotBatchFits(deep),
     false,
-    'Response chain estimate still bounds an eight-item request',
+    'Response chain estimate still bounds a 64-item request',
   );
 });
 
@@ -1569,3 +1615,275 @@ for (const mode of [
     if (mode === 'duplicate-late' || mode === 'stale-while-next')
       assert.equal(result.answer.firstPassed, true);
   });
+
+for (const mode of [
+  'normal',
+  'wrong-id',
+  'short',
+  'extra-item',
+  'reordered',
+  'second-failure',
+  'batch-timeout',
+  'duplicate-late',
+  'stale-while-next',
+])
+  test(`actual Worker cold 64-item read retains each frame deadline and exact retirement: ${mode}`, async () => {
+    const result = await batchTransportFixture(
+      mode,
+      mode === 'duplicate-late' ? { TRACE_BATCH_COLD_REPLY_DELAY_MS: '150' } : {},
+      64,
+    );
+    assert.equal(result.allRetired, true);
+    assert.equal(result.answer.passed, mode === 'normal');
+    assert.equal(
+      result.requests,
+      ['normal', 'duplicate-late', 'stale-while-next'].includes(mode) ? 2 : 1,
+      'Only a successful cold prefix may dispatch its remaining frame; a rejected frame is never replayed',
+    );
+    if (mode === 'normal') assert.equal(result.answer.identities.length, 64);
+    if (mode === 'batch-timeout') {
+      assert.equal(result.partialExecuted, true);
+      assert(
+        result.answer.elapsed < 1000,
+        'The rejected cold prefix retains its original750ms timer',
+      );
+    }
+    if (mode === 'duplicate-late') assert.equal(result.answer.firstPassed, true);
+    if (mode === 'stale-while-next')
+      assert.equal(
+        result.answer.firstPassed,
+        undefined,
+        'A stale reply between subframes cannot publish the first logical read',
+      );
+  });
+
+for (const mode of ['cold-second-timeout', 'cold-shared-budget'])
+  test(`actual cold subframes retain Native750ms and the original aggregate phase budget: ${mode}`, async (t) => {
+    const result = await batchTransportFixture(mode, {}, 64);
+    if (mode === 'cold-shared-budget') {
+      t.diagnostic(
+        'cold-shared-budget observation: ' +
+          JSON.stringify({
+            requests: result.requests,
+            error: result.answer.error,
+            frames: result.requestFrames,
+            incomplete: result.diagnosticIncomplete,
+          }),
+      );
+      t.diagnostic('cold-shared-budget owner: ' + JSON.stringify(result.answer.timing));
+      for (const [index, timer] of (result.nativeTimers ?? []).entries())
+        t.diagnostic(`cold-shared-budget native[${index}]: ` + JSON.stringify(timer));
+    }
+    assert.equal(result.allRetired, true);
+    assert.equal(result.requests, 2);
+    assert.equal(result.answer.passed, false);
+    assert.equal(result.answer.firstPassed, undefined);
+    assert.equal(result.answer.identities, undefined, 'No partial prefix is published');
+    if (mode === 'cold-second-timeout') {
+      assert.equal(result.partialExecuted, true);
+      assert(result.answer.elapsed < 1100, 'The second frame still expires at750ms');
+    } else {
+      const { timing } = result.answer;
+      assert.equal(timing.phaseBudget.milliseconds, 300);
+      assert.equal(timing.omittedWaits, 0, 'All original owner waits were recorded');
+      assert.equal(timing.waits.length, 2, 'Both original subframes reached the owner wait');
+      const [prefix, remainder] = timing.waits;
+      assert.equal(prefix.after, 1, 'The actual cold prefix was published before the remainder');
+      assert.notEqual(prefix.status, 'timed-out');
+      assert.equal(
+        remainder.status,
+        'timed-out',
+        'The original aggregate budget ends the pending frame',
+      );
+      for (const sample of timing.waits)
+        assert.equal(
+          sample.timeout,
+          Math.min(1000, timing.phaseBudget.deadlineAt - sample.timeoutComputedAt),
+          'Every owner wait must use the same original monotonic deadline without renewal',
+        );
+      assert(
+        remainder.timeout < prefix.timeout,
+        'The second frame consumes the original phase remainder',
+      );
+      assert.deepEqual(
+        result.requestFrames.map(({ id, items }) => ({ id, items })),
+        [
+          { id: 1, items: 8 },
+          { id: 2, items: 56 },
+        ],
+        'Exactly the original cold prefix and remaining guards reach the child once',
+      );
+      assert.equal(result.diagnosticIncomplete, false);
+      assert.equal(result.nativeTimers.length, 1);
+      assert.equal(
+        result.nativeTimers[0].rows.length,
+        2,
+        'Each frame arms its actual unchanged750ms timer',
+      );
+      assert(
+        result.answer.elapsed < 650,
+        'The remaining frame receives only the original300ms phase remainder',
+      );
+    }
+  });
+
+function roundtripColdBatch(request) {
+  const encoded = encodeTraceSnapshotBatch(request);
+  const input = JSON.parse(Buffer.from(encoded.slice(2), 'base64').toString('utf8'));
+  const acl = Buffer.alloc(32).toString('base64');
+  const response = {
+    schemaVersion: 1,
+    kind: 'snapshot-many',
+    id: input.id,
+    items: input.items.map((item) => {
+      const number = Number(item.path.match(/item-([0-9]+)$/)[1]);
+      const chain = item.path
+        .split('\\')
+        .map((_part, level) => `1:0:${number * 10 + level}:0:0:${acl}`);
+      return {
+        index: item.index,
+        snapshot: {
+          identity: createHash('sha256').update(chain.join('|')).digest('base64'),
+          chain,
+          bytes: Buffer.from(String(number)).subarray(0, item.maximum).toString('base64'),
+        },
+      };
+    }),
+  };
+  return decodeTraceSnapshotBatch(parseTraceSnapshotBatchJSON(JSON.stringify(response)), request);
+}
+const coldBatchItems = () =>
+  Array.from({ length: 64 }, (_value, index) => ({
+    path: `C:\\fixture\\traces\\item-${index}`,
+    maximum: 16,
+  }));
+
+test('cold phase sends one eight-item wave then the remaining guards once, preserving wire order and IDs', () => {
+  const frames = [];
+  const sender = createTraceSnapshotBatchSender(
+    'C:\\fixture\\traces',
+    (request) => {
+      frames.push(structuredClone(request));
+      return roundtripColdBatch(request);
+    },
+    () => assert.fail('Valid replies must not retire the sender'),
+  );
+  const check = () =>
+    assert.deepEqual(
+      sender.read('C:\\fixture\\traces', coldBatchItems()).map((value) => value.bytes.toString()),
+      Array.from({ length: 64 }, (_value, index) => String(index)),
+    );
+  check();
+  check();
+  sender.beginPhase();
+  check();
+  assert.deepEqual(
+    frames.map((frame) => frame.items.length),
+    [8, 56, 64, 8, 56],
+  );
+  assert.deepEqual(
+    frames.map((frame) => frame.id),
+    [1, 2, 3, 4, 5],
+  );
+  for (const frame of frames)
+    assert.deepEqual(
+      frame.items.map((item) => item.index),
+      frame.items.map((_item, index) => index),
+    );
+});
+
+test('a late malformed item rejects before any prefix frame and a single item does not warm parallel work', () => {
+  const frames = [];
+  const sender = createTraceSnapshotBatchSender(
+    'C:\\fixture\\traces',
+    (request) => {
+      frames.push(request.items.length);
+      return roundtripColdBatch(request);
+    },
+    () => assert.fail('Validation failure has not reached Native'),
+  );
+  const invalid = coldBatchItems();
+  invalid[63].path = '\\\\server\\share\\item';
+  assert.throws(() => sender.read('C:\\fixture\\traces', invalid));
+  assert.throws(() => sender.read('C:\\other', coldBatchItems()));
+  assert.deepEqual(frames, []);
+  sender.read('C:\\fixture\\traces', coldBatchItems().slice(0, 1));
+  sender.read('C:\\fixture\\traces', coldBatchItems());
+  assert.deepEqual(frames, [1, 8, 56]);
+});
+
+for (const failureFrame of [1, 2])
+  test(`cold frame ${failureFrame} rejection publishes no partial result and cannot be retried`, () => {
+    let calls = 0,
+      retired = 0;
+    const sender = createTraceSnapshotBatchSender(
+      'C:\\fixture\\traces',
+      (request) => {
+        if (++calls === failureFrame) throw Error('native-frame-rejected');
+        return roundtripColdBatch(request);
+      },
+      () => retired++,
+    );
+    assert.throws(
+      () => sender.read('C:\\fixture\\traces', coldBatchItems()),
+      /native-frame-rejected/,
+    );
+    assert.equal(calls, failureFrame);
+    assert.equal(retired, 1);
+    sender.beginPhase();
+    assert.throws(() => sender.read('C:\\fixture\\traces', coldBatchItems()));
+    assert.equal(calls, failureFrame, 'A new phase cannot revive or resend a failed frame');
+  });
+
+test('validated caller items are frozen before the first wire frame', () => {
+  const items = coldBatchItems();
+  const frames = [];
+  const sender = createTraceSnapshotBatchSender(
+    'C:\\fixture\\traces',
+    (request) => {
+      frames.push(structuredClone(request));
+      if (frames.length === 1) items[63].path = 'C:\\changed\\item-999';
+      return roundtripColdBatch(request);
+    },
+    () => assert.fail('No native failure expected'),
+  );
+  const values = sender.read('C:\\fixture\\traces', items);
+  assert.equal(values[63].bytes.toString(), '63');
+  assert.equal(frames[1].items.at(-1).path, 'C:\\fixture\\traces\\item-63');
+});
+
+for (const mutate of [false, true])
+  test(`cold subframes retain every filesystem guard and detect an earlier namespace swap: ${mutate}`, async () =>
+    batchSnapshotFixture(({ TraceSnapshot, root, local, counts, reset, change }) => {
+      const snapshot = new TraceSnapshot(true);
+      snapshot.root(root);
+      for (let index = 0; index < 64; index++) {
+        const path = root + `\\item-${index}`;
+        fs.mkdirSync(local(path));
+        snapshot.directory(path);
+      }
+      reset();
+      let injected = false;
+      if (mutate)
+        change((when, index) => {
+          if (!injected && when === 'before' && counts.batch === 2 && index === 0) {
+            fs.renameSync(local(root + '\\item-0'), local(root + '\\item-0-old'));
+            fs.mkdirSync(local(root + '\\item-0'));
+            injected = true;
+          }
+        });
+      if (mutate) assert.throws(() => snapshot.verify());
+      else snapshot.verify();
+      assert.equal(injected, mutate);
+      assert.equal(
+        counts.snapshots,
+        mutate ? 64 : 65,
+        'All admitted frame guards execute; a known failure aborts the remaining singleton',
+      );
+      assert.equal(counts.batch, 2, 'Only delivery grouping changes');
+      assert.equal(
+        counts.single,
+        mutate ? 0 : 1,
+        'A failed frame never falls back to single reads',
+      );
+    }, createTraceSnapshotBatchSender));

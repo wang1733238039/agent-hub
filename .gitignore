@@ -22,7 +22,15 @@ packages/mobile-core/build/
 
 # Local acceptance reports and release/design captures. Keep reusable test source.
 /docs/acceptance/*
+!/docs/acceptance/native-suggestions-diagnostics-20261104.md
 !/docs/acceptance/remote-access-checklist.md
+!/docs/acceptance/codex-update-resilience-20261030.md
+!/docs/acceptance/codex-update-r2-integration-20261030.md
+!/docs/acceptance/codex-update-r10-legacy-20261030.md
+!/docs/acceptance/windows-native-first-directory-20261031.md
+!/docs/acceptance/windows-private-state-ps5-supplement-20261031.md
+!/docs/acceptance/windows-private-dacl-idempotence-20261031.md
+!/docs/acceptance/windows-formal-startup-preflight-20261031.md
 /docs/design/assets/
 /apps/ios/AppStore/README.md
 /apps/ios/AppStore/review-notes.txt
@@ -34,13 +42,16 @@ packages/mobile-core/build/
 *.heapsnapshot
 
 # Public mobile specifications and sanitized evidence remain versioned.
+!/docs/acceptance/codex-easywork-feature-matrix.md
 !/docs/acceptance/android-stages.md
 !/docs/acceptance/android-environment-20261021.md
 !/docs/acceptance/mobile-parity.md
+!/docs/acceptance/windows-response-suggestions-20261104.md
 !/docs/acceptance/voice-local-fallback-20261026.md
 !/docs/acceptance/voice-transcribing-animation-20261026.md
 !/docs/acceptance/question-voice-recovery-20261026.md
 !/docs/acceptance/image-preview-selection-20261027.md
+!/docs/acceptance/voice-discard-20261028.md
 !/docs/acceptance/mobile-evidence/
 !/docs/acceptance/mobile-evidence/*.json
 
@@ -58,3 +69,24 @@ apps/ios/FilePreviewKit/.swiftpm/
 
 !/docs/acceptance/thread-filtered-events-20261113.md
 !/docs/acceptance/windows-packaged-thread-open-20261115.md
+# Retained sanitized Host repair evidence.
+!/docs/acceptance/computer-use-approvals-20261026.md
+!/docs/acceptance/thread-model-settings-20261026.md
+
+!/docs/acceptance/agent-usage-20261028.md
+# Sanitized Host Images API acceptance summary.
+!/docs/acceptance/host-images-proxy-20261029.md
+
+!/docs/acceptance/voice-interaction-20261029.md
+
+!/docs/acceptance/visualization-20261101.md
+
+!/docs/acceptance/recent-projects-20261101.md
+
+!/docs/acceptance/windows-codex-startup-safety-20261101.md
+
+# Sanitized file-transfer and preview size-limit acceptance.
+!/docs/acceptance/file-size-limits-20261103.md
+
+# Sanitized next-input generation display acceptance.
+!/docs/acceptance/next-turn-generation-display-20261104.md

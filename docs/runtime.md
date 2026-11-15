@@ -4,6 +4,62 @@
 
 2026-11-14：Codex desktop-runtime 在历史、实时、完整与有界消息投影中统一轮次限定的重建序号 ID，并以同一标识维护阅读头与缓存重合。该转换只处理有准确原轮次的序号，不按正文删除消息、不改原桌面记录。实现与本机验证见[历史切换记录](acceptance/history-owner-identity-20261114.md)。
 
+## Windows 原生建议 Responses 转发退役
+
+Windows 原生灰字采集的回环转发已退役。Host 启动时忽略旧 `CODEX_DESKTOP_RESPONSES_CONFIG`，安装和升级不再配置该转发，也不登记 `openai_base_url`。Windows 手机端暂不提供这条原生建议来源，普通 Codex 启动、模型请求和 Host 管理使用各自原有路径。面向外部消费者的 F74 模型代理是独立功能，仍默认关闭。
+
+已有安装使用原私有 Responses 配置查询或移除有归属回执的 URL：
+
+```powershell
+node scripts/windows-response-suggestions-config.mjs status --config <private-config.json>
+node scripts/windows-response-suggestions-config.mjs disable --config <private-config.json>
+```
+
+`disable` 只移除产品安装并有归属回执的准确首行，其他 provider 和用户自定义 URL 保持。曾通过 `--codex-home` 写入其他配置目录时，对同一目录指定该参数。若刚移除了旧 URL，先保存工作并正常重开桌面和 CLI，核对已加载聊天恢复和无在途连接，再继续 Host 升级或重启。旧版转发的实现与网络依赖见[历史记录](acceptance/windows-response-suggestions-20261104.md)。
+
+替换文件及备份位于 Codex 配置同卷的新建私有 staging，元数据可留在另一个盘；不修改 Codex home 本身的所有者或 ACL。失败事务默认阻止再次写入。可用 `inspect-no-change --config <private-config.json> --receipt <exact-receipt-id>` 只读核对当前配置仍等于原摘要且无遗留准备文件／备份；明确处理该事务时才用 `resolve-no-change` 记录独立恢复回执。它不删除原拒绝记录，也不代表原动作成功；权限拒绝仍按操作环境的授权规则处理。
+
+2026-11-01 F03／F69 Windows 启动安全：停用会接管原 Codex 后端的全局建议采集垫片安装。旧安装仅解除有本产品私有清单证明且仍指向原 launcher.exe 的 HKCU CODEX_CLI_PATH，保留其他覆盖、私有配置、身份和运行中的进程；config.json 损坏、旧源码摘要或应用路径失效不阻断恢复。iOS／Android 共用此 Windows Host 限制，UI、macOS 路径及 A6 暂停范围保持；Windows 被动结果采集暂不可安装，真实桌面与手机验收分别记于[启动安全记录](acceptance/windows-codex-startup-safety-20261101.md)。
+
+2026-10-31 Windows 建议采集候选：原执行器的输入、输出先建立管道，收到原响应后才启动固定采集 Worker 的身份检查。配置与实际 Node→启动器→原桌面链、原 IPC owner、固定私有根和 vendor-log 根由原生 scope 验证；持久读取不改变六秒 producer 租期。启动、每次原生响应、阶段及最终发布均有期限；队列超限、坏帧、原生错误或未知退出关闭观察器并保留可核对状态，原字节继续转发，未就绪前的帧不重放。当前仅为源码候选，真实部署及验收状态见 [专项记录](acceptance/host-native-suggestions-20261031.md)。
+
+2026-10-29 Host 错误响应现在附诊断 ID 和具体分类，HTTP 存活、bridge／reader 就绪与存储状态分开；日志异步有界写入、只读恢复与显式停止边界见[诊断与恢复](host-reconnect-diagnostics.md)。本次为源码候选，Windows 与手机未验收，不能将所有 503 显示成 Codex 断开。
+
+## 可选模型代理（F74，默认关闭）
+
+图像生成／编辑使用单独的 `HOST_RESPONSES_PROXY_IMAGE_MODELS` 允许清单；默认为空，升级不自动开启。配置准备器可传 `--image-models '["gpt-image-2"]'`，也可同时保留文本 `--models`。图像默认 600 秒超时、并发 1、32 MiB 请求预算；变量、OpenAI SDK 格式、偏好适配和返回限制见[图像代理指南](host-images-proxy.md)。
+
+代理不创建或恢复桌面对话，不执行工具。安装、升级、手机接入均不得自动开启；仅在人类明确要求后设置 `HOST_RESPONSES_PROXY_ENABLED=1`。未设置或为 `0` 时不读代理凭据、不运行认证辅助进程、不创建代理文件、不增加监听。
+
+先构建，再准备配置；下面命令只生成私有配置、独立 API Key 和专用 TLS 身份，生成的开关仍为 `0`：
+
+```bash
+pnpm configure:responses-proxy -- --state-dir '<private-proxy-directory>' \
+  --models '["<available-model-id>"]' --bind 0.0.0.0 \
+  --addresses '["<host-LAN-IP>","<host-VPN-IP>"]' --port 8797
+```
+
+读取生成的 `configuration.json` 的 `environment`；只有用户要求启用后，才将开关改成 `1`，连同其余变量传给现有 `scripts/desktop-service.mjs restart` 或 Windows 服务管理器。服务脚本保存显式变量，后续升级保持选择；传 `0` 并重启关闭代理，保留原密钥和回执。不要把 Codex Token 当代理 Key，不在命令行或报告打印密钥。
+
+| 变量                                    | 默认／约束                                 |
+| --------------------------------------- | ------------------------------------------ |
+| HOST_RESPONSES_PROXY_ENABLED            | 未设置／0 关闭；仅 1 开启                  |
+| HOST_RESPONSES_PROXY_BIND               | 127.0.0.1；显式选择 LAN/VPN IP 或 0.0.0.0  |
+| HOST_RESPONSES_PROXY_PORT               | 8797，独立于原 Host 端口                   |
+| HOST_RESPONSES_PROXY_MODELS             | 文本 JSON 模型清单；与图像清单至少一类非空 |
+| HOST_RESPONSES_PROXY_STATE_DIR          | Host 状态目录中的 responses-proxy          |
+| HOST_RESPONSES_PROXY_TOKEN_FILE         | 代理状态目录中的 access-token，独立 Key    |
+| HOST_RESPONSES_PROXY_TLS_CERT / TLS_KEY | 非回环监听必须同时配置；私钥私有保存       |
+| HOST_RESPONSES_PROXY_MAX_BYTES          | 8 MiB，最多配置 32 MiB                     |
+| HOST_RESPONSES_PROXY_CONCURRENCY        | 4，范围 1–16                               |
+| HOST_RESPONSES_PROXY_TIMEOUT_MS         | 180000，范围 1000–900000                   |
+
+调用端使用 `https://<host-IP>:8797/v1` 和独立 Key，并信任专用证书，保持完整证书和主机名校验。证书过期或地址变化由管理员显式维护，不自动旋转身份。Node 后台可只读挂载证书并用 `NODE_EXTRA_CA_CERTS` 增加单个信任来源，不能关闭 TLS 校验。浏览器经自己的后台调用，不直接持有代理 Key。
+
+建议每次提供稳定 `Idempotency-Key`，未知后查询 `/v1/requests/<id>`，不另起 ID 重试。省略时 Host 生成 ID 并通过 `X-Request-Id` 返回，但无法阻止调用方另发新请求，调用方须关闭 SDK 自动重试。Chat 流在完整验证上游结束后才发出 finish_reason／[DONE]，客户端按结束标记断开不会中断上游完成回执。Host 不自动重试、换账户或换计费方式。显式启用后若代理配置或监听失败，只记录代理 unavailable，不停止现有桌面 Host。4096 条元数据回执达到上限后拒绝新操作；管理员先保存和审查历史，不自动清除旧 ID 腾空间。iOS／Android 页面及默认连接行为不变，不自动获得代理入口。
+
+2026-10-28 Windows 安装预检：按用户要求移除桌面与 CLI 的 Publisher／签名文案／Store 包身份门禁；同一管道句柄、当前用户与登录会话、准确路径／摘要及真实 IPC 方法检查继续执行。私有状态 bootstrap 与常驻 worker 共用文件句柄实现，只读所有者与 DACL、只写受保护 DACL，保留 SACL，不提权或接管他人文件。源码与辅助检查不代表目标 Windows／手机功能通过，见[专项记录](acceptance/windows-install-20261028.md)。
+
 > **组合源码状态（尚未正式部署）**：开发现场已合入 `5b100a1` 与 `2026-10-18T16:28:41.607Z` 的不可变队列修复采样，并补充 EasyWork 发送／查询轮次一致性与拒绝空／重复执行证据的回归。当前正在执行组合检查，最终源冻结、Windows／实体手机验收和统一发布分别记证；旧版本及其他电脑的结果不代替组合版本通过。
 
 实现日期：2026-10-07。早期兼容性基线：Codex CLI 0.160.1；本机升级后使用 0.162.0-alpha.2 重跑验收。上游 App Server 是实验性接口，版本升级需要重跑验收。
@@ -222,6 +278,12 @@ pnpm dev:runtime
 
 ## 验证
 
+Windows Trace 回收器与其他固定 PowerShell 工具复用同一子进程环境规范，移除继承的 `PSModulePath`，避免从其他入口启动时误载不兼容的 PowerShell 模块。父进程和全局环境不修改；回收前的身份、独占句柄、摘要及未开始删除回执规则保持原约束。
+
+原桌面提权运行时，新建的原 Trace 文件可由 Administrators 持有。回收器只对准确 Trace bundle 使用现有的 Win32 句柄、根目录当前用户 owner、受信任子项 owner、DACL、命名空间和文件身份检查，不把仅适用于 Host 私有配置的当前用户 owner 检查套在原 Trace 上，也不修改原 Trace ACL。Native 安装器仅能将本次排他新建对象的提权默认 Administrators owner 设置为当前用户；既有文件和目录仍须严格归当前用户，未知或既有外来 owner 不接管。该兼容代码与 Windows 原生验收分别记录，macOS 检查不代表 Windows 通过。
+
+该原生快照接口的零字节预算选择目录操作；文件身份检查使用正的一字节预算，完整载荷仍由各自有界预算读取。不能把文件元数据检查当作零预算目录探测。Windows owner／retention 原生用例必须实际验证此边界，macOS 跳过不构成通过。
+
 ```bash
 pnpm check
 pnpm build:ios
@@ -282,3 +344,45 @@ pnpm test:desktop:controller:ios
 默认双通道，Tailscale 是在外远控的可选依赖；纯局域网无需 VPN。两条路使用同一 Host、授权、草稿和回执。安装流程把实测 Serve 根地址 JSON 数组保存到 `HOST_AGENT_HTTPS_ENDPOINTS`；服务通过鉴权 `GET /v1/connection-routes?hostId=<准确 ID>` 交付严格 v1 路径快照，旧 `/host` 不变。手机保留旧 Serve 地址，局域网固定证书与 Serve 系统信任分开；前台健康路径保留，失败后自动换到同目标可达入口，未知写请求只核对原回执。详见 [网络接入](../skills/codex-host-connect/references/network.md)，逐平台及跨机真实结果另记。
 
 Windows 双通道配置沿 service → 私有配置 → worker 的严格环境边界传递；三处必须同时接受 `HOST_AGENT_HTTPS_ENDPOINTS`。未知字段和非字符串仍拒绝，Host 再验证根地址与数量，不能通过放开整个环境来修复。Windows 原生首次验收发现白名单缺项，原包未切入该机正式服务；修复后统一新包逐机复验，原失败记录保留。
+
+### Codex 自动更新后的目录恢复
+
+原桌面模式的完整工作区目录 reader 与主 runtime 共享当前可信 CLI，不永久固定启动环境中的旧 Store 路径。运行期间 CLI 消失、桌面 owner 正常变化或只读传输失效时，Host 合并重新发现、等待旧 reader 完全退出，并最多重读一次幂等目录。连续失败按 1–15 秒退避；无需把每次 Codex 更新变成重装 Host 的流程。macOS 保留显式 CLI 或原固定 bundle 路径，Windows 保留原可信 owner／CLI 与协议校验。
+
+`/healthz` 的 HTTP 200 表示服务存活；同时核对 `status`、`runtime` 和 `workspaceCatalog`，`not-read` 不能当目录通过。不可用时目录返回准确 503 原因码和健康 degraded；无可信替代、坏协议或旧进程退出未确认要保留现场，不能通过关闭信任检查继续。回复、新建、审批、停止及管理操作的未知结果仍查询原回执，自动目录恢复不会重放输入。真实更新／重开和手机验收详见 [专项记录](acceptance/codex-update-resilience-20261030.md)。
+
+## 建议 Trace 的保留策略（2026-10-30）
+
+在原正式 Host 服务环境显式设置 CODEX_DESKTOP_TRACE_RETENTION=1，保留原 CODEX_DESKTOP_SUGGESTION_OBSERVER 和 CODEX_DESKTOP_SUGGESTION_TRACE_ROOT；只按原环境重启本产品 Host。设置0或移除开关停止后续回收，保留已保存建议。隔离验收进程不得指向正式 Trace 并开启回收。每会话一条最新建议或失效记录存于 Trace 根下 .agent-hub-suggestions；Host 私有状态 trace-retention-<机器目标摘要>.json 记录当前进程计数与有界保留原因。新服务必须连同读取兼容与精简存储一起部署，不能先删原始 Trace 再升级 reader。取消、失败、空结果原始载荷保留24小时；未知身份和仍在使用资料不会仅凭年龄删除。
+
+## 原生建议采集配置（2026-10-30，候选）
+
+Host 可显式配置 CODEX_DESKTOP_NATIVE_SUGGESTIONS_CONFIG 指向本机私有配置；配置路径与身份不能跨电脑复制。macOS 使用 scripts/desktop-native-suggestions-environment.mjs install，参数为 --program <program> --executable <original-cli> --trace-root <private-root> --target-file <private-target.json>，复用已有共享环境 URL；Windows 旧 shim 安装已于 2026-11-01 停用。使用 `scripts/windows-native-suggestions-environment.mjs disable [--state <原私有安装目录>]` 解除已核对的旧覆盖；兼容 `install` 入口只执行同样的恢复，并以 `WINDOWS_NATIVE_INSTALLATION_SUSPENDED` 和非零退出码报告采集不可安装，不读取旧 `--config` 输入、不重新注册环境变量。配置不退出、不重启原桌面。待用户保存工作并正常重开后，核对当前 producer、原生父链、实际实现指纹及 Host 能力。Windows 日志使用有界原生 offset/count 读取，允许追加、保持对象身份，不能把文件大小超过 1 MiB 当作失败。
+
+### 统一升级保持既有配置
+
+上述被动 producer 的独立签名／Store／父链边界保持，通用桌面连接继续沿用当前用户／会话、真实管道 owner、路径／SHA 与协议契约。同步本轮程序和指引时保留已有开关、私有路径与原桌面；不因文档变更重新安装 producer、扩大保留策略或强制重开 Codex。Windows Native、旧 history 布局和真实 reader 恢复仍按同源新包独立验证。
+
+### 冻结 R9/R10 的统一升级
+
+Bonjour 发布由独立 generation worker 处理：旧 worker 退出确认后才重试，发现失败不会退役原固定证书 HTTPS。状态由现有私有创建／原子发布边界保存，不能用普通 Node 创建后仅改 DACL 替代 User-owner 创建。Native sample bridge 对大型帧仅有界扫描顶层路由字段，忽略无关历史内嵌的 thread/sample；歧义和重复顶层字段按准确分类拒绝，保留原候选、取消、退出和未知操作边界。
+
+Windows 旧附件兼容按真实登记引用、目标和稳定文件快照验证；旧 Admin-owner 叶文件不因此获得全局私有状态权限。新附件保持 `attachments-v2`，原字节、owner、ACL、引用不变。统一包保留已部署 R10 与 Native config 环境字段，不回写较旧快照。冻结来源、普通 Main 验收入口及逐平台限制见[本轮记录](acceptance/codex-update-r10-legacy-20261030.md)。
+
+### Windows 首次私有创建的路径处理
+
+私有目录创建使用有界 Unicode Win32 路径与属性 API，避免 Framework 宿主在初始化之前缓存旧 BCL 路径开关。仅缺失路径可递归创建，拒绝访问、reparse、非目录及既有非 User-owner 对象继续拒绝；创建时设置 owner/DACL，预算、租约及退出屏障不变。拒绝保留固定 nativeStep，不含路径或原消息。新 Native 输入须重新做 Windows 普通 Main 预检和全缺失 Session 根／旧布局验收，见[专项入口与证据范围](acceptance/windows-native-first-directory-20261031.md)。
+
+2026-10-31 F03／F31／F32：增加正式 Windows 启动的具名只读预检与独占 scheduled envelope，保留原 Worker 环境白名单；有界日志分类不输出 stderr／凭据。PR81 五组件和核心 Native 输入保持；来源完整 legacy／reader 辅助已通过，正式启动两处拒绝仍需按真实上下文诊断，不计正式升级通过。iOS／Android UI 和未知操作不重放规则不变，A6保持暂停。见[入口与证据边界](acceptance/windows-formal-startup-preflight-20261031.md)。
+
+Windows 私有 Native 的 UnauthorizedAccessException 现在只对五种既定策略原因携带固定 nativeRejection，未知类型/分类仍失败关闭，不传路径/SID/原始消息。权限算法和预算保持；新 C# 改变准备 cache key，须重新核对新输入。正式 R10 切换需完整统一包、逐文件旧 SHA 守卫与 Root 控制回滚，PR82 只读 probe 不能冒充正式初始化。见[最小诊断与复验](acceptance/windows-formal-startup-preflight-20261031.md#pr82-实测之后的最小证据修复)。
+
+`WRONG_FILE_OWNER` 现可附带拒绝时同句柄的 owner／路径／身份摘要，以及真实 helper User、PID／开始时间和传输 PID 关联。该元数据仅用于诊断，严格 User owner／DACL 和原预算不变；不可将其他进程的 `Get-Acl` 通过写成 Native 接受。官方 prepare 提供版本化固定三路径并标明 preparing Node 来源，Root 验证正式 Node 后才能以原 Principal 创建独占 Limited 只读任务；不操作正式 Host。新 Native 输入和准确的复验／清理边界见[诊断入口](acceptance/windows-native-owner-evidence-20261031.md)。实际正式拒绝原因仍待目标机证据解释。
+
+PR86 正式失败栈的 `runtime-server.js:195` 对应通知构造器，不能继续作为 publisher token 失败的证明。通知锁／临时快照现使用原 Native 私有创建接口；新 `OWNER2` 允许字段采集局部失败并保留固定阶段，bootstrap 证据经 PowerShell 与共享槽传递，Host 用固定角色／action 区分路径。新增 `windows-notification-state-preflight.mjs` 仅在自有合成目录验证真实通知模块创建／重开，不读原状态或凭据。原权限／执行时限／未知操作不重放保持，正式目标及 token 事实仍由实际回执决定。见[最小复验](acceptance/windows-notification-private-startup-20261031.md)。
+
+Framework 的 `Exception.Data` 会拒绝不可序列化的值。私有定型 owner 证据须满足该存储约束，且附加诊断失败不能替换原始 `WRONG_FILE_OWNER`；协议仍只输出显式固定 frame，不序列化任意异常 Data。编译使用 net48 引用不等于在 Windows Framework 上执行；.NET 8 的反射结果不能覆盖这一差异。详见[证据存储兼容性与复验边界](acceptance/windows-owner-evidence-serialization-20261031.md)。
+
+诊断读取也须保留原拒绝：先确定是 owner 拒绝，再在保护内取得 Data、检查键和读取私有定型值；缺键或 Data getter／Contains／索引器异常只表示证据不可用。Framework 只读字典的缺键行为与 .NET8 不同，原只读 Data 回归保留，并加入跨 CLR 故障字典及固定阶段报告。PR88 已取得 Windows 通知 OWNER2／实际子进程／同句柄通过；managed 后续失败不撤销该范围，也不代表 CLI／serve 或 Trace 协议已验证。见[读取边界与复验](acceptance/windows-owner-evidence-data-lookup-20261031.md)。
+
+创建租约的共享访问修正：metadata-only 的 READ_CONTROL／FILE_READ_ATTRIBUTES 不足以让无 DELETE share 阻止 rename。私有 CREATE_NEW 租约额外请求最小 FILE_READ_DATA，READ|WRITE share、Node FD 身份核对及原通道 release ACK 后截断顺序保持；编译发布的 WRITE/DELETE 创建分支不改。PR89 Framework managed 已实测通过，后续真实 rename 门禁失败仍保留；新 Native key 须由 Windows 同一 CLI／serve 用例核验，Mac 检查不代替。见[创建租约复验范围](acceptance/windows-private-creation-lease-20261031.md)。

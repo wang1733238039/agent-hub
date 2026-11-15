@@ -1,3 +1,6 @@
+/// <reference lib="es2024.sharedmemory" />
+import { randomUUID } from 'node:crypto';
+import { diagnosticEvent, observeDiagnosticWorker } from './diagnostic-events.js';
 import {
   Worker,
   MessageChannel,
@@ -8,17 +11,509 @@ import {
   type WorkerOptions,
 } from 'node:worker_threads';
 import type { WindowsDesktopIdentity } from './desktop-platform.js';
+import { win32 } from 'node:path';
 import {
   getWindowsProcessGate,
   getWindowsProcessWorker,
   registerWindowsProcessWorker,
 } from './windows-process.js';
 
-export type WindowsPrivateStateAction = 'protect' | 'protect-file' | 'check';
+export interface WindowsPrivateFileIdentity {
+  volume: string;
+  fileId: string;
+  reservation?: string;
+}
+export function parseWindowsPrivateFileIdentity(
+  value: string,
+  prefix: 'PRIVATE_STATE_CREATED' | 'PRIVATE_STATE_NATIVE_READY' = 'PRIVATE_STATE_CREATED',
+): WindowsPrivateFileIdentity | undefined {
+  if (prefix === 'PRIVATE_STATE_CREATED') {
+    const match = /^PRIVATE_STATE_CREATED:([a-f0-9]{32}):([a-f0-9]{8}):([a-f0-9]{16})$/.exec(value);
+    return match ? { reservation: match[1]!, volume: match[2]!, fileId: match[3]! } : undefined;
+  }
+  const match = /^PRIVATE_STATE_NATIVE_READY:([a-f0-9]{8}):([a-f0-9]{16})$/.exec(value);
+  return match ? { volume: match[1]!, fileId: match[2]! } : undefined;
+}
+
+export const privateStateDirectorySteps = Object.freeze([
+  'normalize-path',
+  'directory-attributes',
+  'directory-parent',
+  'directory-descriptor',
+  'create-directory',
+  'directory-protect',
+] as const);
+const privateStateAccessReasons = Object.freeze({
+  'owner-check': 'WRONG_FILE_OWNER',
+  'dacl-presence-check': 'NULL_PRIVATE_DACL',
+  'dacl-ace-type-check': 'UNKNOWN_PRIVATE_ACE',
+  'dacl-allow-subject-check': 'SHARED_PRIVATE_FILE',
+  'dacl-protection-check': 'UNPROTECTED_PRIVATE_DACL',
+} as const);
+export interface WindowsPrivateOwnerEvidence {
+  version: 1 | 2;
+  checkedAction: 'check' | 'protect' | 'protect-file' | 'create-file' | 'compilation-check';
+  helperPid?: number;
+  helperStartedFileTime?: string;
+  helperUserHash?: string;
+  helperOwnerHash?: string;
+  fileOwnerHash?: string;
+  requestedPathHash?: string;
+  handleIdentityHash?: string;
+  finalPathHash?: string;
+  targetKind: 'file' | 'directory' | 'unknown';
+  captureStage?: string;
+  captureFailure?: string;
+  transportPidMatches?: boolean;
+}
+function parseOwnerEvidence(value: string): WindowsPrivateOwnerEvidence | undefined {
+  if (value.length > 1024) return;
+  const parts = value.split('|');
+  if (parts.length !== 10) return;
+  const [action, pid, started, user, owner, file, requested, identity, final, kind] = parts;
+  const hash = (v: string | undefined) => /^[a-f0-9]{64}$/.test(v ?? '');
+  const optionalHash = (v: string | undefined) => v === '-' || hash(v);
+  if (
+    !['check', 'protect', 'protect-file'].includes(action!) ||
+    !/^[1-9][0-9]{0,9}$/.test(pid!) ||
+    Number(pid) > 0xffffffff ||
+    (started !== '-' &&
+      (!/^[1-9][0-9]{0,18}$/.test(started!) || BigInt(started!) > 0x7fffffffffffffffn)) ||
+    !hash(user) ||
+    !optionalHash(owner) ||
+    !optionalHash(file) ||
+    !hash(requested) ||
+    !hash(identity) ||
+    !optionalHash(final) ||
+    !['file', 'directory'].includes(kind!)
+  )
+    return;
+  return {
+    version: 1,
+    checkedAction: action as WindowsPrivateOwnerEvidence['checkedAction'],
+    helperPid: Number(pid),
+    ...(started === '-' ? {} : { helperStartedFileTime: started }),
+    helperUserHash: user!,
+    ...(owner === '-' ? {} : { helperOwnerHash: owner }),
+    ...(file === '-' ? {} : { fileOwnerHash: file }),
+    requestedPathHash: requested!,
+    handleIdentityHash: identity!,
+    ...(final === '-' ? {} : { finalPathHash: final }),
+    targetKind: kind as WindowsPrivateOwnerEvidence['targetKind'],
+  };
+}
+export const ownerCaptureStages = Object.freeze([
+  'none',
+  'process-id',
+  'process-times',
+  'user-hash',
+  'default-owner',
+  'file-owner-hash',
+  'requested-path-hash',
+  'handle-identity-hash',
+  'final-path-hash',
+]);
+export const ownerCaptureFailures = Object.freeze([
+  'none',
+  'Win32Exception',
+  'UnauthorizedAccessException',
+  'CryptographicException',
+  'DllNotFoundException',
+  'EntryPointNotFoundException',
+  'SecurityException',
+  'ArgumentException',
+  'Exception',
+]);
+function parseOwnerEvidenceV2(value: string): WindowsPrivateOwnerEvidence | undefined {
+  if (value.length > 900) return;
+  const parts = value.split('|');
+  if (parts.length !== 12) return;
+  const [
+    action,
+    pid,
+    started,
+    user,
+    owner,
+    file,
+    requested,
+    identity,
+    final,
+    kind,
+    stage,
+    failure,
+  ] = parts;
+  const hash = (v: string | undefined) => v === '-' || /^[a-f0-9]{64}$/.test(v ?? '');
+  if (
+    !['check', 'protect', 'protect-file', 'create-file', 'compilation-check'].includes(action!) ||
+    (pid !== '-' && (!/^[1-9][0-9]{0,9}$/.test(pid!) || Number(pid) > 0xffffffff)) ||
+    (started !== '-' &&
+      (!/^[1-9][0-9]{0,18}$/.test(started!) || BigInt(started!) > 0x7fffffffffffffffn)) ||
+    ![user, owner, file, requested, identity, final].every(hash) ||
+    !['file', 'directory', 'unknown'].includes(kind!) ||
+    !ownerCaptureStages.includes(stage!) ||
+    !ownerCaptureFailures.includes(failure!) ||
+    (stage === 'none') !== (failure === 'none')
+  )
+    return;
+  return {
+    version: 2,
+    checkedAction: action as WindowsPrivateOwnerEvidence['checkedAction'],
+    ...(pid === '-' ? {} : { helperPid: Number(pid) }),
+    ...(started === '-' ? {} : { helperStartedFileTime: started! }),
+    ...(user === '-' ? {} : { helperUserHash: user! }),
+    ...(owner === '-' ? {} : { helperOwnerHash: owner! }),
+    ...(file === '-' ? {} : { fileOwnerHash: file! }),
+    ...(requested === '-' ? {} : { requestedPathHash: requested! }),
+    ...(identity === '-' ? {} : { handleIdentityHash: identity! }),
+    ...(final === '-' ? {} : { finalPathHash: final! }),
+    targetKind: kind as WindowsPrivateOwnerEvidence['targetKind'],
+    captureStage: stage!,
+    captureFailure: failure!,
+  };
+}
+export function parseWindowsPrivateStateRejection(value: string):
+  | {
+      nativeError: string;
+      nativeType: string;
+      nativeStep?: string;
+      nativeRejection?: string;
+      nativeOwner?: WindowsPrivateOwnerEvidence;
+    }
+  | undefined {
+  const segments = value.split(/:OWNER[12]:/);
+  const ownerVersion = value.includes(':OWNER2:') ? 2 : 1;
+  if (segments.length > 2) return;
+  const base = segments[0]!;
+  const match =
+    /^UNSAFE_WINDOWS_PRIVATE_STATE:([A-Za-z][A-Za-z0-9]{0,127})(?::([a-z-]{1,40}))?$/.exec(base);
+  const step = match?.[2];
+  const rejection =
+    step && Object.hasOwn(privateStateAccessReasons, step)
+      ? privateStateAccessReasons[step as keyof typeof privateStateAccessReasons]
+      : undefined;
+  if (
+    !match ||
+    match[0] !== base ||
+    (step !== undefined &&
+      !privateStateDirectorySteps.some((known) => known === step) &&
+      !rejection) ||
+    (rejection !== undefined && match[1] !== 'UnauthorizedAccessException')
+  )
+    return;
+  const nativeOwner =
+    segments.length === 2
+      ? ownerVersion === 2
+        ? parseOwnerEvidenceV2(segments[1]!)
+        : parseOwnerEvidence(segments[1]!)
+      : undefined;
+  if (segments.length === 2 && (rejection !== 'WRONG_FILE_OWNER' || !nativeOwner)) return;
+  return {
+    nativeError: 'UNSAFE_WINDOWS_PRIVATE_STATE:' + match[1],
+    nativeType: match[1]!,
+    ...(match[2] === undefined ? {} : { nativeStep: match[2] }),
+    ...(rejection === undefined ? {} : { nativeRejection: rejection }),
+    ...(nativeOwner === undefined ? {} : { nativeOwner }),
+  };
+}
+
+export type WindowsPrivateStateAction =
+  'protect' | 'protect-file' | 'check' | 'create-directory' | 'create-file' | 'release-file';
+// Separate from the permission response: diagnostic data never authorizes a call.
+export const privateStateNativeDiagnostics = Object.freeze({
+  // Existing numeric slots 0..10 retain their indices; 11 is byte length.
+  words: 12 + 256,
+  steps: [
+    ...privateStateDirectorySteps,
+    'prepare',
+    'pin-source-directory',
+    'hash-source',
+    'create-cache',
+    'pin-cache',
+    'open-winner',
+    'create-journal',
+    'create-compiler-output',
+    'compile',
+    'check-compiler-output',
+    'open-compiler-read',
+    'create-publication',
+    'copy-compiled',
+    'publish',
+    'inspect-file',
+    'pin-directory',
+    'create-job',
+    'set-job-limits',
+    'initialize-attributes-size',
+    'initialize-attributes',
+    'set-job-list',
+    'open-nul',
+    'set-handle-list',
+    'create-compiler',
+    'wait-compiler',
+    'compiler-exit-code',
+    'read-compiled',
+    'read-compiled-end',
+    'write-compiled',
+    'flush-compiled',
+    'flush-journal',
+    'reopen-compiler',
+    'discard-compiler',
+    'discard-publication',
+    'discard-journal',
+    'cleanup',
+    'cleanup-compiler',
+    // Append new identifiers so existing diagnostic indices retain their meaning.
+    ...(Object.keys(privateStateAccessReasons) as (keyof typeof privateStateAccessReasons)[]),
+  ] as const,
+  stages: [
+    'environment',
+    'source',
+    'directory',
+    'protect-directory',
+    'compiler',
+    'compile',
+    'protect-binary',
+    'publish-binary',
+    'resolve-binary',
+    'bootstrap-native',
+    'recheck-binary',
+    'prepare',
+    'spawn-gate',
+    'spawn',
+    'handshake',
+    'operation',
+  ] as const,
+  failures: [
+    'prepare-failed',
+    'spawn-error',
+    'native-exit',
+    'stderr-present',
+    'stdin-error',
+    'stdout-error',
+    'stdout-eof',
+    'stderr-error',
+    'startup-deadline',
+    'execution-deadline',
+    'invalid-ready',
+    'oversized-frame',
+    'trailing-frame',
+    'non-ascii-frame',
+    'uncorrelated-response',
+    'request-rejected',
+    'isolate-error',
+    'isolate-exit',
+  ] as const,
+  codes: [
+    'ENOENT',
+    'EACCES',
+    'EPERM',
+    'ETIMEDOUT',
+    'UNSAFE_WINDOWS_PRIVATE_STATE',
+    'WINDOWS_POWERSHELL_MODULE_UNAVAILABLE',
+    'WINDOWS_HELPER_FAILED',
+    'WINDOWS_PROCESS_GATE_UNAVAILABLE',
+    'ERR_MODULE_NOT_FOUND',
+    'ERR_WORKER_INVALID_EXEC_ARGV',
+    'ERR_INPUT_TYPE_NOT_ALLOWED',
+    'ERR_ACCESS_DENIED',
+    'WINDOWS_NATIVE_OUTPUT_CHANGED',
+  ] as const,
+  helperStages: ['private-bootstrap', 'add-type', 'execute'] as const,
+  nativeTypes: [
+    'Win32Exception',
+    'UnauthorizedAccessException',
+    'PrivateStateAlreadyExistsException',
+    'IOException',
+    'ArgumentException',
+    'TypeInitializationException',
+    'InvalidOperationException',
+    'PSInvalidOperationException',
+    'PSInvalidCastException',
+    'PathTooLongException',
+    'FileNotFoundException',
+    'DirectoryNotFoundException',
+    'DllNotFoundException',
+    'EntryPointNotFoundException',
+    'BadImageFormatException',
+    'SecurityException',
+    'NotSupportedException',
+    'Exception',
+  ] as const,
+  rejections: [
+    'WRONG_FILE_OWNER',
+    'NULL_PRIVATE_DACL',
+    'UNKNOWN_PRIVATE_ACE',
+    'SHARED_PRIVATE_FILE',
+    'UNPROTECTED_PRIVATE_DACL',
+  ] as const,
+});
+export type PrivateStateNativeStage = (typeof privateStateNativeDiagnostics.stages)[number];
+type PrivateStateNativeFailure = (typeof privateStateNativeDiagnostics.failures)[number];
+export function privateStateNativeStage(shared: Int32Array, stage: PrivateStateNativeStage): void {
+  Atomics.store(shared, 0, privateStateNativeDiagnostics.stages.indexOf(stage) + 1);
+}
+export function privateStateNativeFailure(
+  shared: Int32Array,
+  failure: PrivateStateNativeFailure,
+  error?: unknown,
+): void {
+  if (
+    Atomics.compareExchange(
+      shared,
+      1,
+      0,
+      privateStateNativeDiagnostics.failures.indexOf(failure) + 1,
+    )
+  )
+    return;
+  try {
+    const value = error as
+      | {
+          code?: unknown;
+          status?: unknown;
+          cause?: { status?: unknown };
+          helperStage?: unknown;
+          nativeType?: unknown;
+          nativeWin32?: unknown;
+          nativeRejection?: unknown;
+          nativeStep?: unknown;
+          nativeCleanupStep?: unknown;
+          nativeCleanupWin32?: unknown;
+          nativeOwnerFrame?: unknown;
+        }
+      | undefined;
+    if (
+      typeof value?.nativeOwnerFrame === 'string' &&
+      parseWindowsPrivateStateRejection(
+        'UNSAFE_WINDOWS_PRIVATE_STATE:UnauthorizedAccessException:owner-check:' +
+          value.nativeOwnerFrame,
+      )?.nativeOwner
+    ) {
+      const bytes = Buffer.from(value.nativeOwnerFrame, 'ascii');
+      if (bytes.length <= 1024) {
+        new Uint8Array(shared.buffer, shared.byteOffset + 48, 1024).set(bytes);
+        Atomics.store(shared, 11, bytes.length);
+      }
+    }
+    Atomics.store(
+      shared,
+      2,
+      privateStateNativeDiagnostics.codes.findIndex((code) => code === value?.code) + 1,
+    );
+    const status = value?.status ?? value?.cause?.status;
+    if (
+      typeof status === 'number' &&
+      Number.isInteger(status) &&
+      status >= -0x80000000 &&
+      status <= 0xffffffff
+    ) {
+      Atomics.store(shared, 3, status);
+      // Low byte is the first failure ID; this bit distinguishes exit 0 from unset.
+      Atomics.or(shared, 1, 0x100 | (status > 0x7fffffff ? 0x200 : 0));
+    }
+    Atomics.store(
+      shared,
+      4,
+      privateStateNativeDiagnostics.helperStages.findIndex((v) => v === value?.helperStage) + 1,
+    );
+    Atomics.store(
+      shared,
+      5,
+      privateStateNativeDiagnostics.nativeTypes.findIndex((v) => v === value?.nativeType) + 1,
+    );
+    if (
+      typeof value?.nativeWin32 === 'number' &&
+      Number.isInteger(value.nativeWin32) &&
+      value.nativeWin32 > 0 &&
+      value.nativeWin32 <= 0x7fffffff
+    )
+      Atomics.store(shared, 6, value.nativeWin32);
+    Atomics.store(
+      shared,
+      7,
+      privateStateNativeDiagnostics.rejections.findIndex((v) => v === value?.nativeRejection) + 1,
+    );
+    Atomics.store(
+      shared,
+      8,
+      privateStateNativeDiagnostics.steps.findIndex((v) => v === value?.nativeStep) + 1,
+    );
+    Atomics.store(
+      shared,
+      9,
+      privateStateNativeDiagnostics.steps.findIndex((v) => v === value?.nativeCleanupStep) + 1,
+    );
+    if (
+      typeof value?.nativeCleanupWin32 === 'number' &&
+      Number.isInteger(value.nativeCleanupWin32) &&
+      value.nativeCleanupWin32 > 0 &&
+      value.nativeCleanupWin32 <= 0x7fffffff
+    )
+      Atomics.store(shared, 10, value.nativeCleanupWin32);
+  } catch {
+    // A diagnostic-only property must never interrupt channel retirement.
+  }
+}
+
+export type WindowsTraceProducerScope = {
+  producerPid: number;
+  configPath: string;
+  logRoot: string;
+};
+
+/** Canonical local DOS paths only; native handle/ACL checks remain authoritative. */
+export function windowsTraceProducerPath(value: unknown): value is string {
+  return (
+    privateStatePath(value) &&
+    /^[a-z]:\\/i.test(value) &&
+    value.length > 3 &&
+    value === win32.normalize(value) &&
+    !value.endsWith('\\') &&
+    !/[/:<>"|?*]/.test(value.slice(2)) &&
+    !Array.from(value).some((character) => character.charCodeAt(0) < 32) &&
+    !value
+      .slice(3)
+      .split('\\')
+      .some(
+        (part) =>
+          !part ||
+          /[. ]$/.test(part) ||
+          /~[0-9]+(?:\.|$)/.test(part) ||
+          /^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])$/i.test(
+            part.split('.')[0]!.trimEnd(),
+          ),
+      )
+  );
+}
+
+export function assertWindowsTraceProducerScope(
+  value: unknown,
+  root: string,
+): asserts value is WindowsTraceProducerScope {
+  const scope = value as WindowsTraceProducerScope | undefined;
+  if (
+    !scope ||
+    typeof scope !== 'object' ||
+    Array.isArray(scope) ||
+    Object.keys(scope).length !== 3 ||
+    !['producerPid', 'configPath', 'logRoot'].every((key) => Object.hasOwn(scope, key)) ||
+    !Number.isSafeInteger(scope.producerPid) ||
+    scope.producerPid !== process.pid ||
+    scope.producerPid < 1 ||
+    scope.producerPid > 2147483647 ||
+    !windowsTraceProducerPath(root) ||
+    !windowsTraceProducerPath(scope.configPath) ||
+    win32.basename(scope.configPath) !== 'config.json' ||
+    !windowsTraceProducerPath(win32.dirname(scope.configPath)) ||
+    !windowsTraceProducerPath(scope.logRoot)
+  )
+    throw new Error('Invalid native trace producer scope');
+}
 /** Internal transport contract; no paths or permission decisions are cached. */
 export const privateStateProtocol = Object.freeze({
   words: 6,
-  responseBytes: 256,
+  // Fixed diagnostic capacity, not an execution deadline. OWNER1 is separately
+  // schema-checked; legacy responses retain their original field/length limits.
+  responseBytes: 1024,
   pathBytes: 128 * 1024,
   pathCharacters: 32767,
   frameBytes: 2 * Math.ceil((128 * 1024) / 3) * 4 + 64,
@@ -186,10 +681,12 @@ type PrivateStateStart = {
   module: string;
   shared: SharedArrayBuffer;
   ownerPort: MessagePort;
+  diagnostics?: SharedArrayBuffer;
   trace?: {
     identity: Pick<WindowsDesktopIdentity, 'pid' | 'startedAtUnixMs' | 'executable'>;
     root: string;
     response: SharedArrayBuffer;
+    producer?: WindowsTraceProducerScope;
   };
 };
 type NativeTransportRecord = {
@@ -197,6 +694,7 @@ type NativeTransportRecord = {
   owner: Worker;
   control: Int32Array;
   exited: Promise<boolean>;
+  producerPid?: number;
 };
 type PrivateStateSupervisor = {
   starts: Map<string, (request: PrivateStateStart, source: number) => void>;
@@ -251,13 +749,24 @@ function registerFixedNativeTransport(kind: PrivateStateStart['kind']): void {
       return;
     const control = new Int32Array(request.shared, 0, p.words);
     const trace = kind === 'windows-trace-start' ? request.trace : undefined;
-    const fields = ['kind', 'module', 'shared', 'ownerPort', ...(trace ? ['trace'] : [])];
+    const fields = [
+      'kind',
+      'module',
+      'shared',
+      'ownerPort',
+      ...(trace ? ['trace'] : ['diagnostics']),
+    ];
     if (
       request.kind !== kind ||
+      (!trace &&
+        (!(request.diagnostics instanceof SharedArrayBuffer) ||
+          request.diagnostics.byteLength !== privateStateNativeDiagnostics.words * 4)) ||
       Object.keys(request).some((key) => !fields.includes(key)) ||
       (kind === 'windows-trace-start' &&
         (!trace ||
-          Object.keys(trace).some((key) => !['identity', 'root', 'response'].includes(key)) ||
+          Object.keys(trace).some(
+            (key) => !['identity', 'root', 'response', 'producer'].includes(key),
+          ) ||
           !privateStatePath(trace.root) ||
           !trace.identity ||
           Object.keys(trace.identity).some(
@@ -277,11 +786,22 @@ function registerFixedNativeTransport(kind: PrivateStateStart['kind']): void {
       return;
     }
     try {
+      if (trace && Object.hasOwn(trace, 'producer'))
+        assertWindowsTraceProducerScope(trace.producer, trace.root);
       // The dispatcher supplies Node's actual sender ID. Only its currently
       // registered Worker object may own this transport, never a remembered ID.
       const owner = getWindowsProcessWorker(source);
       if (!owner) throw new Error('Registered native transport owner required');
       if (supervisor.retiring.has(owner)) throw new Error('Native owner is retiring');
+      // A new owner cannot replace an unconfirmed native producer generation.
+      // Records disappear only after the child/stdio gone acknowledgement and
+      // the supervising transport Worker's confirmed exit.
+      const producerPid = trace?.producer?.producerPid;
+      if (
+        producerPid !== undefined &&
+        [...supervisor.workers].some((record) => record.producerPid === producerPid)
+      )
+        throw new Error('Native producer generation has not retired');
       // Entry is fixed by this already-loaded module, never supplied by the sender.
       const entry = new URL(
         trace ? './desktop-trace-native-worker.js' : './desktop-private-state-native-worker.js',
@@ -297,9 +817,15 @@ function registerFixedNativeTransport(kind: PrivateStateStart['kind']): void {
           entryURL: entry.href,
           windowsProcessGate: getWindowsProcessGate(),
           shared: trace?.response ?? request.shared,
+          ...(!trace ? { diagnostics: request.diagnostics } : {}),
           ownerPort: request.ownerPort,
           ...(trace
-            ? { identity: trace.identity, root: trace.root, lifecycle: request.shared }
+            ? {
+                identity: trace.identity,
+                root: trace.root,
+                lifecycle: request.shared,
+                ...(trace.producer ? { producer: trace.producer } : {}),
+              }
             : {}),
         },
         transferList: [request.ownerPort],
@@ -308,8 +834,15 @@ function registerFixedNativeTransport(kind: PrivateStateStart['kind']): void {
       const exited = new Promise<boolean>((resolve) => {
         resolveExit = resolve;
       });
-      const record = { worker, owner, control, exited };
+      const record: NativeTransportRecord = {
+        worker,
+        owner,
+        control,
+        exited,
+        ...(trace?.producer ? { producerPid: trace.producer.producerPid } : {}),
+      };
       registerWindowsProcessWorker(worker);
+      observeDiagnosticWorker(worker, owner);
       supervisor.workers.add(record);
       const ownerExited = () => {
         // The transport can be blocked in an atomic gate wait and cannot yet
@@ -320,10 +853,18 @@ function registerFixedNativeTransport(kind: PrivateStateStart['kind']): void {
       // Fail startup before the registry's exit CAS releases/notifies a gate
       // that this owner held, so a waiting transport cannot wake still active.
       owner.prependOnceListener('exit', ownerExited);
-      worker.on('error', () => failPrivateState(control));
-      worker.once('exit', () => {
+      worker.on('error', (error) => {
+        if (!trace)
+          privateStateNativeFailure(new Int32Array(request.diagnostics!), 'isolate-error', error);
+        failPrivateState(control);
+      });
+      worker.once('exit', (exitCode) => {
         owner.removeListener('exit', ownerExited);
         const reaped = Atomics.load(control, p.state) === p.gone;
+        if (!trace && !reaped)
+          privateStateNativeFailure(new Int32Array(request.diagnostics!), 'isolate-exit', {
+            status: exitCode,
+          });
         failPrivateState(control);
         if (!Atomics.load(control, p.pid)) {
           Atomics.store(control, p.state, p.gone);
@@ -378,8 +919,10 @@ export function createWindowsTraceTransport(
   identity: WindowsDesktopIdentity,
   root: string,
   response: SharedArrayBuffer,
+  producer?: WindowsTraceProducerScope,
 ) {
   if (isMainThread) throw new Error('Trace reader isolate required');
+  if (producer !== undefined) assertWindowsTraceProducerScope(producer, root);
   const p = privateStateProtocol;
   const shared = new SharedArrayBuffer(p.words * 4 + p.responseBytes);
   const control = new Int32Array(shared, 0, p.words);
@@ -397,6 +940,7 @@ export function createWindowsTraceTransport(
       },
       root,
       response,
+      ...(producer ? { producer: { ...producer } } : {}),
     },
   };
   void postMessageToThread(0, request, [ownerPort], p.startupMs).catch(() => {
@@ -432,6 +976,8 @@ export function createWindowsPrivateStateBackend(
   const shared = new SharedArrayBuffer(p.words * 4 + p.responseBytes);
   const control = new Int32Array(shared, 0, p.words);
   const bytes = new Uint8Array(shared, p.words * 4);
+  const diagnostics = new SharedArrayBuffer(privateStateNativeDiagnostics.words * 4);
+  const native = new Int32Array(diagnostics);
   let worker: Worker | MessagePort;
   if (isMainThread) {
     worker = new Worker(entry, {
@@ -440,10 +986,12 @@ export function createWindowsPrivateStateBackend(
         kind: 'windows-private-state',
         entryURL: entry.href,
         shared,
+        diagnostics,
         windowsProcessGate: getWindowsProcessGate(),
       },
     });
     registerWindowsProcessWorker(worker);
+    observeDiagnosticWorker(worker);
   } else {
     if (entry.href !== new URL('./desktop-private-state-native-worker.js', import.meta.url).href)
       throw new Error('Private state supervisor requires its fixed worker entry');
@@ -453,6 +1001,7 @@ export function createWindowsPrivateStateBackend(
       kind: 'windows-private-state-start',
       module: import.meta.url,
       shared,
+      diagnostics,
       ownerPort: channel.port2,
     };
     void postMessageToThread(0, request, [channel.port2], timeouts.startupMs).catch(() => {
@@ -460,19 +1009,71 @@ export function createWindowsPrivateStateBackend(
       channel.port1.close();
     });
   }
+  const generation = randomUUID();
+  const started = performance.now();
+  let phase = 'startup',
+    waitKind = 'sync',
+    waitMs = 0;
   let closed = false,
     busy = false,
     nextId = 0;
+  const record = (stage: string, extra: Record<string, unknown> = {}) =>
+    diagnosticEvent({
+      scope: 'private-state',
+      generation,
+      stage,
+      elapsedMs: performance.now() - started,
+      state: Atomics.load(control, p.state),
+      pid: Atomics.load(control, p.pid),
+      workerId: worker instanceof Worker ? worker.threadId : undefined,
+      request: nextId,
+      waitKind,
+      ...extra,
+    });
+  record('created');
   function unavailable(): Error {
+    const length = Atomics.load(native, 11);
+    const frame =
+      length > 0 && length <= 1024
+        ? Buffer.from(new Uint8Array(native.buffer, native.byteOffset + 48, length)).toString(
+            'ascii',
+          )
+        : '';
+    const owner = parseWindowsPrivateStateRejection(
+      'UNSAFE_WINDOWS_PRIVATE_STATE:UnauthorizedAccessException:owner-check:' + frame,
+    )?.nativeOwner;
     return Object.assign(new Error('Windows private state unavailable'), {
       code: 'WINDOWS_PRIVATE_STATE_UNAVAILABLE',
+      stage: phase,
+      waitMs,
+      ...(owner ? { nativeOwner: owner, nativeOwnerOrigin: 'bootstrap-csharp' } : {}),
+      nativeStage: privateStateNativeDiagnostics.stages[Atomics.load(native, 0) - 1],
+      nativeFailure: privateStateNativeDiagnostics.failures[(Atomics.load(native, 1) & 0xff) - 1],
+      nativeCode: privateStateNativeDiagnostics.codes[Atomics.load(native, 2) - 1],
+      nativeStatus:
+        Atomics.load(native, 1) & 0x100
+          ? Atomics.load(native, 1) & 0x200
+            ? Atomics.load(native, 3) >>> 0
+            : Atomics.load(native, 3)
+          : undefined,
+      helperStage: privateStateNativeDiagnostics.helperStages[Atomics.load(native, 4) - 1],
+      nativeType: privateStateNativeDiagnostics.nativeTypes[Atomics.load(native, 5) - 1],
+      nativeWin32: Atomics.load(native, 6) || undefined,
+      nativeStep: privateStateNativeDiagnostics.steps[Atomics.load(native, 8) - 1],
+      nativeCleanupStep: privateStateNativeDiagnostics.steps[Atomics.load(native, 9) - 1],
+      nativeCleanupWin32: Atomics.load(native, 10) || undefined,
+      nativeRejection: privateStateNativeDiagnostics.rejections[Atomics.load(native, 7) - 1],
     });
   }
   function fail(): void {
     failPrivateState(control);
     worker.postMessage({ kind: 'close' });
   }
-  worker.on('error', fail);
+  worker.on('error', (error) => {
+    privateStateNativeFailure(native, 'isolate-error', error);
+    record('isolate-error');
+    fail();
+  });
   const exited = () => {
     fail();
     // Without a child PID there is no native operation or child left to retire.
@@ -481,10 +1082,17 @@ export function createWindowsPrivateStateBackend(
       Atomics.notify(control, p.state);
     }
   };
-  if (worker instanceof Worker) worker.once('exit', exited);
+  if (worker instanceof Worker)
+    worker.once('exit', (exitCode) => {
+      if (!closed && Atomics.load(control, p.state) !== p.gone)
+        privateStateNativeFailure(native, 'isolate-exit', { status: exitCode });
+      record('isolate-exit', { exitCode });
+      exited();
+    });
   else worker.once('close', fail);
   worker.unref();
   function close(): void {
+    record('close', { initiator: 'owner' });
     closed = true;
     process.removeListener('beforeExit', cleanup);
     process.removeListener('exit', cleanup);
@@ -510,6 +1118,111 @@ export function createWindowsPrivateStateBackend(
   process.once('beforeExit', cleanup);
   process.once('exit', cleanup);
   parentPort?.once('close', cleanup);
+  function* operation(
+    action: WindowsPrivateStateAction,
+    path: string,
+  ): Generator<
+    { index: number; expected: number; timeout: number },
+    WindowsPrivateFileIdentity | undefined,
+    void
+  > {
+    if (
+      closed ||
+      busy ||
+      ![
+        'protect',
+        'protect-file',
+        'check',
+        'create-directory',
+        'create-file',
+        'release-file',
+      ].includes(action) ||
+      !privateStatePath(path) ||
+      !privateStatePath(process.cwd())
+    )
+      throw unavailable();
+    busy = true;
+    const operationAt = performance.now();
+    waitMs = 0;
+    phase = 'startup';
+    record('call', { action });
+    try {
+      const startup = performance.now() + timeouts.startupMs;
+      while (Atomics.load(control, p.state) === p.starting) {
+        const remaining = startup - performance.now();
+        if (remaining <= 0) {
+          phase = 'startup-deadline';
+          throw unavailable();
+        }
+        record('startup-wait', { remainingMs: remaining });
+        yield { index: p.state, expected: p.starting, timeout: remaining };
+      }
+      if (
+        Atomics.load(control, p.state) !== p.ready ||
+        performance.now() >= startup ||
+        nextId === 0x7fffffff
+      )
+        throw unavailable();
+      phase = 'response';
+      record('startup-ready', { elapsedMs: performance.now() - operationAt });
+      const id = ++nextId;
+      const deadline = performance.now() + timeouts.operationMs;
+      Atomics.store(control, p.request, id);
+      Atomics.store(control, p.result, p.waiting);
+      worker.postMessage({
+        kind: 'call',
+        id,
+        action,
+        path,
+        cwd: process.cwd(),
+        deadline,
+        sentAt: performance.now(),
+      });
+      while (Atomics.load(control, p.result) === p.waiting) {
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) {
+          phase = 'response-deadline';
+          throw unavailable();
+        }
+        record('response-wait', { remainingMs: remaining });
+        yield { index: p.result, expected: p.waiting, timeout: remaining };
+      }
+      const length = Atomics.load(control, p.length);
+      if (
+        Atomics.load(control, p.state) !== p.ready ||
+        performance.now() >= deadline ||
+        Atomics.load(control, p.response) !== id ||
+        length <= 0 ||
+        length > bytes.length
+      )
+        throw unavailable();
+      const response = Buffer.from(bytes.subarray(0, length)).toString('utf8');
+      if (Atomics.load(control, p.result) === p.ok) {
+        if (action === 'create-file') {
+          const identity = parseWindowsPrivateFileIdentity(response);
+          if (identity) return identity;
+        } else if (response === 'PRIVATE_STATE_OK') return;
+      }
+      const refusal = parseWindowsPrivateStateRejection(response);
+      if (refusal?.nativeOwner?.helperPid !== undefined)
+        refusal.nativeOwner.transportPidMatches =
+          refusal.nativeOwner.helperPid === Atomics.load(control, p.pid);
+      if (Atomics.load(control, p.result) === p.rejected && refusal)
+        throw Object.assign(new Error('Windows private state rejected'), {
+          code: 'UNSAFE_WINDOWS_PRIVATE_STATE',
+          ...refusal,
+          nativeOwnerOrigin: refusal.nativeOwner ? 'native-serve' : 'not-emitted',
+        });
+      throw unavailable();
+    } catch (error) {
+      record(phase, { code: (error as { code?: string }).code, waitMs });
+      if ((error as { code?: string }).code !== 'UNSAFE_WINDOWS_PRIVATE_STATE') fail();
+      throw error;
+    } finally {
+      record('call-finished', { action, elapsedMs: performance.now() - operationAt, waitMs });
+      busy = false;
+    }
+  }
   return {
     get status() {
       return {
@@ -519,65 +1232,44 @@ export function createWindowsPrivateStateBackend(
         pid: Atomics.load(control, p.pid),
       };
     },
-    call(action: WindowsPrivateStateAction, path: string): void {
-      if (
-        closed ||
-        busy ||
-        !['protect', 'protect-file', 'check'].includes(action) ||
-        !privateStatePath(path) ||
-        !privateStatePath(process.cwd())
-      )
-        throw unavailable();
-      busy = true;
+    call(action: WindowsPrivateStateAction, path: string): WindowsPrivateFileIdentity | undefined {
+      waitKind = 'sync';
+      const iterator = operation(action, path);
+      let next = iterator.next();
+      while (!next.done) {
+        const wait = next.value;
+        const before = performance.now();
+        Atomics.wait(control, wait.index, wait.expected, wait.timeout);
+        waitMs += performance.now() - before;
+        next = iterator.next();
+      }
+      return next.value;
+    },
+    async callAsync(
+      action: WindowsPrivateStateAction,
+      path: string,
+    ): Promise<WindowsPrivateFileIdentity | undefined> {
+      waitKind = 'async';
+      const iterator = operation(action, path);
+      let next = iterator.next();
+      if (next.done) return next.value;
+      worker.ref();
       try {
-        const startup = performance.now() + timeouts.startupMs;
-        while (Atomics.load(control, p.state) === p.starting) {
-          const remaining = startup - performance.now();
-          if (remaining <= 0) throw unavailable();
-          Atomics.wait(control, p.state, p.starting, remaining);
+        while (!next.done) {
+          const before = performance.now();
+          await Atomics.waitAsync(
+            control,
+            next.value.index,
+            next.value.expected,
+            next.value.timeout,
+          ).value;
+          waitMs += performance.now() - before;
+          next = iterator.next();
         }
-        if (
-          Atomics.load(control, p.state) !== p.ready ||
-          performance.now() >= startup ||
-          nextId === 0x7fffffff
-        )
-          throw unavailable();
-        const id = ++nextId;
-        const deadline = performance.now() + timeouts.operationMs;
-        Atomics.store(control, p.request, id);
-        Atomics.store(control, p.result, p.waiting);
-        worker.postMessage({ kind: 'call', id, action, path, cwd: process.cwd(), deadline });
-        while (Atomics.load(control, p.result) === p.waiting) {
-          const remaining = deadline - performance.now();
-          if (remaining <= 0) throw unavailable();
-          Atomics.wait(control, p.result, p.waiting, remaining);
-        }
-        const length = Atomics.load(control, p.length);
-        if (
-          Atomics.load(control, p.state) !== p.ready ||
-          performance.now() >= deadline ||
-          Atomics.load(control, p.response) !== id ||
-          length <= 0 ||
-          length > bytes.length
-        )
-          throw unavailable();
-        const response = Buffer.from(bytes.subarray(0, length)).toString('utf8');
-        if (Atomics.load(control, p.result) === p.ok && response === 'PRIVATE_STATE_OK') return;
-        if (
-          Atomics.load(control, p.result) === p.rejected &&
-          /^UNSAFE_WINDOWS_PRIVATE_STATE:[A-Za-z][A-Za-z0-9]{0,127}$/.exec(response)?.[0] ===
-            response
-        )
-          throw Object.assign(new Error('Windows private state rejected'), {
-            code: 'UNSAFE_WINDOWS_PRIVATE_STATE',
-            nativeError: response,
-          });
-        throw unavailable();
-      } catch (error) {
-        if ((error as { code?: string }).code !== 'UNSAFE_WINDOWS_PRIVATE_STATE') fail();
-        throw error;
+        return next.value;
       } finally {
-        busy = false;
+        iterator.return(undefined);
+        worker.unref();
       }
     },
     close,

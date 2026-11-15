@@ -34,12 +34,12 @@ class GenerationChoice(val effort: String?, val speed: String?)
 class GenerationDisplay(val model: String?, val effort: String?)
 
 object SessionPolicies {
-    /** Existing conversations show owner values; draft overrides describe the next input only.
-     * A model catalogue's recommended defaults are never evidence of thread settings.
+    /** The composer previews the next input immediately, falling back to known owner values.
+     * Catalogue defaults are not evidence of thread settings; the owner summary stays separate.
      */
     fun generationDisplay(threadSelected: Boolean, draftModel: String?, draftEffort: String?,
         runtimeModel: String?, runtimeEffort: String?): GenerationDisplay =
-        if (threadSelected) GenerationDisplay(runtimeModel, runtimeEffort)
+        if (threadSelected) GenerationDisplay(draftModel ?: runtimeModel, draftEffort ?: runtimeEffort)
         else GenerationDisplay(draftModel, draftEffort)
 
     /** Codex desktop requirements do not grant creation/open/control capabilities. */
@@ -115,7 +115,7 @@ object SessionPolicies {
     fun changeModel(priorEffort: String?, draftSpeed: String?, supportedEfforts: List<String>,
         defaultEffort: String?, supportedSpeeds: List<String>): GenerationChoice =
         GenerationChoice(if (priorEffort in supportedEfforts) priorEffort else defaultEffort,
-            if (draftSpeed != null && draftSpeed !in supportedSpeeds) "standard" else draftSpeed)
+            if (draftSpeed != null && draftSpeed !in supportedSpeeds) "standard".takeIf { it in supportedSpeeds } else draftSpeed)
 
     fun noticeIndices(receipts: List<ReceiptState>, dismissed: List<String>, pendingId: String?): List<Int> {
         val lastAccepted = receipts.indexOfLast { it.state in listOf("submitted", "completed", "interrupted") }

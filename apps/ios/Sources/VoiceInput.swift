@@ -247,7 +247,9 @@ private enum PendingVoiceStore {
     let target: String; let scopeKey: String; let originalText: String; let operationId: String
     let sha256: String; let durationMs: Int; let sizeBytes: Int; let createdAt: Date
     var locallyResolvedAt: Date?
+    var discardedAt: Date?
   }
+  static var existingDirectory: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(PendingVoiceMigration.liveDirectory, isDirectory: true) }
   static func directory() throws -> URL {
     let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
       .appendingPathComponent("voice-transcriptions", isDirectory: true)
@@ -276,7 +278,8 @@ private enum PendingVoiceStore {
         UUID(uuidString: record.operationId)?.uuidString.lowercased() == record.operationId,
         file.lastPathComponent == record.operationId + ".json" else { continue }
       if Date().timeIntervalSince(record.createdAt) >= 24 * 3600 { remove(record.operationId); continue }
-      if record.locallyResolvedAt == nil, record.target == target && record.scopeKey == scopeKey && record.originalText == text { candidates.append(record) }
+      if record.locallyResolvedAt == nil, record.discardedAt == nil,
+        record.target == target && record.scopeKey == scopeKey && record.originalText == text { candidates.append(record) }
     }
     // Partial local saves contain no submitted operation. Remove old orphan audio only.
     for file in files where file.pathExtension == "wav" {
@@ -297,6 +300,19 @@ private enum PendingVoiceStore {
     guard let root = try? directory() else { return }
     for suffix in [".json", ".wav"] { try? FileManager.default.removeItem(at: root.appendingPathComponent(id + suffix)) }
   }
+  static func discard(_ id: String) throws {
+    let root = try directory(), metadata = root.appendingPathComponent(id + ".json")
+    if FileManager.default.fileExists(atPath: metadata.path) {
+      var record = try JSONDecoder().decode(Metadata.self, from: Data(contentsOf: metadata))
+      // Persist the user's decision before deleting audio. A leftover file must
+      // never become recoverable again, including after an app restart.
+      record.discardedAt = Date()
+      try JSONEncoder().encode(record).write(to: metadata, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: metadata.path)
+    }
+    let audio = root.appendingPathComponent(id + ".wav")
+    if FileManager.default.fileExists(atPath: audio.path) { try FileManager.default.removeItem(at: audio) }
+  }
   static func resolveLocally(_ id: String) {
     // Keep the original operation and audio until expiry, without offering it again.
     guard let root = try? directory() else { return }
@@ -306,6 +322,26 @@ private enum PendingVoiceStore {
     guard let updated = try? JSONEncoder().encode(record) else { return }
     try? updated.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+  }
+}
+
+@MainActor enum VoiceMigrationSafety {
+  private final class WeakController { weak var value: VoiceInputController?; init(_ value: VoiceInputController) { self.value = value } }
+  private static var controllers: [WeakController] = []
+  static var pendingDirectory: URL { PendingVoiceStore.existingDirectory }
+  static var archiveDirectory: URL { pendingDirectory.deletingLastPathComponent().appendingPathComponent(PendingVoiceMigration.archiveDirectory, isDirectory: true) }
+  static func track(_ controller: VoiceInputController) {
+    controllers.removeAll { $0.value == nil || $0.value === controller }
+    controllers.append(WeakController(controller))
+  }
+  static func requireCaptureStable() throws {
+    guard !controllers.contains(where: { $0.value?.blocksMigration == true }) else {
+      throw HostServiceError.message(L10n.tr("录音仍在采集或处理，未生成部分备份。原录音和草稿已保留。"))
+    }
+  }
+  static func snapshot() throws -> [PreservedVoiceOriginals.Row] {
+    try requireCaptureStable()
+    return try PreservedVoiceOriginals.rows(includeLive: true)
   }
 }
 
@@ -324,6 +360,7 @@ final class VoiceInputController: ObservableObject {
   private var recorder: AVAudioRecorder?
   private var fileURL: URL?
   private var recording: VoiceRecording?
+  private var recordingPersisted = false
   private var provider: VoiceTranscriptionProvider?
   private var usesLocalRecognition = false
   private var usesLocalFallback = false
@@ -342,11 +379,20 @@ final class VoiceInputController: ObservableObject {
     return args.contains("-ui-testing") && args.contains("-voice-input-fixture")
   }
   var isActive: Bool { phase != .idle }
+  var canRetryTranscription: Bool {
+    phase == .failed && (recording != nil || fileURL != nil || localRecognition != nil || simulatesTranscriptionFailure)
+  }
+  var failureTitle: String {
+    canRetryTranscription ? L10n.tr("转写失败") : L10n.tr("录音未完成")
+  }
   var canUseLocalTranscription: Bool {
     phase == .failed && !usesLocalRecognition && (recording != nil || simulatesTranscriptionFailure)
   }
   private var simulatesTranscriptionFailure: Bool {
     isFixture && ProcessInfo.processInfo.arguments.contains("-voice-transcription-failed")
+  }
+  var blocksMigration: Bool {
+    phase != .idle && !(phase == .failed && !usesLocalRecognition && recordingPersisted)
   }
   var draftText: String {
     guard !transcript.isEmpty else { return originalText }
@@ -367,8 +413,9 @@ final class VoiceInputController: ObservableObject {
   func start(target: String, text: String, provider: VoiceTranscriptionProvider, restorePending: Bool = true,
     onChange: @escaping (String, String) -> Bool) {
     guard !isActive else { return }
+    VoiceMigrationSafety.track(self)
     targetKey = target; originalText = text; self.provider = provider; onDraftChange = onChange
-    transcript = ""; error = nil; diagnosticInfo = ""; recording = nil
+    transcript = ""; error = nil; diagnosticInfo = ""; recording = nil; recordingPersisted = false
     usesLocalRecognition = VoiceTranscriptionPreference.current == .local
     usesLocalFallback = false
     usesSavedLocalRecognition = false
@@ -379,7 +426,7 @@ final class VoiceInputController: ObservableObject {
       do {
         if !usesLocalRecognition, restorePending, let (saved, audio) = try PendingVoiceStore.restore(target: target, scopeKey: provider.scopeKey, text: text) {
           guard generation == id, !Task.isCancelled else { return }
-          recording = saved; fileURL = audio; phase = .failed
+          recording = saved; recordingPersisted = true; fileURL = audio; phase = .failed
           error = L10n.tr("已恢复此草稿的原录音。点击重试查询同一转写；不会自动重新提交。")
           return
         }
@@ -422,6 +469,9 @@ final class VoiceInputController: ObservableObject {
         }
         guard generation == id, !Task.isCancelled else { return }
         guard granted else { throw HostServiceError.message(L10n.tr("麦克风权限未开启，请在系统设置中允许访问麦克风。")) }
+        // Permission completion may precede the system sheet's foreground
+        // transition. Keep setup pending until the real application is active.
+        try await waitForCaptureForeground(id: id)
         try await audioSession.activate(id: id)
         guard generation == id, !Task.isCancelled else { audioSession.deactivate(id: id); return }
         activeAudioSession = id
@@ -435,6 +485,8 @@ final class VoiceInputController: ObservableObject {
         // off Main and abandon a late recorder after timeout/cancel.
         let prepared = try await audioSession.prepareRecorder(url: url, id: id)
         guard generation == id, !Task.isCancelled else { prepared.recorder.stop(); return }
+        do { try await waitForCaptureForeground(id: id) }
+        catch { prepared.recorder.stop(); throw error }
         let recorder = prepared.recorder
         self.recorder = recorder; phase = .listening
         if ProcessInfo.processInfo.arguments.contains("-ui-testing") { diagnosticInfo = "backend=HostTranscription format=16000/1 file=wav" }
@@ -475,7 +527,21 @@ final class VoiceInputController: ObservableObject {
       do {
         let text: String
         if isFixture {
-          try await Task.sleep(for: .milliseconds(300))
+          #if DEBUG
+          if simulatesTranscriptionFailure, recording == nil,
+            let encoded = ProcessInfo.processInfo.environment["VOICE_PENDING_FIXTURE_WAV"], let data = Data(base64Encoded: encoded) {
+            let audio = FileManager.default.temporaryDirectory.appendingPathComponent(id.uuidString.lowercased() + ".wav")
+            try data.write(to: audio, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            fileURL = audio
+            let saved = VoiceRecording(operationId: id.uuidString.lowercased(), data: data,
+              sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), durationMs: 1000)
+            guard let provider else { throw HostServiceError.unavailable }
+            recording = saved
+            try PendingVoiceStore.save(saved, target: targetKey, scopeKey: provider.scopeKey, text: originalText)
+          }
+          #endif
+          let delay = ProcessInfo.processInfo.environment["VOICE_PENDING_FIXTURE_WAV"] == nil ? 300 : 8000
+          try await Task.sleep(for: .milliseconds(delay))
           if simulatesTranscriptionFailure && !usingLocalRecording {
             throw HostServiceError.message(L10n.tr("电脑转写暂不可用"))
           }
@@ -513,6 +579,7 @@ final class VoiceInputController: ObservableObject {
           }
           guard let provider, let recording else { throw HostServiceError.unavailable }
           try PendingVoiceStore.save(recording, target: targetKey, scopeKey: provider.scopeKey, text: originalText)
+          recordingPersisted = true
           text = try await provider.transcribe(recording)
         }
         guard generation == id, !Task.isCancelled else { return false }
@@ -543,7 +610,7 @@ final class VoiceInputController: ObservableObject {
   func recordAgain(text: String) {
     guard phase == .failed, let provider, let onChange = onDraftChange else { return }
     let target = targetKey
-    cancel()
+    guard discard() else { return }
     start(target: target, text: text, provider: provider, restorePending: false, onChange: onChange)
   }
   func cancel() {
@@ -551,8 +618,40 @@ final class VoiceInputController: ObservableObject {
     setupTask?.cancel(); finishTask?.cancel()
     reset(discard: true, preservePending: recording != nil)
   }
+  @discardableResult func discard() -> Bool {
+    generation = UUID()
+    setupTask?.cancel(); finishTask?.cancel(); finishTask = nil
+    stopCapture()
+    do {
+      if let recording { try PendingVoiceStore.discard(recording.operationId) }
+    } catch {
+      phase = .failed
+      self.error = L10n.tr("无法丢弃录音，请重试。")
+      return false
+    }
+    reset(discard: true)
+    error = nil
+    return true
+  }
+  private func waitForCaptureForeground(id: UUID) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(10))
+    while UIApplication.shared.applicationState != .active {
+      guard generation == id, !Task.isCancelled,
+        UIApplication.shared.applicationState != .background,
+        clock.now < deadline else { throw CancellationError() }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    guard generation == id, !Task.isCancelled else { throw CancellationError() }
+  }
+  func handleScenePhase(_ phase: ScenePhase) {
+    // SwiftUI can deliver the permission sheet's older inactive value after
+    // UIKit has already resumed. Do not suspend a newly started capture for it.
+    if phase == .background || (phase == .inactive && self.phase != .requesting
+      && UIApplication.shared.applicationState != .active) { suspend() }
+  }
   func suspend() {
-    guard phase != .idle else { return }
+    guard phase != .idle, phase != .failed else { return }
     guard phase != .requesting else { cancel(); return }
     generation = UUID()
     setupTask?.cancel(); finishTask?.cancel(); finishTask = nil
@@ -594,7 +693,15 @@ final class VoiceInputController: ObservableObject {
   }
   private func failSetup(id: UUID, message: String) {
     guard generation == id else { return }
-    reset(discard: true); error = message
+    // Keep the target and callbacks so a preparation/capture failure remains
+    // visible and can be re-recorded instead of returning to an empty composer.
+    stopCapture()
+    localObservation = nil
+    localRecognition?.cancel(); localRecognition = nil
+    if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+    fileURL = nil; recording = nil
+    levels = Array(repeating: 0, count: 9)
+    phase = .failed; error = message
   }
   private func stopCapture() {
     meterTask?.cancel(); meterTask = nil
@@ -711,42 +818,67 @@ struct VoiceInputControls: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 3) {
-        IconButton(symbol: "xmark", label: voice.phase == .listening || voice.phase == .requesting ? L10n.tr("取消录音") : L10n.tr("结束等待"),
+        IconButton(symbol: "xmark", label: voice.phase == .listening || voice.phase == .requesting ? L10n.tr("取消录音") : L10n.tr("丢弃录音"),
           id: identifier("cancel-dictation", question: "question-cancel-dictation-")) {
-          voice.cancel()
+          voice.discard()
         }.background(Color.primary.opacity(0.06), in: Circle())
-        Group {
-          if voice.phase == .finishing {
-            VoiceTranscriptionActivity(status: voice.status)
-          } else {
-            VoiceWaveform(levels: voice.levels)
-          }
-        }.frame(maxWidth: .infinity, minHeight: 44)
-          .accessibilityElement(children: .ignore)
-          .accessibilityLabel(voice.status)
-          .accessibilityIdentifier(identifier("dictation-waveform", question: "question-dictation-"))
-          .accessibilityValue(voice.diagnosticInfo)
+        if voice.phase == .failed {
+          Label(voice.failureTitle, systemImage: "exclamationmark.circle")
+            .font(.subheadline.weight(.medium)).foregroundStyle(.orange)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .accessibilityIdentifier(identifier("voice-failure-title", question: "question-voice-failure-"))
+        } else {
+          Group {
+            if voice.phase == .finishing {
+              VoiceTranscriptionActivity(status: voice.status)
+                .accessibilityElement(children: .ignore)
+            } else if voice.phase == .listening {
+              Button {
+                Task { _ = await voice.finish() }
+              } label: {
+                HStack(spacing: 10) {
+                  VoiceWaveform(levels: voice.levels).frame(maxWidth: .infinity).accessibilityHidden(true)
+                  Text(L10n.tr("轻触停止录音")).font(.caption).foregroundStyle(Palette.secondary)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true).layoutPriority(1)
+                  VoiceWaveform(levels: voice.levels).frame(maxWidth: .infinity)
+                    .scaleEffect(x: -1, y: 1).accessibilityHidden(true)
+                }.frame(minHeight: 44).contentShape(Rectangle())
+              }.buttonStyle(.plain)
+            } else {
+              VoiceWaveform(levels: voice.levels)
+                .accessibilityElement(children: .ignore)
+            }
+          }.frame(maxWidth: .infinity, minHeight: 44)
+            .accessibilityLabel(voice.phase == .listening ? L10n.tr("轻触停止录音") : voice.status)
+            .accessibilityHint(voice.phase == .listening ? voice.status : "")
+            .accessibilityIdentifier(identifier("dictation-waveform", question: "question-dictation-"))
+            .accessibilityValue(voice.diagnosticInfo)
+        }
         Button {
-          Task { _ = await voice.finish() }
+          if voice.phase == .failed && !voice.canRetryTranscription { voice.recordAgain(text: text) }
+          else { Task { _ = await voice.finish() } }
         } label: {
           Group {
             if voice.phase == .finishing {
               ProgressView().tint(.primary)
+            } else if voice.phase == .failed {
+              Image(systemName: "arrow.clockwise").font(.system(size: 17))
             } else {
-              Image(systemName: voice.phase == .failed ? "arrow.clockwise" : "stop.fill")
-                .font(.system(size: 17))
+              Image(systemName: "stop.fill").font(.system(size: 17))
             }
           }.frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
         }.buttonStyle(.plain)
-          .accessibilityLabel(voice.phase == .finishing ? voice.status : voice.phase == .failed ? L10n.tr("重试转写") : L10n.tr("结束录音并转写"))
+          .accessibilityLabel(voice.phase == .finishing ? voice.status : voice.phase == .failed
+            ? (voice.canRetryTranscription ? L10n.tr("重试转写") : L10n.tr("重新录音")) : L10n.tr("结束录音并转写"))
           .accessibilityIdentifier(identifier("stop-dictation", question: "question-voice-"))
           .background(Color.primary.opacity(0.06), in: Circle())
           .disabled(voice.phase != .listening && voice.phase != .failed)
       }
       if voice.phase != .finishing {
         Text(voice.status).font(.caption).foregroundStyle(Palette.secondary).padding(.horizontal, 14)
+          .accessibilityIdentifier(identifier("voice-status", question: "question-voice-status-"))
       }
-      if voice.phase == .failed {
+      if voice.phase == .failed && voice.canRetryTranscription {
         HStack(spacing: 16) {
           if voice.canUseLocalTranscription {
             Button(L10n.tr("使用本地转写")) { Task { _ = await voice.transcribeLocally() } }
@@ -757,17 +889,6 @@ struct VoiceInputControls: View {
         }.frame(minHeight: 44).padding(.horizontal, 14)
       }
     }
-  }
-}
-
-struct VoiceTranscriptionFailureActions: View {
-  @ObservedObject var voice: VoiceInputController
-
-  var body: some View {
-    Button(L10n.tr("重试转写")) { Task { _ = await voice.finish() } }
-      .accessibilityIdentifier("voice-retry-transcription")
-    Button(L10n.tr("使用本地转写")) { Task { _ = await voice.transcribeLocally() } }
-      .accessibilityIdentifier("voice-local-transcription")
   }
 }
 

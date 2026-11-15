@@ -1,3 +1,4 @@
+import { diagnosticEvent } from './diagnostic-events.js';
 import { withWindowsProcessCreation } from './windows-process.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -7,8 +8,51 @@ import type { ClientType, WorkspaceSidebar } from '@codex-manage/protocol';
 import { renderItem, type RenderItem } from './runtime.js';
 import { DesktopSidebar, desktopPinnedSection } from './desktop-sidebar.js';
 import { historyIdentity } from './desktop-history-identity.js';
+import { isDesktopHistoryCursor } from './desktop-history-cursor.js';
 
 export const codexClientType: ClientType = { id: 'codex', name: 'Codex' };
+
+/** Internal metadata-only selector, evaluated after the previous reader has fully closed. */
+export type HistoryExecutableResolver = (currentExecutable: string) => string | Promise<string>;
+
+const readerFailures = {
+  resolve: [
+    'CODEX_READER_EXECUTABLE_RESOLUTION_FAILED',
+    'Codex metadata executable resolution failed',
+  ],
+  spawn: ['CODEX_READER_SPAWN_FAILED', 'Codex executable unavailable'],
+  shutdown: ['CODEX_READER_EXIT_UNCONFIRMED', 'Previous metadata reader exit unconfirmed'],
+  closed: ['CODEX_READER_CLOSED', 'Reader closed'],
+} as const;
+const readerOsCodes = new Set([
+  'ENOENT',
+  'EACCES',
+  'EPERM',
+  'ENOEXEC',
+  'EINVAL',
+  'E2BIG',
+  'EMFILE',
+  'ENFILE',
+  'ENOMEM',
+  'EAGAIN',
+  'EPIPE',
+  'ECONNRESET',
+  'ETIMEDOUT',
+]);
+function readerFailure(stage: keyof typeof readerFailures, error?: unknown): Error {
+  const rawCode =
+    error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+  const osCode = typeof rawCode === 'string' && readerOsCodes.has(rawCode) ? rawCode : 'UNKNOWN';
+  const [code, message] = readerFailures[stage];
+  // Only bounded classifications cross the reader boundary, never raw errors or causes.
+  return Object.assign(new Error(message), {
+    name: `CodexMetadataReader_${stage}_${osCode}`,
+    code,
+    role: 'metadata-reader',
+    stage,
+    osCode,
+  });
+}
 
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown): RecordValue => {
@@ -68,44 +112,142 @@ export interface ReadWorkspace {
 /** Dedicated metadata reader. Never loads, resumes, starts or submits a turn. */
 export class CodexHistoryReader {
   private process: ChildProcessWithoutNullStreams | undefined;
+  private processClosed: Promise<void> = Promise.resolve();
   private nextId = 0;
   private initialized = false;
   private startupTimeout = 15000;
+  private connecting: Promise<void> | undefined;
+  private lifecycle: Promise<void> = Promise.resolve();
+  private closeGeneration = 0;
   private pending = new Map<
     number,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+      method: string;
+    }
   >();
   private knownThreads = new Set<string>();
   private knownProjects = new Map<string, ReadProject>();
   private sidebar: DesktopSidebar | undefined;
+  private executableGeneration: string | undefined;
   onDisconnect: () => void = () => {};
 
   constructor(
     private readonly hostId: string,
     private readonly name: string,
-    private readonly executable = 'codex',
+    private executable = 'codex',
     private readonly desktopStatePath?: string,
+    private readonly executableResolver?: HistoryExecutableResolver,
   ) {}
   get ready(): boolean {
     return this.initialized && this.process?.exitCode === null && !this.process.killed;
   }
 
-  async connect(): Promise<void> {
-    const child = withWindowsProcessCreation(15000, (remaining) => {
-      this.startupTimeout = remaining;
-      return spawn(this.executable, ['app-server', '--stdio'], {
-        windowsHide: true,
-        stdio: 'pipe',
-        env: {
-          ...process.env,
-          ...(this.desktopStatePath ? { CODEX_HOME: dirname(this.desktopStatePath) } : {}),
-        },
-      });
+  /** Never replace a metadata subprocess until its exit and stdio close are confirmed. */
+  configureExecutable(executable: string, generation?: string): Promise<void> {
+    // Serialize explicit configuration with in-flight resolution and startup too.
+    this.connecting = undefined;
+    const work = this.lifecycle.then(async () => {
+      if (executable === this.executable && generation === this.executableGeneration) return;
+      await this.closeAndWait();
+      this.executable = executable;
+      this.executableGeneration = generation;
     });
+    this.lifecycle = work.catch(() => {});
+    return work;
+  }
+
+  private async closeAndWait(): Promise<void> {
+    const child = this.process;
+    if (!child) return;
+    this.stop();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.processClosed,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(readerFailure('shutdown')), 10_000);
+        }),
+      ]);
+      if (this.process === child) this.process = undefined;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  connect(): Promise<void> {
+    if (this.connecting) return this.connecting;
+    const generation = this.closeGeneration;
+    const work = this.lifecycle
+      .then(() => this.start(generation))
+      .finally(() => {
+        if (this.connecting === work) this.connecting = undefined;
+      });
+    this.connecting = work;
+    this.lifecycle = work.catch(() => {});
+    return work;
+  }
+
+  private async start(generation: number): Promise<void> {
+    const assertOpen = () => {
+      if (generation !== this.closeGeneration) throw readerFailure('closed');
+    };
+    assertOpen();
+    if (this.ready) return;
+    await this.closeAndWait();
+    assertOpen();
+    let executable = this.executable;
+    if (this.executableResolver) {
+      try {
+        executable = await this.executableResolver(executable);
+        if (typeof executable !== 'string' || !executable) throw readerFailure('resolve');
+      } catch (error) {
+        throw readerFailure('resolve', error);
+      }
+    }
+    assertOpen();
+    const creation: { child?: ChildProcessWithoutNullStreams } = {};
+    let spawnFailure: Error | undefined;
+    try {
+      withWindowsProcessCreation(15000, (remaining) => {
+        this.startupTimeout = remaining;
+        creation.child = spawn(executable, ['app-server', '--stdio'], {
+          windowsHide: true,
+          stdio: 'pipe',
+          env: {
+            ...process.env,
+            ...(this.desktopStatePath ? { CODEX_HOME: dirname(this.desktopStatePath) } : {}),
+          },
+        });
+      });
+    } catch (error) {
+      spawnFailure = readerFailure('spawn', error);
+    }
+    const child = creation.child;
+    if (!child) throw spawnFailure ?? readerFailure('spawn');
+    // No await between publishing the selected executable and its child/exit barrier.
+    this.executable = executable;
     this.process = child;
+    diagnosticEvent({ scope: 'history-reader', stage: 'spawned', pid: child.pid });
+    this.processClosed = new Promise((resolve) => child.once('close', resolve));
     // Stderr may contain machine-specific data; consume it without publishing it.
     child.stderr.resume();
+    const transportClosed = () => {
+      if (this.process !== child) return;
+      diagnosticEvent({ scope: 'history-reader', stage: 'transport-closed', pid: child.pid });
+      this.fail(new Error('Reader transport closed'));
+      child.kill('SIGTERM');
+    };
+    // A live metadata process can close only its input. A write callback alone
+    // does not consume the stream's subsequent error event (for example EPIPE).
+    child.stdin.on('error', transportClosed);
+    child.stdout.on('error', transportClosed);
+    child.stdout.once('end', transportClosed);
+    child.stderr.on('error', transportClosed);
     const lines = createInterface({ input: child.stdout });
+    lines.on('error', transportClosed);
     lines.on('line', (line) => {
       try {
         const message = object(JSON.parse(line));
@@ -114,25 +256,60 @@ export class CodexHistoryReader {
         if (!request) return;
         clearTimeout(request.timer);
         this.pending.delete(message.id);
-        if (message.error) request.reject(new Error('Codex rejected the read request'));
-        else request.resolve(message.result);
+        if (message.error) {
+          const code =
+            typeof message.error === 'object' && !Array.isArray(message.error)
+              ? (message.error as RecordValue).code
+              : undefined;
+          // Keep the numeric wire reason for narrow feature compatibility, never the raw payload.
+          request.reject(
+            Object.assign(new Error('Codex rejected the read request'), {
+              ...(typeof code === 'number' && Number.isSafeInteger(code) ? { code } : {}),
+              rpcMethod: request.method,
+              rpcClassification: 'metadata-read-rejected',
+            }),
+          );
+        } else request.resolve(message.result);
       } catch {
-        this.fail(new Error('Invalid Codex transport'));
+        this.fail(
+          Object.assign(new Error('Invalid Codex transport'), { code: 'CODEX_READER_PROTOCOL' }),
+        );
       }
     });
-    child.once('error', () => this.fail(new Error('Codex executable unavailable')));
-    child.once('exit', () => this.fail(new Error('Codex reader disconnected')));
-    await this.rpc('initialize', {
-      clientInfo: { name: 'codex_manage_history', title: 'Codex Manage History', version: '0.1.0' },
-      capabilities: { experimentalApi: true },
+    child.once('error', (error) => {
+      if (this.process === child) this.fail(readerFailure('spawn', error));
     });
-    child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
-    this.initialized = true;
+    child.once('exit', (exitCode) => {
+      diagnosticEvent({ scope: 'history-reader', stage: 'exit', pid: child.pid, exitCode });
+      if (this.process === child) this.fail(new Error('Codex reader disconnected'));
+    });
+    try {
+      // Even a gate failure after spawn must retain and retire its actual child.
+      if (spawnFailure) throw spawnFailure;
+      await this.rpc('initialize', {
+        clientInfo: {
+          name: 'codex_manage_history',
+          title: 'Codex Manage History',
+          version: '0.1.0',
+        },
+        capabilities: { experimentalApi: true },
+      });
+      assertOpen();
+      if (this.process !== child || child.killed || child.exitCode !== null)
+        throw readerFailure('closed');
+      child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
+      this.initialized = true;
+    } catch (error) {
+      // A rejected initialize can leave a live child behind. Retry only after close.
+      await this.closeAndWait();
+      throw error;
+    }
   }
 
   private fail(error: Error): void {
     const wasReady = this.initialized;
     this.initialized = false;
+    if (!('code' in error)) Object.assign(error, { code: 'CODEX_READER_DISCONNECTED' });
     for (const item of this.pending.values()) {
       clearTimeout(item.timer);
       item.reject(error);
@@ -142,6 +319,13 @@ export class CodexHistoryReader {
   }
 
   private rpc(method: string, params: RecordValue): Promise<unknown> {
+    if (isDesktopHistoryCursor(params.cursor))
+      return Promise.reject(
+        Object.assign(new Error('Host history cursor cannot enter Codex RPC'), {
+          code: 'CODEX_READER_HOST_CURSOR',
+          status: 400,
+        }),
+      );
     if (
       ![
         'initialize',
@@ -152,6 +336,8 @@ export class CodexHistoryReader {
         'thread/turns/list',
         'model/list',
         'config/read',
+        'account/read',
+        'account/rateLimits/read',
       ].includes(method)
     )
       throw new Error('Read-only method required');
@@ -162,17 +348,35 @@ export class CodexHistoryReader {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
         () => {
+          const error = Object.assign(new Error('Codex read timed out'), {
+            code: 'CODEX_READER_TIMEOUT',
+            rpcMethod: method,
+            rpcClassification: 'metadata-read-timeout',
+          });
           this.pending.delete(id);
-          reject(new Error('Codex read timed out'));
+          reject(error);
+          // A live but unresponsive metadata process must not keep desktop
+          // readiness true forever. Only read requests exist on this channel.
+          if (this.process === child) {
+            this.fail(error);
+            child.kill('SIGTERM');
+          }
         },
         method === 'initialize' ? this.startupTimeout : 15000,
       );
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, method });
       child.stdin.write(JSON.stringify({ id, method, params }) + '\n', (error) => {
         if (error) {
           clearTimeout(timer);
+          const failure = Object.assign(new Error('Reader write failed'), {
+            code: 'CODEX_READER_WRITE_FAILED',
+          });
           this.pending.delete(id);
-          reject(new Error('Reader write failed'));
+          reject(failure);
+          if (this.process === child) {
+            this.fail(failure);
+            child.kill('SIGTERM');
+          }
         }
       });
     });
@@ -180,7 +384,8 @@ export class CodexHistoryReader {
 
   /** Metadata only; callers cannot use this reader to execute or resume a task. */
   async read(method: string, params: RecordValue): Promise<RecordValue> {
-    if (!this.ready || method === 'initialize') throw new Error('Reader unavailable');
+    if (!this.ready || method === 'initialize')
+      throw Object.assign(new Error('Reader unavailable'), { code: 'CODEX_READER_DISCONNECTED' });
     return object(await this.rpc(method, params));
   }
   /** Called only after the desktop IPC validates an exact live owner snapshot. */
@@ -400,6 +605,8 @@ export class CodexHistoryReader {
     threadId: string,
     pageCursor?: string,
     fullDetails = false,
+    // Private adapter side channel. Source paths never enter a history response.
+    localImages?: (messageId: string, paths: readonly string[]) => void,
   ): Promise<{
     hostId: string;
     threadId: string;
@@ -410,6 +617,11 @@ export class CodexHistoryReader {
     directory?: string;
     historyMode?: string;
   }> {
+    if (isDesktopHistoryCursor(pageCursor))
+      throw Object.assign(new Error('Host history cursor cannot enter Codex RPC'), {
+        code: 'CODEX_READER_HOST_CURSOR',
+        status: 400,
+      });
     if (!this.knownThreads.has(threadId)) throw new Error('Thread not in this host workspace');
     const metadata = object(await this.rpc('thread/read', { threadId, includeTurns: false }));
     const thread = object(metadata.thread);
@@ -474,6 +686,15 @@ export class CodexHistoryReader {
       if (message.kind === 'reasoning' && !message.text) continue;
       if (item.type === 'userMessage') {
         const content = array(item.content).map(object);
+        const imagePaths = content.flatMap((input) =>
+          input.type === 'localImage' &&
+          typeof input.path === 'string' &&
+          input.path.length <= 8192 &&
+          isAbsolute(input.path)
+            ? [input.path]
+            : [],
+        );
+        if (imagePaths.length) localImages?.(message.id, imagePaths);
         message.files = [
           ...new Set([
             ...message.files,
@@ -482,9 +703,11 @@ export class CodexHistoryReader {
               .map((input) =>
                 typeof input.name === 'string'
                   ? input.name
-                  : typeof input.url === 'string' && !input.url.startsWith('data:')
-                    ? input.url.split('/').at(-1)!
-                    : '历史附件',
+                  : input.type === 'localImage' && typeof input.path === 'string'
+                    ? input.path.replace(/\\/g, '/').split('/').at(-1) || '历史附件'
+                    : typeof input.url === 'string' && !input.url.startsWith('data:')
+                      ? input.url.split('/').at(-1)!
+                      : '历史附件',
               ),
           ]),
         ];
@@ -506,7 +729,12 @@ export class CodexHistoryReader {
   }
 
   close(): void {
-    this.fail(new Error('Reader closed'));
+    this.closeGeneration++;
+    this.stop();
+  }
+
+  private stop(): void {
+    this.fail(readerFailure('closed'));
     this.process?.kill('SIGTERM');
   }
 }

@@ -5,7 +5,7 @@ import MobileCore
 /// runtime readiness or an operation receipt. A workspace can use these keys
 /// thousands of times per event and per SwiftUI update.
 final class RuntimeIdentityKeyCache: @unchecked Sendable {
-  enum Kind: Hashable { case cache, reading, nativeReading }
+  enum Kind: Hashable { case cache, legacyCache, reading, nativeReading }
   private struct Key: Hashable {
     let kind: Kind
     let agent: String
@@ -29,9 +29,9 @@ final class RuntimeIdentityKeyCache: @unchecked Sendable {
     encode: () -> String) -> String {
     let key = Key(kind: kind, agent: target.agentId, host: target.hostId,
       workspace: target.workspaceId, runtime: target.runtimeId,
-      authority: target.agentId == "codex" ? nil : target.account?.authority,
-      subject: target.agentId == "codex" ? nil : target.account?.subject,
-      thread: threadId, project: kind == .cache && threadId == nil ? projectId : nil)
+      authority: target.agentId == "codex" && kind != .legacyCache ? nil : target.account?.authority,
+      subject: target.agentId == "codex" && kind != .legacyCache ? nil : target.account?.subject,
+      thread: threadId, project: (kind == .cache || kind == .legacyCache) && threadId == nil ? projectId : nil)
     lock.lock()
     if let value = values[key] { lock.unlock(); return value }
     lock.unlock()
@@ -121,8 +121,8 @@ enum SharedMobileRules {
     TimelineMessage(id: message.id, role: message.role, text: message.text, kind: message.kind, status: message.status,
       runId: message.runId, replyPhase: message.replyPhase, replyMessageId: message.replyMessageId)
   }
-  static func toolSummary(_ messages: [ChatMessage]) -> String { ToolPresentation.shared.summary(messages: messages.map(timelineMessage)) }
-  static func toolTitle(_ message: ChatMessage, single: Bool) -> String { ToolPresentation.shared.title(message: timelineMessage(message), single: single) }
+  static func toolSummary(_ messages: [ChatMessage], native: ToolPresentationText) -> String { ToolPresentation.shared.localizedSummary(messages: messages.map(timelineMessage), native: native) }
+  static func toolTitle(_ message: ChatMessage, single: Bool, native: ToolPresentationText) -> String { ToolPresentation.shared.localizedTitle(message: timelineMessage(message), single: single, native: native) }
   static func toolStyle(_ kind: String?) -> ToolPresentationStyle { ToolPresentation.shared.style(kind: kind) }
   static func toolStatus(_ status: String?) -> String { ToolPresentation.shared.status(status: status) }
   static func compactionLabel(_ status: String?, live: Bool) -> String { ToolPresentation.shared.compaction(status: status, live: live) }
@@ -130,12 +130,12 @@ enum SharedMobileRules {
     let target = client.agentConnection?.target ?? workspace?.readTarget ?? client.codexDirect?.target ?? (client.isDemo ? nil : AgentRuntimeTarget(
       agentId: workspace?.clientType?.id ?? "codex", hostId: client.id, workspaceId: client.id,
       runtimeId: workspace?.connectionMode ?? "unknown"))
-    let scope = target.map { target in
-      TargetScope(agentId: target.agentId, accountAuthority: target.account?.authority,
-        accountSubject: target.account?.subject, hostId: target.hostId,
-        workspaceId: target.workspaceId, runtimeId: target.runtimeId)
+    guard let target else { return MobileRules.shared.cacheKey(clientId: client.id, target: nil, threadId: threadId, projectId: projectId) }
+    // Cache only this exact codec's pure output. Account-bearing legacy bytes
+    // and runtime alias selection keep their existing, distinct semantics.
+    return identityKeys.value(target, kind: .legacyCache, threadId: threadId, projectId: projectId) {
+      MobileRules.shared.cacheKey(clientId: client.id, target: scope(target), threadId: threadId, projectId: projectId)
     }
-    return MobileRules.shared.cacheKey(clientId: client.id, target: scope, threadId: threadId, projectId: projectId)
   }
 
   static func composer(stopping: Bool, running: Bool, sending: Bool, creationPending: Bool,
@@ -406,6 +406,16 @@ extension SharedMobileRules {
     return result
   }
   static func chatActionPending(_ phase: String) -> Bool { ChatManagementRules.shared.pending(phase: phase) }
+  static func chatActionBlocksInput(_ phase: String, waitingEnded: Bool) -> Bool { ChatManagementRules.shared.blocksInput(phase: phase, waitingEnded: waitingEnded) }
+  static func normalizedChatTitle(_ value: String) -> String? { ChatManagementRules.shared.normalizedTitle(value: value) }
+  static func chatActionValid(_ request: ChatActionRequest) -> Bool {
+    guard let bytes = try? JSONEncoder().encode(request), let json = String(data: bytes, encoding: .utf8) else { return false }
+    return ChatManagementRules.shared.validIntent(json: json)
+  }
+  static func chatActionOutcomeValid(_ data: Data) -> Bool {
+    guard let json = String(data: data, encoding: .utf8) else { return false }
+    return ChatManagementRules.shared.validOutcome(json: json)
+  }
   static func chatActionMatches(_ receipt: ChatActionReceipt, original: ChatActionReceipt) -> Bool {
     guard let request = try? JSONEncoder().encode(original.request), let outcome = try? JSONEncoder().encode(receipt),
       let requestText = String(data: request, encoding: .utf8) else { return false }

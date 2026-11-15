@@ -39,11 +39,67 @@ const sourceRoots = [
 // Nonstandard source paths require explicit review, rather than permitting all
 // JARs, properties, Dockerfiles or Bash scripts. The wrapper checksum stays fixed.
 const fixedSourceFiles = new Set([
+  'apps/android/src/androidTest/java/com/agenthub/android/NativeSoundForeignWitnessProvider.java',
+  'scripts/mobile/fixtures/android/os/Looper.java',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/jvm/android/util/Base64.java',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/authorization-fence/phase1/validation.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/authorization-fence/phase2/validation.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/authorization-fence/phase3/validation.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/boundaries.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase1/validation.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase10-canonical/validation.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase2/resource-overlay.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase5/validation.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/form-lease/phase9-text-visibility/validation.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/native-boundaries/numeric-probe.init.gradle',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/numeric-fix/validation.init.gradle',
   'gradle/wrapper/gradle-wrapper.jar',
   'gradle/wrapper/gradle-wrapper.properties',
   'scripts/ci/Dockerfile',
   'scripts/ci/legacy-bootstrap.bash',
   'scripts/ci/legacy-sdkmanager.bash',
+  'apps/ios/CodexManage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved',
+  'apps/ios/FilePreviewKit/Package.resolved',
+  'apps/android/src/androidTest/java/com/agenthub/android/OwnedAcceptanceDocuments.java',
+  'apps/android/src/androidTest/java/com/agenthub/android/OwnedExternalSourceActivity.java',
+  'apps/android/src/androidTest/java/com/agenthub/android/OwnedPhotoMediaActivity.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedCameraColdDriver.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedDocumentColdDriver.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedExternalInboxColdDriver.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedPhotoColdDriver.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/NaturalProcessVisibility.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedNaturalNoticeObserver.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/NativeFixedProcessCapture.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/NativePublicProcessCapture.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedPublicProcessDiagnosticObserver.java',
+  'apps/android-inbox-examiner/src/main/java/com/agenthub/android/OwnedPublicProcessNaturalObserver.java',
+  'apps/android/src/androidTest/java/com/agenthub/android/P8WindowPixelCopyDestination.java',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/capture-exit-barrier/P8CaptureExitBarrierChecks.java',
+  'docs/plans/android-alignment-20261022/parallel/p8-easywork/common-capture-lifetime/P8WindowPixelCopyDestinationChecks.java',
+  'scripts/mobile/fixtures/NaturalDiagnosticCapacityVectors.java',
+  'scripts/mobile/fixtures/NaturalVisibilityVectors.java',
+]);
+const reviewedBinarySourceSha256 = new Map([
+  [
+    'apps/android/src/main/assets/chat-notification-sounds/v1/attention.wav',
+    '6ea2939f779d5a29b1d65f811f29811704cfa6cc58ac576a9a55e05a491fdb7f',
+  ],
+  [
+    'apps/android/src/main/assets/chat-notification-sounds/v1/chime.wav',
+    '153716aeb2da8febad6e5a4ce79c7d5f268ccc0753c706864edcd9941132c3ec',
+  ],
+  [
+    'apps/android/src/main/assets/chat-notification-sounds/v1/soft.wav',
+    '3579f427ab553b0fa3e71b1433a376b98acab91cae2d5a1247d9fa9ba4fab926',
+  ],
+  [
+    'apps/android/src/androidTest/assets/chat-notification-sounds/synthetic-tone.m4a',
+    '231cfa219204bfa34a3768c092c5e6b19c73eb48af3405e933da535eb694e850',
+  ],
+  [
+    'apps/android/src/androidTest/assets/chat-notification-sounds/synthetic-tone.mp3',
+    'db476aba2e89eff735bbf4434d915b8ce22ec501d83ea4c6c307cc66db4d207a',
+  ],
 ]);
 const runtimePackages = ['codex-adapter', 'protocol', 'service-runtime', 'notification-runtime'];
 const excluded = new Set([
@@ -118,9 +174,17 @@ async function sourceFiles(directory, prefix = '') {
       if (
         !extensions.has(extname(name)) &&
         name !== '.env.example' &&
-        !fixedSourceFiles.has(relative)
+        !fixedSourceFiles.has(relative) &&
+        !reviewedBinarySourceSha256.has(relative)
       )
         throw new Error('Review unknown source file before distribution: ' + relative);
+      if (reviewedBinarySourceSha256.has(relative)) {
+        const actual = createHash('sha256')
+          .update(await readFile(join(directory, name)))
+          .digest('hex');
+        if (actual !== reviewedBinarySourceSha256.get(relative))
+          throw new Error('Reviewed synthetic source fingerprint changed: ' + relative);
+      }
       files.push(relative);
     }
   }
@@ -343,6 +407,23 @@ export async function packageHostConnect({
   // Validate every runtime before staging or creating an archive/fingerprint.
   for (const component of components)
     compiledByComponent.set(component, await compiledRuntimeFiles(repository, component));
+  const runtimeHelpers = ['desktop-completion-notify-observer.py', 'desktop-trace-retire.py'];
+  // A checked-in development resource and the bundled helper must describe the
+  // same program. Refuse stale copies instead of silently replacing source bytes.
+  for (const helper of runtimeHelpers) {
+    const copy = join(repository, 'packages/codex-adapter/resources', helper);
+    const info = await lstat(copy).catch((error) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (
+      info &&
+      (!info.isFile() ||
+        info.isSymbolicLink() ||
+        !(await readFile(copy)).equals(await readFile(join(repository, 'scripts', helper))))
+    )
+      throw new Error('Runtime helper source copy differs: ' + helper);
+  }
   const stagingRoot = join(repository, '.local');
   await mkdir(stagingRoot, { recursive: true });
   const staging = await mkdtemp(join(stagingRoot, 'connect-package-'));
@@ -370,6 +451,7 @@ export async function packageHostConnect({
       for (const [name, version] of Object.entries(manifest.dependencies ?? {})) {
         if (component === 'apps/host-agent' && ['bonjour-service', 'qrcode'].includes(name))
           continue;
+        if (component === 'packages/codex-adapter' && name === 'smol-toml') continue;
         if (
           !runtimePackages.some((entry) => name === '@codex-manage/' + entry) ||
           !version.startsWith('workspace:')
@@ -397,9 +479,9 @@ export async function packageHostConnect({
             deployed,
             await sourceFiles(join(repository, component, 'windows'), 'windows'),
           );
-          const helper = 'desktop-completion-notify-observer.py';
+          const helpers = runtimeHelpers;
           for (const adapter of [join(program, component), deployed])
-            await copyFiles(join(repository, 'scripts'), join(adapter, 'resources'), [helper]);
+            await copyFiles(join(repository, 'scripts'), join(adapter, 'resources'), helpers);
         }
       }
     }
@@ -459,6 +541,7 @@ export async function packageHostConnect({
     };
     for (const name of ['bonjour-service', 'qrcode'])
       await copyDependency(name, join(repository, 'apps/host-agent/package.json'));
+    await copyDependency('smol-toml', join(repository, 'packages/codex-adapter/package.json'));
     await cp(taskHubBundle, join(skill, 'assets/task-hub'), {
       recursive: true,
       verbatimSymlinks: true,
@@ -481,6 +564,8 @@ export async function packageHostConnect({
         windows: 'implemented-owner-control',
         windowsReplyPolicy: 'actual-owner',
         windowsAcceptancePolicy: 'report-only',
+        windowsPublisherPolicy: 'not-checked',
+        windowsPrivateStatePolicy: 'current-owner-protected-dacl-no-sacl',
         suggestions: {
           darwin: 'read-existing-native-trace-and-completion-notify',
           win32: 'read-existing-native-trace-with-current-instance-dacl-validation',

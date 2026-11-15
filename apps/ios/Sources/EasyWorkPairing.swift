@@ -181,20 +181,28 @@ extension SessionStore {
     let encoded = try JSONEncoder().encode(target)
     let id = "easywork-" + HostService.hash(try easyWorkJSON(JSONSerialization.jsonObject(with: encoded)))
     let existing = saved.clients.first(where: { $0.id == id })
+    var displayName = name
+    if name == "EasyWork" || name.hasPrefix("EasyWork device-") {
+      if let candidate = candidates.first(where: { $0.transportId == "lan-wss" && $0.peerFingerprint != nil }),
+        let host = try? await EasyWorkPairing.readHost(endpoint: candidate.endpoint, fingerprint: candidate.peerFingerprint, target: binding.target, publicKey: binding.desktopPublicKey) {
+        displayName = host.displayName
+      }
+    }
     let ref = existing?.agentConnection?.credentialRef ?? "agent-" + id
-    var credential = (try? JSONDecoder().decode(EasyWorkCredential.self, from: Data(CredentialVault.token(ref).utf8))) ?? EasyWorkCredential(binding: binding, privateKey: identity.privateKey)
+    let migrated = existing?.migrationNeedsVerification == true
+    var credential = (migrated ? nil : try? JSONDecoder().decode(EasyWorkCredential.self, from: Data(CredentialVault.token(ref).utf8))) ?? EasyWorkCredential(binding: binding, privateKey: identity.privateKey)
     let replacingGrantWithExplicitLegacyPairing = grantRef == nil && credential.grantRef != nil
     if replacingGrantWithExplicitLegacyPairing { credential = EasyWorkCredential(binding: binding, privateKey: identity.privateKey) }
     if let grantRef { credential = EasyWorkCredential(binding: binding, privateKey: identity.privateKey, relayBinding: binding, grantRef: grantRef) }
     else if candidates.first?.transportId == "relay-http" { credential.relayBinding = binding; credential.accessToken = token }
     else { credential.binding = binding }
     let previousCredential = CredentialVault.token(ref)
-    let oldDirect = (existing?.agentConnection?.candidates ?? []).filter { $0.transportId == "lan-wss" && (bindingPin(candidates) == nil || $0.peerFingerprint == bindingPin(candidates)) }
+    let oldDirect = (migrated ? [] : existing?.agentConnection?.candidates ?? []).filter { $0.transportId == "lan-wss" && (bindingPin(candidates) == nil || $0.peerFingerprint == bindingPin(candidates)) }
     let oldHints = oldDirect.compactMap { value in value.networkKind.map { EasyWorkEndpointHint(endpoint: value.endpoint, networkKind: $0) } }
     let direct = try EasyWorkPairing.directCandidates(candidates.filter { $0.transportId == "lan-wss" }.map(\.endpoint) + oldDirect.map(\.endpoint), hints: oldHints + candidates.compactMap { value in value.networkKind.map { EasyWorkEndpointHint(endpoint: value.endpoint, networkKind: $0) } }, fingerprint: bindingPin(candidates) ?? oldDirect.first?.peerFingerprint ?? "")
-    let merged = (replacingGrantWithExplicitLegacyPairing ? [] : existing?.agentConnection?.candidates ?? []).filter { $0.transportId != "lan-wss" && !Set(candidates.map(\.id)).contains($0.id) } + candidates.filter { $0.transportId != "lan-wss" } + direct
+    let merged = (migrated || replacingGrantWithExplicitLegacyPairing ? [] : existing?.agentConnection?.candidates ?? []).filter { $0.transportId != "lan-wss" && !Set(candidates.map(\.id)).contains($0.id) } + candidates.filter { $0.transportId != "lan-wss" } + direct
     var connection = AgentConnection(target: target, candidates: merged, preference: existing?.agentConnection?.preference ?? .automatic, credentialRef: ref)
-    var client = Client(id: id, name: name, endpoint: candidates.first?.endpoint, isDemo: false, online: false, agentConnection: connection)
+    var client = Client(id: id, name: displayName, endpoint: candidates.first?.endpoint, isDemo: false, online: false, agentConnection: connection)
     // Validate the new peer without overwriting an existing trusted credential.
     invalidateAgentConnection(id)
     if let existing { await (try AgentClients.resolve(existing)).close(existing) }
@@ -233,7 +241,7 @@ extension SessionStore {
     if let index = saved.clients.firstIndex(where: { $0.id == id }) { saved.clients[index] = client } else { saved.clients.append(client) }
     saved.workspaces[id] = snapshot
     pendingConnection = nil
-    selectClient(id); persist()
+    try await finishValidatedAgentConnection(id)
   }
   func setConnectionPreference(_ client: Client, _ preference: AgentConnectionPreference) {
     guard let index = saved.clients.firstIndex(where: { $0.id == client.id }) else { return }
@@ -251,6 +259,7 @@ struct EasyWorkConnectionForm: View {
   @AppStorage(L10n.storageKey) private var appLanguage = AppLanguage.system.rawValue
   @ObservedObject var store: SessionStore
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   var clientToEdit: Client?
   @State private var name = "EasyWork"
   @State private var pairingURI = ""
@@ -289,10 +298,33 @@ struct EasyWorkConnectionForm: View {
             ForEach(AgentConnectionPreference.allCases, id: \.self) { Text($0.title).tag($0) }
           }.accessibilityIdentifier("connection-preference")
         }
-        Picker(L10n.tr("连接方式"), selection: $connectionMethod) {
-          ForEach(ConnectionMethod.allCases, id: \.self) { Text($0.title).tag($0) }
-        }.pickerStyle(.menu).accessibilityIdentifier("easywork-connection-method")
-        if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("easywork-pair-error") }
+        if dynamicTypeSize.isAccessibilitySize {
+          VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.tr("连接方式")).fixedSize(horizontal: false, vertical: true)
+            Menu {
+              Picker(L10n.tr("连接方式"), selection: $connectionMethod) {
+                ForEach(ConnectionMethod.allCases, id: \.self) { Text($0.title).tag($0) }
+              }
+            } label: {
+              HStack(alignment: .firstTextBaseline) {
+                Text(connectionMethod.title).fixedSize(horizontal: false, vertical: true)
+                Image(systemName: "chevron.up.chevron.down").font(.body)
+              }.frame(maxWidth: .infinity, alignment: .leading)
+            }.accessibilityLabel(L10n.tr("连接方式"))
+              .accessibilityValue(connectionMethod.title)
+              .accessibilityIdentifier("easywork-connection-method")
+          }
+        } else {
+          Picker(L10n.tr("连接方式"), selection: $connectionMethod) {
+            ForEach(ConnectionMethod.allCases, id: \.self) { Text($0.title).tag($0) }
+          }.pickerStyle(.menu).accessibilityIdentifier("easywork-connection-method")
+        }
+        if let error {
+          Text(error).foregroundStyle(.red).accessibilityIdentifier("easywork-pair-error")
+          if connectionMethod == .discovery || connectionMethod == .manual {
+            Button(L10n.tr("改用扫码连接")) { connectionMethod = .qr }.accessibilityIdentifier("easywork-use-qr")
+          }
+        }
       }
       if busy, let pairingStatus { Section { ProgressView(pairingStatus).accessibilityIdentifier("easywork-connecting") } }
       switch connectionMethod {
@@ -374,8 +406,8 @@ struct EasyWorkConnectionForm: View {
             if store.saved.clients.first(where: { $0.id == id })?.online == true { store.selectClient(id); dismiss() }
             else { perform { store.selectClient(id, refreshAutomatically: false); await store.refresh(); guard store.client?.online == true else { throw HostServiceError.unavailable }; dismiss() } }
           } else { perform {
-            let (binding, candidates) = try await EasyWorkPairing.connectDiscovered(endpoint: host.endpoint, name: UIDevice.current.name)
-            try await store.saveEasyWork(name: host.name, binding: binding, candidates: candidates)
+            let (binding, candidates) = try await EasyWorkPairing.connectDiscovered(endpoint: host.endpoint, name: UIDevice.current.name, expectedDeviceId: host.deviceId)
+            try await store.saveEasyWork(name: name == "EasyWork" ? host.name : name, binding: binding, candidates: candidates)
             dismiss()
           } }
         } label: {
@@ -384,6 +416,7 @@ struct EasyWorkConnectionForm: View {
             VStack(alignment: .leading, spacing: 4) {
               Text(host.name)
               Text(host.detail ?? L10n.tr("未连接 · 点选连接")).font(.caption).foregroundStyle(.secondary)
+              Text(host.address).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             if store.saved.clients.first(where: { $0.id == host.knownClientId })?.online == true { Image(systemName: "checkmark").foregroundStyle(.green) }

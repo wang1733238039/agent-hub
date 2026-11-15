@@ -21,7 +21,7 @@ import {
 import { main } from './transfer-host.mjs';
 
 const hostId = '00000000-0000-4000-8000-000000000001';
-async function fixture(t) {
+async function fixture(t, byteCount = 1024 * 80 + 3) {
   const directory = await mkdtemp(join(await realpath(tmpdir()), 'host-transfer-'));
   protectWindowsStateDirectory(directory);
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -32,7 +32,7 @@ async function fixture(t) {
   await writeFile(join(directory, 'hosts.json'), JSON.stringify(registry), { mode: 0o600 });
   protectWindowsStateFile(join(directory, 'hosts.json'));
   const file = join(directory, '交付文件.bin'),
-    bytes = randomBytes(1024 * 80 + 3),
+    bytes = randomBytes(byteCount),
     id = randomUUID();
   await writeFile(file, bytes, { mode: 0o600 });
   const target = { agentId: 'codex', hostId, workspaceId: hostId, runtimeId: 'desktop-runtime' };
@@ -40,7 +40,8 @@ async function fixture(t) {
   const calls = [],
     outputs = [];
   let fault,
-    corruptReceipt = false;
+    corruptReceipt = false,
+    receiptExtras = {};
   const transport = async (path, body, authenticated = true) => {
     calls.push({ path, body });
     if (path === '/healthz')
@@ -83,7 +84,14 @@ async function fixture(t) {
           fault = undefined;
           throw Error('lost completion response');
         }
-        return { http: 200, value: corruptReceipt ? { ...value, sha256: '0'.repeat(64) } : value };
+        return {
+          http: 200,
+          value: {
+            ...value,
+            ...(corruptReceipt ? { sha256: '0'.repeat(64) } : {}),
+            ...receiptExtras,
+          },
+        };
       } catch {
         throw Object.assign(Error('network loss'), { code: 'NETWORK_OUTCOME_UNKNOWN' });
       }
@@ -113,6 +121,9 @@ async function fixture(t) {
     },
     corruptReceipt: () => {
       corruptReceipt = true;
+    },
+    setReceiptExtras: (value) => {
+      receiptExtras = value;
     },
     run: (command, extra = []) =>
       main([command, '--host-id', hostId, '--operation-id', id, ...extra], {
@@ -216,6 +227,39 @@ test('changed source intent and changed saved bytes cannot overwrite an existing
 test('mismatching receipt cannot be reported as successful delivery', async (t) => {
   const f = await fixture(t);
   f.corruptReceipt();
+  await assert.rejects(f.run('send', ['--file', f.file]), { code: 'TRANSFER_RECEIPT_MISMATCH' });
+  assert.equal(f.outputs.length, 0);
+  assert.deepEqual(
+    await readFile(join(f.directory, 'file-transfers', f.id, 'content.bin')),
+    f.bytes,
+  );
+});
+
+test('file receipts expose bounded metadata without echoing arbitrary remote file bodies', async (t) => {
+  const f = await fixture(t);
+  const encoded = randomBytes(32 * 1024).toString('base64');
+  f.setReceiptExtras({ bytes: encoded, content: { base64: encoded }, text: 'remote body' });
+  assert.equal(await f.run('send', ['--file', f.file]), 0);
+  const output = JSON.stringify(f.outputs.at(-1));
+  assert(Buffer.byteLength(output) + 1 <= 16 * 1024);
+  assert(!output.includes(encoded));
+  assert(!output.includes('remote body'));
+  assert.deepEqual(await readFile(f.outputs.at(-1).receipt.destinationPath), f.bytes);
+  const saved = await readFile(join(f.directory, 'file-transfers', f.id, 'receipt.json'), 'utf8');
+  assert(!saved.includes(encoded));
+});
+
+test('files larger than 20 MiB are delivered unchanged by the CLI', async (t) => {
+  const f = await fixture(t, 24 * 1024 * 1024 + 1);
+  assert.equal(await f.run('send', ['--file', f.file]), 0);
+  const receipt = await f.store.status(f.id);
+  assert.equal(receipt.phase, 'completed');
+  assert.deepEqual(await readFile(receipt.destinationPath), f.bytes);
+});
+
+test('oversized file receipt fields are rejected while the original bytes remain queryable', async (t) => {
+  const f = await fixture(t);
+  f.setReceiptExtras({ destinationPath: '测'.repeat(1400) });
   await assert.rejects(f.run('send', ['--file', f.file]), { code: 'TRANSFER_RECEIPT_MISMATCH' });
   assert.equal(f.outputs.length, 0);
   assert.deepEqual(

@@ -1037,3 +1037,159 @@ test('latest native source uses request order, ignores old completion order and 
       'Equal request times cannot be ordered by directory or file timestamps',
     );
   }));
+
+function asSampleV2(fixture) {
+  const { fixture: trace, configured, request } = fixture;
+  trace.manifest.schema_version = 2;
+  writeJson(join(trace.directory, 'manifest.json'), trace.manifest);
+  for (const event of trace.events) event.schema_version = 2;
+  trace.saveEvents();
+  configured.value.thread_source = 'thread_sample';
+  writeJson(configured.path, configured.value);
+  request.metadata.thread_source = 'thread_sample';
+  request.request.client_metadata['x-codex-turn-metadata'] = JSON.stringify(request.metadata);
+  writeJson(request.requestPath, request.request);
+  return fixture;
+}
+
+test('v2 thread/sample recovers only the exact composer prediction source', () =>
+  setup((root) => {
+    const a = asSampleV2(recoverableFixture(root));
+    const reader = new DesktopPredictionTraceReader(root);
+    const result = reader.readSourcePredictions(
+      a.fixture.sourceThreadId,
+      a.fixture.sourceTurnId,
+      1,
+      true,
+    );
+    assert.equal(result.length, 1);
+    assert.equal(result[0].text, 'Synthetic follow-up suggestion.');
+    assert.equal(
+      reader.readSourcePredictions(a.fixture.sourceThreadId, randomUUID(), 1, true).length,
+      0,
+    );
+    a.request.metadata.turn_trigger = 'unrelated_sample';
+    a.request.request.client_metadata['x-codex-turn-metadata'] = JSON.stringify(a.request.metadata);
+    writeJson(a.request.requestPath, a.request.request);
+    assert.equal(
+      reader.readSourcePredictions(a.fixture.sourceThreadId, a.fixture.sourceTurnId, 1, true),
+      null,
+    );
+  }));
+
+test('non-prediction thread/sample output is never a suggestion or an unrelated read failure', () =>
+  setup((root) => {
+    const a = asSampleV2(recoverableFixture(root));
+    a.request.metadata.turn_trigger = 'unrelated_sample';
+    delete a.request.metadata.prediction_source_thread_id;
+    delete a.request.metadata.prediction_source_turn_id;
+    a.request.request.client_metadata['x-codex-turn-metadata'] = JSON.stringify(a.request.metadata);
+    writeJson(a.request.requestPath, a.request.request);
+    assert.deepEqual(
+      new DesktopPredictionTraceReader(root).readSourcePredictions(
+        a.fixture.sourceThreadId,
+        a.fixture.sourceTurnId,
+        1,
+        true,
+      ),
+      [],
+    );
+  }));
+
+test('unknown trace schema is rejected and a newer cancelled v2 prediction cannot revive old output', () =>
+  setup((root) => {
+    const old = recoverableFixture(root);
+    const newer = asSampleV2(
+      recoverableFixture(
+        root,
+        execution({
+          sourceThreadId: old.fixture.sourceThreadId,
+          sourceTurnId: old.fixture.sourceTurnId,
+        }),
+      ),
+    );
+    newer.request.event.wall_time_unix_ms = 2;
+    newer.fixture.events.find((e) => e.payload.type === 'codex_turn_ended').payload.status =
+      'cancelled';
+    newer.fixture.saveEvents();
+    const read = () =>
+      new DesktopPredictionTraceReader(root).readSourcePredictions(
+        old.fixture.sourceThreadId,
+        old.fixture.sourceTurnId,
+        1,
+        true,
+      );
+    assert.equal(read(), null);
+    newer.fixture.manifest.schema_version = 3;
+    writeJson(join(newer.fixture.directory, 'manifest.json'), newer.fixture.manifest);
+    assert.equal(read(), null);
+  }));
+
+test('a closed v2 composer trace with no inference response cannot restore an older suggestion', () =>
+  setup((root) => {
+    const previous = recoverableFixture(root);
+    const { sourceThreadId, sourceTurnId } = previous.fixture;
+    const reader = new DesktopPredictionTraceReader(root);
+    const latest = () => reader.readSourcePredictions(sourceThreadId, sourceTurnId, 0, true);
+    assert.equal(latest()?.[0]?.text, 'Synthetic follow-up suggestion.');
+
+    const current = bundle(root, execution({ sourceThreadId, sourceTurnId }));
+    current.manifest.schema_version = 2;
+    writeJson(join(current.directory, 'manifest.json'), current.manifest);
+    current.protocolEvent('session_configured', {
+      type: 'session_configured',
+      thread_id: current.predictionThreadId,
+      thread_source: 'composer_predictions',
+      forked_from_id: sourceThreadId,
+      cwd: root,
+    });
+    const request = current.addRequest({ recovery: true });
+    const started = request.event;
+    started.wall_time_unix_ms = 5;
+    const requestLength = current.events.length;
+    current.events.push({
+      ...started,
+      seq: current.events.length + 1,
+      wall_time_unix_ms: 6,
+      payload: {
+        type: 'inference_cancelled',
+        inference_call_id: started.payload.inference_call_id,
+        upstream_request_id: null,
+        partial_response_payload: null,
+      },
+    });
+    current.endTurn('cancelled').wall_time_unix_ms = 7;
+    // The outer lifecycle can finish successfully after the prediction was cancelled.
+    for (const payload of [
+      { type: 'thread_ended', thread_id: current.predictionThreadId, status: 'completed' },
+      { type: 'rollout_ended', status: 'completed' },
+    ]) {
+      current.events.push({
+        ...started,
+        seq: current.events.length + 1,
+        wall_time_unix_ms: 8,
+        thread_id: null,
+        codex_turn_id: null,
+        payload,
+      });
+    }
+    for (const event of current.events) event.schema_version = 2;
+    current.saveEvents();
+    assert.equal(latest(), null);
+
+    // Keep the exact same request and provenance, but supply a real completed fixture.
+    // This distinguishes rejecting a cancellation from rejecting a malformed source.
+    current.events.length = requestLength;
+    const text = 'Synthetic latest suggestion.';
+    current.addResponse(request, { text }).event.wall_time_unix_ms = 6;
+    current.endTurn().wall_time_unix_ms = 7;
+    current.protocolEvent('turn_complete', {
+      type: 'task_complete',
+      turn_id: current.predictionTurnId,
+      root_turn_id: current.predictionTurnId,
+      last_agent_message: JSON.stringify({ suggestion: text }),
+    }).event.wall_time_unix_ms = 8;
+    for (const event of current.events) event.schema_version = 2;
+    current.saveEvents();
+    assert.equal(latest()?.[0]?.text, text);
+  }));

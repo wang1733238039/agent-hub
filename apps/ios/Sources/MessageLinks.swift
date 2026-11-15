@@ -27,36 +27,6 @@ extension EnvironmentValues {
   }
 }
 
-enum MessageLinkDestination: Equatable {
-  case attachment(String), web(URL), external(URL), computerFile, computerWeb, unsupported
-
-  static func resolve(_ url: URL) -> Self {
-    switch url.scheme?.lowercased() {
-    case "codex-attachment":
-      if url.host == "open" {
-        guard let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "id" })?.value, !id.isEmpty else { return .unsupported }
-        return .attachment(id)
-      }
-      guard let id = url.host, !id.isEmpty else { return .unsupported }
-      return .attachment(id)
-    case "http", "https":
-      guard let host = url.host?.lowercased(), !host.isEmpty,
-        url.user == nil, url.password == nil else { return .unsupported }
-      let normalized = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]."))
-      if normalized == "localhost" || normalized.hasSuffix(".localhost")
-        || normalized == "::1" || normalized == "::" || normalized == "0.0.0.0"
-        || normalized.hasPrefix("127.") || normalized.hasPrefix("::ffff:127.") {
-        return .computerWeb
-      }
-      return .web(url)
-    case "mailto", "tel": return .external(url)
-    case nil, "file", "sandbox": return .computerFile
-    default:
-      if url.absoluteString.range(of: #"^[A-Za-z]:[/\\]"#, options: .regularExpression) != nil { return .computerFile }
-      return .unsupported
-    }
-  }
-}
 
 struct MessageLinkOpening: ViewModifier {
   let messageId: String
@@ -210,5 +180,36 @@ private struct MessageSafariView: UIViewControllerRepresentable {
     func safariViewController(_ controller: SFSafariViewController, didCompleteInitialLoad success: Bool) {
       failed.wrappedValue = !success
     }
+  }
+}
+
+/// Compatibility for cached messages and Hosts which still return desktop directives.
+enum MobileVisualizationLinks {
+  static func render(_ text: String) -> String {
+    guard text.contains("visualize"), let regex = try? NSRegularExpression(
+      pattern: "(`+)[\\s\\S]*?\\1|visualize([^]{1,16384})") else { return text }
+    var result = text
+    for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+      guard match.range(at: 1).location == NSNotFound,
+        let payload = Range(match.range(at: 2), in: text),
+        let data = String(text[payload]).data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let path = object["path"] as? String, path.utf8.count <= 8192,
+        ["html", "htm"].contains((path as NSString).pathExtension.lowercased()),
+        !path.unicodeScalars.contains(where: { $0.value < 32 }),
+        path.hasPrefix("/") || path.hasPrefix("~/") || path.range(of: #"^[A-Za-z]:[/\\]"#, options: .regularExpression) != nil,
+        let range = Range(match.range, in: result) else { continue }
+      var allowed = CharacterSet.urlPathAllowed
+      allowed.remove(charactersIn: "()<>#?%")
+      guard let destination = path.addingPercentEncoding(withAllowedCharacters: allowed) else { continue }
+      let name = (path.replacingOccurrences(of: "\\", with: "/") as NSString).lastPathComponent
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
+      let label = ["`", "*", "_", "~"].reduce(name) { value, character in
+        value.replacingOccurrences(of: character, with: "\\" + character)
+      }
+      result.replaceSubrange(range, with: "[" + L10n.tr("可视化") + " · " + label + "](<" + destination + ">)")
+    }
+    return result
   }
 }

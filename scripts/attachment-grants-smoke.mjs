@@ -21,7 +21,9 @@ const base = await realpath(await mkdtemp(join(tmpdir(), 'message-file-resources
 const state = join(base, 'state'),
   root = join(base, 'project'),
   outside = join(base, 'reports');
-for (const path of [state, root, outside]) await mkdir(path, { mode: 0o700 });
+// Let RuntimeSession create its private state through the native Windows helper;
+// a pre-created mkdir directory can inherit Administrators ownership.
+for (const path of [root, outside]) await mkdir(path, { mode: 0o700 });
 const report = join(outside, 'report.md'),
   sibling = join(outside, 'private.txt'),
   missing = join(outside, 'missing.md');
@@ -148,9 +150,12 @@ try {
   const huge = join(outside, 'huge.bin');
   await writeFile(huge, Buffer.alloc(20 * 1024 * 1024 + 1));
   await project('authorized', huge, 'huge-report');
-  await assert.rejects(
-    session.resolveMessageFile('authorized', 'huge-report', huge),
-    (error) => error.status === 413 && error.code === 'FILE_TOO_LARGE',
+  const largeFile = (await session.resolveMessageFile('authorized', 'huge-report', huge))
+    .attachment;
+  assert.equal(largeFile.sizeBytes, 20 * 1024 * 1024 + 1);
+  assert.equal(
+    (await session.download('authorized', largeFile.id)).data.length,
+    largeFile.sizeBytes,
   );
   const threads = session.state.threads;
   session.save();
@@ -195,7 +200,17 @@ try {
   assert.equal(error.code, 'ENOENT');
   assert.match(error.error, /ENOENT/);
   assert.match(error.requestId, /^[a-f0-9-]{36}$/);
-  const log = await readFile(join(state, 'diagnostics/errors.jsonl'), 'utf8');
+  let log = '';
+  const diagnosticDeadline = Date.now() + 5000;
+  while (!log.includes(error.requestId)) {
+    try {
+      log = await readFile(join(state, 'diagnostics/errors.jsonl'), 'utf8');
+    } catch {
+      /* The asynchronous writer may not have created the file yet. */
+    }
+    assert(Date.now() < diagnosticDeadline, 'Correlated diagnostic must be written asynchronously');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   assert(!log.includes(token));
   const entry = log
     .trim()
@@ -204,7 +219,11 @@ try {
     .find((x) => x.requestId === error.requestId);
   assert.equal(entry.status, 410);
   assert.equal(entry.code, 'ENOENT');
-  assert.equal(entry.threadId, 'authorized');
+  assert.equal(
+    entry.threadId,
+    undefined,
+    'Non UUID fixture IDs are omitted by the private log schema',
+  );
   assert.equal(entry.route, '/v1/attachments/resolve-link');
   for (const authenticated of [false, true]) {
     const rejected = await new Promise((resolve, reject) => {

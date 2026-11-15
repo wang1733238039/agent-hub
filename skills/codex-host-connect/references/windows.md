@@ -1,5 +1,11 @@
 # Windows 原桌面接入
 
+## 原建议 Responses 转发退役
+
+安装和升级不再启用 `CODEX_DESKTOP_RESPONSES_CONFIG`，也不写 `openai_base_url`。已有安装按[运行说明](../../../docs/runtime.md#windows-原生建议-responses-转发退役)查询或移除有归属回执的 URL，再恢复正常 Host 服务。Windows 暂停此原生建议来源。
+
+原请求和结果按来源聊天、来源轮、response ID 绑定，前台画面确认只用于验收。此入口是本机采集，不开放 F74 模型代理。标准 ChatGPT 路由已知边界、原已加载聊天生效时机及 Host 离线仍影响转发的限制须如实说明，不能称为自动直连。真实 Host／原桌面及手机结果分别按[专项验收](../../../docs/acceptance/windows-response-suggestions-20261104.md)记录。
+
 包内包含 Windows 原桌面 Adapter、命名管道桥接、私有文件 DACL 和计划任务服务。2026-10-09 在构建 26.1002.52244 的目标 Windows 联合验收通过原生核心场景、普通 App 新建和用户真实 iPhone 新建/回复，并独立核对原 owner、创建工具、首条输入、审批和恢复。通过范围绑定该次环境，不自动覆盖其他安装或完整功能清单中的未验项目；程序交付不等于 Windows 全功能通过。
 
 当前安装桌面代码的 Windows 分支使用 `\\.\pipe\codex-ipc` 和四字节长度帧。不检查 Codex 应用版本，不对照构建清单或发兼容性提示；Adapter 核对 Windows 安装归档中的实际方法版本及运行时协议。已有聊天按真实 owner 开放回复、停止和审批，不需要先完成专用聊天验收，也不要求通过证明。默认安装使用 [独立桥接](prepared-bridge.md)，按本机身份、私有权限和真实协议就绪开放正式新建／主动打开，不要求控制聊天、本机报告、Xcode 或手机在场。真实 DEV 继续按完整清单实际执行并单列证据，不能把能力启用报告为全功能实测通过。
@@ -20,7 +26,7 @@ pnpm --version
 pnpm service:windows preflight
 ```
 
-预检通过保留的命名管道句柄获取 server PID，检查同一用户 SID、同一登录会话、可信 OpenAI 签名或 Store 包，以及实际归档中的 IPC profile。它不启动另一桌面执行实例，不证明具体 Thread 的 owner 控制。找不到 CLI 时从实际安装中定位 `codex.exe` 并设置 `CODEX_EXECUTABLE`。应用版本不作为预检条件；归档方法版本或真实协议不兼容时报告具体失败。脚本被本机策略拒绝时报告原因，不关闭执行策略或绕过拒绝。
+预检通过保留的命名管道句柄获取 server PID，检查同一用户 SID、同一登录会话、准确进程路径和 SHA-256，以及实际归档中的 IPC profile。不以 Publisher、签名证书文案、Store 包名称或应用版本作为连接门槛；正式版和 Beta 均按实际协议与功能判断。它不启动另一桌面执行实例，不证明具体 Thread 的 owner 控制。找不到 CLI 时从实际安装中定位 `codex.exe` 并设置 `CODEX_EXECUTABLE`。应用版本不作为预检条件；归档方法版本或真实协议不兼容时报告具体失败。脚本被本机策略拒绝时报告原因，不关闭执行策略或绕过拒绝。
 
 首次安装、修复及升级默认注册并启用登录自启，无需额外询问；正常启动无需测试 Thread ID 或验收报告：
 
@@ -31,7 +37,7 @@ pnpm service:windows start
 pnpm service:windows status
 ```
 
-状态在程序 `.local/desktop-runtime`，DACL 只允许当前用户、SYSTEM 和管理员。密钥为 `access-token`，Host ID 在 `runtime.json`。不能因 Windows 没有 POSIX uid/mode 而跳过私有文件检查。
+状态在程序 `.local/desktop-runtime`，DACL 只允许当前用户、SYSTEM 和管理员。密钥为 `access-token`，Host ID 在 `runtime.json`。不能因 Windows 没有 POSIX uid/mode 而跳过私有文件检查。bootstrap 与常驻原生 worker 使用同一文件句柄权限实现，只读取所有者与 DACL、只写受保护 DACL，不读取或修改 SACL，不请求审计特权、不接管其他所有者；重复保护安全目录不要求管理员。NULL DACL、共享授权及重解析点仍拒绝。
 
 服务使用当前用户交互登录会话的 `CodexManage Host Agent` 计划任务，记录 Node/程序路径并在登录时启动；同一任务另有无截止的每分钟周期触发，补启已退出的外层 supervisor。`start`／`restart` 注册或修正本产品任务的当前用户登录及周期触发器和启动设置，启用电池供电运行、禁止并行实例，失败后每分钟重试一次、最多三次。拒绝操作指向其他 worker/config 或其他用户的同名任务。`start` 保留原配置且不重复启动正在运行的 Host；`restart` 重启本产品 Host；`stop` 停止并禁用任务，后续登录及周期补启保持关闭，保留私有状态，之后 `start` 重新启用。不关闭原桌面或停止其他聊天。
 
@@ -112,3 +118,9 @@ node skills/codex-host-connect/scripts/probe-host.mjs --state-dir .local/desktop
 ## 后台启动与旧任务迁移
 
 统一程序已为后台 metadata／worker／原生 helper 设置隐藏窗口，并将计划任务 action 迁到等待 worker 退出的 GUI launcher。它保留原登录、每分钟 IgnoreNew 恢复、退出码和准确 stop/status 身份边界，不修改用户终端。`status.consoleLaunch=native-hidden-wait` 只说明 action 已登记；已有活进程须 stop/start 或 restart 才切换，不能仅设置任务 Hidden 属性。按随包 [迁移与回退](../assets/codex-manage/docs/windows-background-launch.md) 保存本机 XML／文件／私有配置、合并统一产物并核对实际依赖闭包。回退先用新版 stop，再还原旧文件及本机原任务 XML；旧版不识别 launcher action。原生 launcher 边界用 `node scripts/windows-host-launcher-smoke.mjs` 独立验证，窗口、调度周期和正式手机功能仍由本机逐项实测。
+
+### 自动更新与目录恢复
+
+新版 Host 中，主 runtime 和独立工作区 reader 共享有界可信安装发现。旧 Store CLI 路径失效或正常重开后，运行中的只读目录可恢复，不再要求每次手工重启 Host；旧 metadata 进程须确认退出。成功快照缓存 30 秒，故障可提前刷新，失败按 1–15 秒退避；当前可信 owner、用户／会话、安装来源和实际协议检查不变。
+
+鉴权 `/healthz` 的 200 只证明存活，检查 `status`、`runtime`、`workspaceCatalog` 及完整 `/v1/workspace`。503／degraded 的具体原因保留，不改身份或凭据，不重放未知写入，不通过改网络掩盖路径失效。安装及升级后分别记录正常启动、同一 Host 进程跨真实更新／正常重开、来源 Windows 和手机结果。辅助入口为 `node --test scripts/desktop-update-recovery.test.mjs` 和原 `node scripts/windows-host-recovery-smoke.mjs`；其他平台运行的 fixture 不能代替本机可信安装和真实桌面验收。

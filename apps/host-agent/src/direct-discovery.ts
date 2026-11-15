@@ -1,12 +1,13 @@
 import { withWindowsProcessCreation } from '@codex-manage/codex-adapter';
 import { createServer, type Server } from 'node:https';
 import { type IncomingMessage, type ServerResponse } from 'node:http';
-import { X509Certificate, timingSafeEqual } from 'node:crypto';
+import { X509Certificate, timingSafeEqual, randomUUID } from 'node:crypto';
+import { closeSync, existsSync, fstatSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, mkdir, chmod, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, chmod, lstat, rm, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Bonjour } from 'bonjour-service';
+import { DirectBonjourPublisher, type DirectBonjourState } from './direct-bonjour.js';
 import QRCode from 'qrcode';
 import type { VPNDiscoveryPeer, VPNDiscoverySnapshot } from '@codex-manage/protocol';
 import {
@@ -15,10 +16,15 @@ import {
   type DirectEndpoint,
 } from './direct-endpoints.js';
 import {
+  makePrivateDirectorySync,
+  openPrivateFileSync,
+  openPrivateFile,
+  renamePrivateFileSync,
   protectWindowsStateFile,
   protectWindowsStateDirectory,
   assertPrivateFile,
   RuntimeError,
+  appendRuntimeDiagnostic,
 } from '@codex-manage/codex-adapter';
 
 type Target = {
@@ -54,7 +60,7 @@ export async function startDirectDiscovery(options: {
   bind?: string;
 }) {
   const directory = join(options.directory, 'direct-discovery');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  makePrivateDirectorySync(directory);
   protectWindowsStateDirectory(directory);
   const certPath = process.env.HOST_AGENT_DISCOVERY_TLS_CERT ?? join(directory, 'cert.pem');
   const keyPath = process.env.HOST_AGENT_DISCOVERY_TLS_KEY ?? join(directory, 'key.pem');
@@ -93,10 +99,25 @@ export async function startDirectDiscovery(options: {
               'openssl.exe',
             )
           : '/usr/bin/openssl');
-      const scratch = await import('node:fs/promises').then((fs) =>
-        fs.mkdtemp(join(directory, 'certificate-')),
-      );
+      const scratch = join(directory, 'certificate-' + randomUUID());
+      if (existsSync(scratch))
+        throw Object.assign(new Error('Certificate scratch directory already exists'), {
+          code: 'EEXIST',
+        });
+      makePrivateDirectorySync(scratch);
+      const created: { path: string; dev: bigint; ino: bigint }[] = [];
       try {
+        // OpenSSL must overwrite our User-owned files, never create Admin-owned outputs.
+        for (const name of ['key.pem', 'cert.pem']) {
+          const path = join(scratch, name);
+          const file = openPrivateFileSync(path, 'wx', 0o600);
+          try {
+            const identity = fstatSync(file, { bigint: true });
+            created.push({ path, dev: identity.dev, ino: identity.ino });
+          } finally {
+            closeSync(file);
+          }
+        }
         await withWindowsProcessCreation(15000, (timeout) =>
           execute(
             openssl,
@@ -118,14 +139,35 @@ export async function startDirectDiscovery(options: {
             { timeout, maxBuffer: 65536, windowsHide: true },
           ),
         );
-        for (const file of ['key.pem', 'cert.pem']) {
-          await chmod(join(scratch, file), 0o600);
-          protectWindowsStateFile(join(scratch, file));
+        for (const reserved of created) {
+          const current = await lstat(reserved.path, { bigint: true });
+          if (
+            !current.isFile() ||
+            current.isSymbolicLink() ||
+            current.dev !== reserved.dev ||
+            current.ino !== reserved.ino
+          )
+            throw new Error('Certificate output identity changed', { cause: error });
+          await chmod(reserved.path, 0o600);
+          protectWindowsStateFile(reserved.path);
         }
-        await rename(join(scratch, 'key.pem'), keyPath);
-        await rename(join(scratch, 'cert.pem'), certPath);
+        renamePrivateFileSync(join(scratch, 'key.pem'), keyPath);
+        renamePrivateFileSync(join(scratch, 'cert.pem'), certPath);
       } finally {
-        await rm(scratch, { recursive: true, force: true });
+        for (const reserved of created) {
+          // A missing, replaced or uninspectable path is not ours to remove.
+          const current = await lstat(reserved.path, { bigint: true }).catch(() => undefined);
+          if (
+            current?.isFile() &&
+            !current.isSymbolicLink() &&
+            current.dev === reserved.dev &&
+            current.ino === reserved.ino
+          )
+            await rm(reserved.path, { force: true });
+        }
+        await rmdir(scratch).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOTEMPTY' && error.code !== 'EEXIST') throw error;
+        });
       }
     }
   }
@@ -236,123 +278,202 @@ export async function startDirectDiscovery(options: {
   });
   server.requestTimeout = 40000;
   server.headersTimeout = 10000;
-  let bind = options.bind ?? process.env.HOST_AGENT_DISCOVERY_BIND ?? '::';
-  const port = options.port ?? Number(process.env.HOST_AGENT_DISCOVERY_PORT ?? 8796);
-  const listen = () =>
-    new Promise<void>((done, reject) => {
-      const error = (error: Error) => {
-        server.removeListener('listening', ready);
-        reject(error);
-      };
-      const ready = () => {
-        server.removeListener('error', error);
-        done();
-      };
-      server.once('error', error);
-      server.once('listening', ready);
-      server.listen({ port, host: bind, ipv6Only: false });
-    });
-  try {
-    await listen();
-  } catch (error) {
-    if (
-      bind !== '::' ||
-      !['EAFNOSUPPORT', 'EPROTONOSUPPORT', 'EINVAL', 'EADDRNOTAVAIL'].includes(
-        (error as NodeJS.ErrnoException).code ?? '',
-      )
-    )
-      throw error;
-    bind = '0.0.0.0';
-    await listen();
-  }
-  const actual = server.address();
-  if (!actual || typeof actual === 'string') throw Error('Missing discovery listener');
-  const registry = options.registry ?? new DirectEndpointRegistry();
-  const pagePath = join(directory, 'connect.html');
   let closed = false,
     refreshing = false;
-  const refresh = async () => {
-    if (closed || refreshing) return;
-    refreshing = true;
-    try {
-      const next = await registry.resolve({
-        port: actual.port,
-        ipv6: bind === '::',
-        bindAddress: bind,
-      });
-      if (closed) return;
-      endpoints = next;
-      const offer = { ...descriptor(), token: options.token };
-      const encode = () =>
-        'codex-host://pair?descriptor=' + Buffer.from(JSON.stringify(offer)).toString('base64url');
-      let uri = encode();
-      // Preserve a LAN and a VPN bootstrap path when the full address snapshot
-      // exceeds QR capacity. A pinned /host read then supplies every address.
-      if (Buffer.byteLength(uri) > 2800) {
-        offer.endpointHints = [];
-        const firstVPN = endpoints.find((item) => item.networkKind === 'vpn')?.endpoint;
-        offer.endpoints = [
-          ...new Set([
-            ...(offer.endpoints[0] ? [offer.endpoints[0]] : []),
-            ...(firstVPN ? [firstVPN] : []),
-            ...offer.endpoints,
-          ]),
-        ];
-        uri = encode();
-        while (Buffer.byteLength(uri) > 2800 && offer.endpoints.length > 2) {
-          offer.endpoints.pop();
-          uri = encode();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let bonjour: DirectBonjourPublisher | undefined;
+  let pendingBonjourState: DirectBonjourState | undefined;
+  let savingBonjourState = false;
+  const saveBonjourState = (state: DirectBonjourState) => {
+    pendingBonjourState = state;
+    if (savingBonjourState) return;
+    savingBonjourState = true;
+    void (async () => {
+      try {
+        while (pendingBonjourState) {
+          const value = pendingBonjourState;
+          pendingBonjourState = undefined;
+          const temporary = join(directory, `bonjour-state.${randomUUID()}.tmp`);
+          let identity: { dev: bigint; ino: bigint } | undefined;
+          try {
+            const file = await openPrivateFile(temporary, 'wx', 0o600);
+            try {
+              const stat = await file.stat({ bigint: true });
+              identity = { dev: stat.dev, ino: stat.ino };
+              await file.writeFile(JSON.stringify(value));
+            } finally {
+              await file.close();
+            }
+            const current = await lstat(temporary, { bigint: true });
+            if (current.dev !== identity.dev || current.ino !== identity.ino)
+              throw new Error('Discovery state output identity changed');
+            protectWindowsStateFile(temporary);
+            renamePrivateFileSync(temporary, join(directory, 'bonjour-state.json'));
+          } finally {
+            if (identity) {
+              const current = await lstat(temporary, { bigint: true }).catch(
+                (error: NodeJS.ErrnoException) => {
+                  if (error.code === 'ENOENT') return undefined;
+                  throw error;
+                },
+              );
+              if (current && current.dev === identity.dev && current.ino === identity.ino)
+                await rm(temporary, { force: true });
+            }
+          }
         }
+      } catch {
+        try {
+          appendRuntimeDiagnostic(
+            options.directory,
+            { scope: 'direct-bonjour', stage: 'state-persist', hostId: options.target().hostId },
+            Object.assign(new Error('Discovery state write failed'), {
+              code: 'MDNS_STATE_WRITE_FAILED',
+            }),
+          );
+        } catch {
+          /* Public discovery diagnostics never own HTTPS availability. */
+        }
+      } finally {
+        savingBonjourState = false;
+        if (pendingBonjourState) saveBonjourState(pendingBonjourState);
       }
-      const svg = await QRCode.toString(uri, { type: 'svg', errorCorrectionLevel: 'L' });
-      if (closed) return;
-      // Local private file only: credentials never enter DNS, /host, console or logs.
-      const temp = join(directory, 'connect.html.tmp');
-      await writeFile(
-        temp,
-        '<!doctype html><meta charset="utf-8"><title>连接 Codex</title><h1>扫描连接 Codex</h1><p>首次扫码，之后自动发现局域网和 VPN 地址。二维码包含本机客户端密钥，请仅向自己的手机展示。</p>' +
-          svg +
-          '<p>地址变化时重新打开此文件查看最新二维码。</p>',
-        { mode: 0o600 },
-      );
-      protectWindowsStateFile(temp);
-      await rename(temp, pagePath);
+    })();
+  };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(timer);
+    try {
+      void bonjour?.close();
     } finally {
-      refreshing = false;
+      server.close();
+      server.closeAllConnections();
     }
   };
   try {
+    let bind = options.bind ?? process.env.HOST_AGENT_DISCOVERY_BIND ?? '::';
+    const port = options.port ?? Number(process.env.HOST_AGENT_DISCOVERY_PORT ?? 8796);
+    const listen = () =>
+      new Promise<void>((done, reject) => {
+        const error = (error: Error) => {
+          server.removeListener('listening', ready);
+          reject(error);
+        };
+        const ready = () => {
+          server.removeListener('error', error);
+          done();
+        };
+        server.once('error', error);
+        server.once('listening', ready);
+        server.listen({ port, host: bind, ipv6Only: false });
+      });
+    try {
+      await listen();
+    } catch (error) {
+      if (
+        bind !== '::' ||
+        !['EAFNOSUPPORT', 'EPROTONOSUPPORT', 'EINVAL', 'EADDRNOTAVAIL'].includes(
+          (error as NodeJS.ErrnoException).code ?? '',
+        )
+      )
+        throw error;
+      bind = '0.0.0.0';
+      await listen();
+    }
+    const actual = server.address();
+    if (!actual || typeof actual === 'string') throw Error('Missing discovery listener');
+    const registry = options.registry ?? new DirectEndpointRegistry();
+    const pagePath = join(directory, 'connect.html');
+    const refresh = async () => {
+      if (closed || refreshing) return;
+      refreshing = true;
+      try {
+        const next = await registry.resolve({
+          port: actual.port,
+          ipv6: bind === '::',
+          bindAddress: bind,
+        });
+        if (closed) return;
+        endpoints = next;
+        const offer = { ...descriptor(), token: options.token };
+        const encode = () =>
+          'codex-host://pair?descriptor=' +
+          Buffer.from(JSON.stringify(offer)).toString('base64url');
+        let uri = encode();
+        // Preserve a LAN and a VPN bootstrap path when the full address snapshot
+        // exceeds QR capacity. A pinned /host read then supplies every address.
+        if (Buffer.byteLength(uri) > 2800) {
+          offer.endpointHints = [];
+          const firstVPN = endpoints.find((item) => item.networkKind === 'vpn')?.endpoint;
+          offer.endpoints = [
+            ...new Set([
+              ...(offer.endpoints[0] ? [offer.endpoints[0]] : []),
+              ...(firstVPN ? [firstVPN] : []),
+              ...offer.endpoints,
+            ]),
+          ];
+          uri = encode();
+          while (Buffer.byteLength(uri) > 2800 && offer.endpoints.length > 2) {
+            offer.endpoints.pop();
+            uri = encode();
+          }
+        }
+        const svg = await QRCode.toString(uri, { type: 'svg', errorCorrectionLevel: 'L' });
+        if (closed) return;
+        // Local private file only: credentials never enter DNS, /host, console or logs.
+        const temp = join(directory, 'connect.html.tmp');
+        const file = await openPrivateFile(temp, 'w', 0o600);
+        try {
+          await file.writeFile(
+            '<!doctype html><meta charset="utf-8"><title>连接 Codex</title><h1>扫描连接 Codex</h1><p>首次扫码，之后自动发现局域网和 VPN 地址。二维码包含本机客户端密钥，请仅向自己的手机展示。</p>' +
+              svg +
+              '<p>地址变化时重新打开此文件查看最新二维码。</p>',
+          );
+        } finally {
+          await file.close();
+        }
+        protectWindowsStateFile(temp);
+        renamePrivateFileSync(temp, pagePath);
+      } finally {
+        refreshing = false;
+      }
+    };
     await refresh();
+    timer = setInterval(() => {
+      void refresh().catch(() => {
+        /* Keep the last identity snapshot. */
+      });
+    }, 15000);
+    timer.unref();
+    if (process.env.HOST_AGENT_DISCOVERY_BONJOUR !== '0') {
+      bonjour = new DirectBonjourPublisher(
+        { name: options.name, hostId: options.target().hostId, port: actual.port },
+        saveBonjourState,
+      );
+      bonjour.start();
+    }
+    return {
+      server: server as Server,
+      descriptor,
+      pagePath,
+      close,
+      refresh,
+      bonjourState: () => bonjour?.snapshot(),
+    };
   } catch (error) {
-    server.close();
-    server.closeAllConnections();
-    throw error;
-  }
-  const timer = setInterval(() => {
-    void refresh().catch(() => {
-      /* Keep the last identity snapshot. */
-    });
-  }, 15000);
-  timer.unref();
-  let bonjour: Bonjour | undefined;
-  if (process.env.HOST_AGENT_DISCOVERY_BONJOUR !== '0') {
-    bonjour = new Bonjour(undefined, () => {
-      /* DNS failure must not disable pinned direct reads. */
-    });
-    bonjour.publish({
-      name: options.name.slice(0, 35) + '-' + options.target().hostId.slice(-8) + '-' + actual.port,
-      host: 'codex-' + options.target().hostId + '.local',
-      type: 'codex-host',
-      port: actual.port,
-      txt: { hostId: options.target().hostId, version: '1', port: String(actual.port) },
-    });
-  }
-  const close = () => {
+    // A failed QR/advertisement step may already own the HTTPS port. Retire it
+    // before the recovery controller is allowed to start another generation.
     closed = true;
     clearInterval(timer);
-    bonjour?.unpublishAll(() => bonjour?.destroy());
-    server.close();
-    server.closeAllConnections();
-  };
-  return { server: server as Server, descriptor, pagePath, close, refresh };
+    try {
+      await bonjour?.close();
+    } finally {
+      await new Promise<void>((done) => {
+        server.close(() => done());
+        server.closeAllConnections();
+      });
+    }
+    throw error;
+  }
 }

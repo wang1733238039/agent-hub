@@ -1,10 +1,14 @@
+import type { CodexHistoryReader } from './history-reader.js';
+import { usageTarget, unavailableUsage } from '@codex-manage/protocol';
+import { readCodexUsage } from './usage.js';
+import { diagnosticEvent } from './diagnostic-events.js';
+import { isDeepStrictEqual } from 'node:util';
 import { randomUUID, createHash } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import { AttachmentFiles, AttachmentFileError, attachmentFileError } from './attachment-files.js';
 import { realpath } from 'node:fs/promises';
 import { appendRuntimeDiagnostic } from './runtime-diagnostics.js';
-import { localMessagePath, messageLinks } from './message-links.js';
+import { localMessagePath, messageLinks, mobileVisualizationLinks } from './message-links.js';
 import {
   permissionModes,
   permissionSettings,
@@ -12,12 +16,13 @@ import {
   threadPermissionSettings,
   desktopPermissionMode,
   desktopModelSettings,
+  desktopSpeed,
   currentPermissionMode,
   currentSpeed,
   modelSpeedTiers,
   speeds,
 } from './generation-settings.js';
-import { mkdirSync, readFileSync, writeFileSync, realpathSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, resolve, relative, isAbsolute, extname, join } from 'node:path';
 import {
   CodexRuntime,
@@ -83,7 +88,17 @@ import { RuntimePersistence } from './runtime-persistence.js';
 import { DesktopNativeQueue, type NativeQueuedInput } from './desktop-native-queue.js';
 import { MetadataRejection } from './desktop-thread-preparer.js';
 import { runtimeFailure } from './runtime-diagnostics.js';
-import { closeWindowsPrivateStateBackend } from './desktop-platform.js';
+import {
+  closeWindowsPrivateStateBackend,
+  makePrivateDirectorySync,
+  openPrivateFile,
+  writePrivateFileSync,
+} from './desktop-platform.js';
+import {
+  desktopHistoryCursor,
+  isDesktopHistoryCursor,
+  parseDesktopHistoryCursor,
+} from './desktop-history-cursor.js';
 import {
   desktopQuestions,
   desktopQuestionAnswers,
@@ -147,7 +162,7 @@ export class RuntimeError extends Error {
 }
 class RuntimeSaveError extends RuntimeError {
   constructor(cause: unknown) {
-    super(503, 'Host 状态保存失败；请保留原操作 ID，恢复后查询状态');
+    super(503, 'Host 状态保存失败；请保留原操作 ID，恢复后查询状态', 'HOST_STATE_SAVE_FAILED');
     this.cause = cause;
   }
 }
@@ -292,6 +307,8 @@ interface Receipt {
   state: string;
   turnId: string | null;
   error: string | null;
+  /** Set only by a failure before the original-client write boundary. */
+  submissionState?: 'not-submitted';
   supersededByTurnId?: string;
   /** Positive original-owner evidence, retained when later snapshots omit old items. */
   acceptedTurnId?: string;
@@ -476,6 +493,7 @@ export class RuntimeSession {
   private desktopKnownOwners = new Set<string>();
   private desktopRefreshOffset = 0;
   private desktopOwnerDiscovery: Promise<void> | undefined;
+  private readonly attachmentDirectory: string;
 
   constructor(
     private readonly options: RuntimeOptions & {
@@ -485,8 +503,15 @@ export class RuntimeSession {
       replyCheckpointFile?: string;
     },
   ) {
-    mkdirSync(options.directory, { recursive: true, mode: 0o700 });
-    mkdirSync(join(options.directory, 'attachments'), { recursive: true, mode: 0o700 });
+    makePrivateDirectorySync(options.directory);
+    // Legacy Windows uploads can have an inherited Administrators owner. Do
+    // not adopt that directory or rewrite saved attachment paths. New files
+    // use a private User-owned namespace, including the first-ever startup.
+    this.attachmentDirectory = join(
+      options.directory,
+      process.platform === 'win32' ? 'attachments-v2' : 'attachments',
+    );
+    makePrivateDirectorySync(this.attachmentDirectory);
     this.file = join(options.directory, 'runtime.json');
     this.persistence = new RuntimePersistence(this.file, options.directory);
     const restored = this.persistence.load();
@@ -544,11 +569,13 @@ export class RuntimeSession {
         ? new DesktopRuntime(options, this.hostId, options.name)
         : new CodexRuntime(options);
     if (this.runtime instanceof DesktopRuntime) {
-      this.nativeQueue = new DesktopNativeQueue(
+      const metadataExecutable = () =>
         options.executable ??
-          (process.platform === 'darwin'
-            ? '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
-            : 'codex'),
+        (process.platform === 'darwin'
+          ? '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
+          : 'codex');
+      this.nativeQueue = new DesktopNativeQueue(
+        metadataExecutable,
         process.platform === 'win32'
           ? (process.env.CODEX_HOME ?? join(homedir(), '.codex'))
           : dirname(dirname(options.socket ?? join(homedir(), '.codex', 'ipc', 'ipc.sock'))),
@@ -559,10 +586,7 @@ export class RuntimeSession {
             this.hostId,
             this.runtime,
             join(options.directory, 'desktop-prepared-bridge'),
-            options.executable ??
-              (process.platform === 'darwin'
-                ? '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
-                : 'codex'),
+            metadataExecutable,
             process.platform === 'win32'
               ? (process.env.CODEX_HOME ?? join(homedir(), '.codex'))
               : dirname(dirname(options.socket ?? join(homedir(), '.codex', 'ipc', 'ipc.sock'))),
@@ -597,10 +621,7 @@ export class RuntimeSession {
         this.desktopForks = new DesktopForkBroker(
           join(options.directory, 'desktop-forks'),
           this.hostId,
-          options.executable ??
-            (process.platform === 'darwin'
-              ? '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
-              : 'codex'),
+          metadataExecutable,
           process.platform === 'win32'
             ? (process.env.CODEX_HOME ?? join(homedir(), '.codex'))
             : dirname(dirname(options.socket ?? join(homedir(), '.codex', 'ipc', 'ipc.sock'))),
@@ -710,6 +731,17 @@ export class RuntimeSession {
   get ready(): boolean {
     return this.runtime.ready;
   }
+  diagnosticStatus() {
+    return {
+      ready: this.ready,
+      bridge: this.runtime instanceof DesktopRuntime ? this.runtime.ipc.ready : this.ready,
+      reader: this.runtime instanceof DesktopRuntime ? this.runtime.reader.ready : this.ready,
+      closed: this.closed,
+      commandCommitPending: this.needsCommit,
+      historyPending: this.persistence.status.historyPending,
+      historyStalled: this.persistence.status.historyStalled,
+    };
+  }
   get mode(): string {
     return this.options.mode;
   }
@@ -737,6 +769,7 @@ export class RuntimeSession {
             'approvals',
             'plan-mode',
             'models:read',
+            'usage:read:v1',
             'generation-settings',
             'generation-speed',
             ...(this.desktopForks &&
@@ -776,6 +809,7 @@ export class RuntimeSession {
           'steer',
           'approvals',
           'models:read',
+          'usage:read:v1',
           'plan-mode',
           'generation-settings',
           'generation-speed',
@@ -787,33 +821,61 @@ export class RuntimeSession {
     await this.desktopCreationDriver?.refresh();
     this.connectedOnce = true;
   }
+  async desktopMetadataExecutable(): Promise<string> {
+    if (!(this.runtime instanceof DesktopRuntime) || this.closed)
+      throw new RuntimeError(503, '原桌面元数据通道不可用');
+    await this.runtime.connect();
+    return this.options.executable!;
+  }
+  /** Internal metadata-only connection; no wire method supplied by a client. */
+  async connectDesktopReader(
+    reader: CodexHistoryReader,
+    recover = false,
+    active = () => true,
+  ): Promise<void> {
+    if (!(this.runtime instanceof DesktopRuntime) || this.closed)
+      throw new RuntimeError(503, '原桌面元数据通道不可用');
+    await this.runtime.connectMetadataReader(reader, recover, active);
+  }
   private scheduleReconnect(): void {
     if (this.reconnectTimer || this.closed) return;
+    const delayMs = Math.round(this.reconnectDelay * (0.8 + Math.random() * 0.4));
+    diagnosticEvent({ scope: 'runtime-reconnect', stage: 'scheduled', delayMs });
     this.reconnectTimer = setTimeout(() => {
+      if (this.closed) return;
       this.reconnectTimer = undefined;
       this.reconnecting = true;
       void this.runtime
         .connect()
         .then(() => {
+          if (this.closed) {
+            this.runtime.close();
+            return;
+          }
+          diagnosticEvent({ scope: 'runtime-reconnect', stage: 'ready', ready: this.ready });
           this.reconnectDelay = 1000;
           this.epoch = randomUUID();
           for (const thread of this.state.threads) this.emit(thread.id, 'runtime-reconnected');
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          runtimeFailure('runtime-reconnect', error);
           this.reconnectDelay = Math.min(this.reconnectDelay * 2, 15_000);
         })
         .finally(() => {
           this.reconnecting = false;
           if (!this.ready) this.scheduleReconnect();
         });
-    }, this.reconnectDelay);
+    }, delayMs);
+    this.reconnectTimer.unref();
   }
   private requireReady(): void {
-    if (!this.ready) throw new RuntimeError(503, 'Codex 运行时未连接');
+    if (!this.ready)
+      throw new RuntimeError(503, 'Codex 运行时未连接', 'CODEX_RUNTIME_DISCONNECTED');
   }
-  private save(): void {
+  private save(readOnly = false): void {
     try {
-      this.persistence.save(this.state);
+      if (readOnly && !this.needsCommit) this.persistence.saveRead(this.state);
+      else this.persistence.save(this.state);
       this.needsCommit = false;
     } catch (error) {
       this.needsCommit = true;
@@ -824,7 +886,19 @@ export class RuntimeSession {
   private saveBackground(): void {
     this.persistence.schedule(() => this.state);
   }
-  private emit(threadId: string, kind: string, notify = true): void {
+
+  /** A bounded readonly operation can yield Main to its owner/worker replies. */
+  deferBackgroundPersistence(signal: AbortSignal): () => void {
+    const resume = this.persistence.deferBackground();
+    const release = () => {
+      signal.removeEventListener('abort', release);
+      resume();
+    };
+    if (signal.aborted) release();
+    else signal.addEventListener('abort', release, { once: true });
+    return release;
+  }
+  private emit(threadId: string, kind: string, notify = true, historyChanged = true): void {
     if (this.closed) return;
     if (this.options?.mode === 'shared-runtime')
       this.sharedVersions.set(threadId, (this.sharedVersions.get(threadId) ?? 0) + 1);
@@ -836,7 +910,7 @@ export class RuntimeSession {
         );
         if (reply) this.updateReadHead(changed, reply);
       }
-      this.persistence.dirty(changed);
+      if (historyChanged) this.persistence.dirty(changed);
     }
     // Polls deliver the latest state; retain signals rather than hundreds of full transcripts.
     this.events.push({ seq: ++this.seq, threadId, kind });
@@ -1166,7 +1240,7 @@ export class RuntimeSession {
     try {
       this.requireReady();
       if (!(this.runtime instanceof DesktopRuntime))
-        throw new RuntimeError(503, '当前连接没有原桌面 owner');
+        throw new RuntimeError(503, '当前连接没有原桌面 owner', 'DESKTOP_OWNER_UNAVAILABLE');
       // Revalidation is not invalidation. Polls may publish while follow awaits;
       // preserve the last owner-confirmed source until this read settles. Live
       // new-turn/unavailable events continue clearing it immediately.
@@ -1177,7 +1251,11 @@ export class RuntimeSession {
         state.hostId !== 'local' ||
         !this.runtime.ipc.hasOwner(threadId)
       )
-        throw new RuntimeError(503, '建议来源聊天的原 owner 不可用');
+        throw new RuntimeError(
+          503,
+          '建议来源聊天的原 owner 不可用',
+          'SUGGESTION_OWNER_UNAVAILABLE',
+        );
       const sourceTurnId = this.completedDesktopSuggestionSource(threadId, state);
       if (!sourceTurnId) throw new RuntimeError(409, '建议来源必须是最新的已完成轮次');
       this.desktopSuggestionSources.set(threadId, sourceTurnId);
@@ -1352,26 +1430,46 @@ export class RuntimeSession {
     }
     return { hostId: this.hostId, threadId, target: this.readingTarget(), readerId, read: latest };
   }
+  private desktopCursorAnchor(threadId: string, cursor: string): string {
+    const value = parseDesktopHistoryCursor(cursor);
+    if (!value) throw new RuntimeError(400, '无效的 Host 历史游标', 'HOST_HISTORY_CURSOR_INVALID');
+    if (value[0] !== this.hostId || value[1] !== threadId)
+      throw new RuntimeError(
+        409,
+        '历史游标不属于当前电脑或对话',
+        'HOST_HISTORY_CURSOR_TARGET_MISMATCH',
+      );
+    return value[2];
+  }
+  private hostHistoryPage(threadId: string, cursor: string) {
+    this.desktopCursorAnchor(threadId, cursor);
+    if (!(this.runtime instanceof DesktopRuntime))
+      throw new RuntimeError(
+        400,
+        '当前运行时不接受 Host 历史游标',
+        'HOST_HISTORY_CURSOR_UNSUPPORTED',
+      );
+    if (!this.state.threads.some((thread) => thread.id === threadId))
+      throw new RuntimeError(
+        409,
+        '历史分页缓存已失效，请重新读取此对话',
+        'HOST_HISTORY_CURSOR_EXPIRED',
+      );
+    // A Host cursor identifies its own window contract. A missing HTTP window
+    // flag must neither broaden the read nor send the token to Codex.
+    return this.history(threadId, true, cursor);
+  }
   private desktopWindow(thread: Thread, before?: string) {
     let end = thread.messages.length;
     if (before) {
-      try {
-        const value = JSON.parse(
-          Buffer.from(before.slice('desktop-page-v1:'.length), 'base64url').toString(),
+      const anchor = this.desktopCursorAnchor(thread.id, before);
+      end = thread.messages.findIndex((message) => message.id === anchor);
+      if (end < 0)
+        throw new RuntimeError(
+          409,
+          '历史分页已变化，请重新读取此对话',
+          'HOST_HISTORY_CURSOR_EXPIRED',
         );
-        if (
-          !Array.isArray(value) ||
-          value.length !== 3 ||
-          value[0] !== this.hostId ||
-          value[1] !== thread.id ||
-          typeof value[2] !== 'string'
-        )
-          throw new Error();
-        end = thread.messages.findIndex((message) => message.id === value[2]);
-        if (end < 0) throw new Error();
-      } catch {
-        throw new RuntimeError(409, '历史分页已变化，请重新读取此对话');
-      }
     }
     let start = end,
       bytes = 0;
@@ -1385,10 +1483,7 @@ export class RuntimeSession {
       messages: thread.messages.slice(start, end),
       nextCursor:
         start > 0
-          ? 'desktop-page-v1:' +
-            Buffer.from(
-              JSON.stringify([this.hostId, thread.id, thread.messages[start]!.id]),
-            ).toString('base64url')
+          ? desktopHistoryCursor(this.hostId, thread.id, thread.messages[start]!.id)
           : (thread.historyCursor ?? null),
       historyWindow: { version: 1, kind: before ? 'earlier' : 'latest' },
       synchronization: {
@@ -1626,7 +1721,8 @@ export class RuntimeSession {
         new Promise<void>((resolve) => setTimeout(resolve, 250)),
       ]);
       this.requireReady();
-      this.save();
+      // Catalog/read state is replaceable; command intent still uses save().
+      this.saveBackground();
     }
     if (this.mode === 'shared-runtime') {
       const projects = await this.runtime.call('project/list', {
@@ -1744,7 +1840,7 @@ export class RuntimeSession {
           complete.hostId !== 'local' ||
           !runtime.ipc.hasOwner(threadId)
         )
-          throw new RuntimeError(503, '完整历史的原 owner 已变化，请重试');
+          throw new RuntimeError(503, '完整历史的原 owner 已变化，请重试', 'DESKTOP_OWNER_CHANGED');
         const messages = desktopTurns(complete).flatMap((turn) =>
           list(turn.items).flatMap((value) => {
             const wire = object(value);
@@ -1759,7 +1855,13 @@ export class RuntimeSession {
                     content: wire.input,
                   }
                 : wire;
-            const { paths, ...message } = renderItem({ ...item, runId: turn.turnId }, Infinity);
+            const projected =
+              item.type === 'subAgentActivity' ? runtime.projectSubagent(item, complete) : item;
+            if (!projected) return [];
+            const { paths, ...message } = renderItem(
+              { ...projected, runId: turn.turnId },
+              Infinity,
+            );
             message.id = historyIdentity(message.id, message.runId);
             if (message.kind === 'reasoning' && !message.text) return [];
             const cached = thread.messages.find((v) => v.id === message.id);
@@ -1808,6 +1910,7 @@ export class RuntimeSession {
     return { ...page, readTarget: this.readingTarget() };
   }
   async refreshHistory(threadId: string, cursor?: string, windowed = false) {
+    if (isDesktopHistoryCursor(cursor)) return this.hostHistoryPage(threadId, cursor);
     if (
       this.mode === 'shared-runtime' &&
       !cursor &&
@@ -1815,12 +1918,6 @@ export class RuntimeSession {
     )
       return this.open(threadId, cursor, undefined, windowed);
     const thread = this.thread(threadId);
-    if (
-      windowed &&
-      this.runtime instanceof DesktopRuntime &&
-      cursor?.startsWith('desktop-page-v1:')
-    )
-      return this.history(threadId, true, cursor);
     const previousFirst =
       cursor && windowed && this.runtime instanceof DesktopRuntime
         ? thread.messages[0]?.id
@@ -1830,8 +1927,7 @@ export class RuntimeSession {
     const result = await this.open(threadId, cursor, undefined, windowed);
     if (!windowed || !(this.runtime instanceof DesktopRuntime)) return result;
     const before = previousFirst
-      ? 'desktop-page-v1:' +
-        Buffer.from(JSON.stringify([this.hostId, threadId, previousFirst])).toString('base64url')
+      ? desktopHistoryCursor(this.hostId, threadId, previousFirst)
       : undefined;
     return this.history(threadId, true, before);
   }
@@ -1842,6 +1938,10 @@ export class RuntimeSession {
     windowed = false,
     admitUnknown?: () => boolean,
   ) {
+    if (isDesktopHistoryCursor(cursor)) {
+      if (target) this.assertReplyOpen(target);
+      return this.hostHistoryPage(threadId, cursor);
+    }
     const pending = this.restoring.get(threadId);
     if (pending) {
       await this.readWithReplyFence(target, () => pending);
@@ -1972,8 +2072,11 @@ export class RuntimeSession {
         // history just to reconcile an old unknown submission. Keep it unknown.
         if (!windowed) await this.recoverDesktopReceiptHistory(thread, runtime, target);
       } else {
+        const localImagePaths = new Map<string, readonly string[]>();
         const page = await this.readWithReplyFence(target, () =>
-          runtime.reader.history(threadId, cursor),
+          runtime.reader.history(threadId, cursor, false, (id, paths) =>
+            localImagePaths.set(id, paths),
+          ),
         ).catch((error: unknown) => {
           if (!cursor) this.desktopHistoryReads.delete(threadId);
           throw error;
@@ -2026,10 +2129,13 @@ export class RuntimeSession {
           await this.projectMessageAttachments(
             thread,
             message,
-            messageLinks(message.text).flatMap((link) => {
-              const path = localMessagePath(link.reference);
-              return path ? [path] : [];
-            }),
+            [
+              ...(localImagePaths.get(value.id) ?? []),
+              ...messageLinks(message.text).flatMap((link) => {
+                const path = localMessagePath(link.reference);
+                return path ? [path] : [];
+              }),
+            ],
             {},
             page.directory,
           );
@@ -2055,7 +2161,19 @@ export class RuntimeSession {
           messages.push(message);
         }
         const ids = new Set(messages.map((v) => v.id));
-        const retained = previous.filter((v) => !ids.has(v.id));
+        const retained = cursor
+          ? previous.filter((v) => !ids.has(v.id))
+          : retainedDesktopHistory(
+              previous,
+              messages,
+              new Set(),
+              new Set([
+                ...(page.turns ?? [])
+                  .filter((turn) => turn.status === 'completed')
+                  .map((turn) => turn.id),
+                ...(page.latestTurn?.status === 'completed' ? [page.latestTurn.id] : []),
+              ]),
+            );
         const anchor = previous.findIndex((v) => ids.has(v.id));
         // A fresh latest page is the authoritative tip; retained desktop-only
         // tools must not trail it. Earlier pages keep their existing position.
@@ -2105,7 +2223,7 @@ export class RuntimeSession {
       this.loaded.add(threadId);
       if (!cursor) await runtime.ipc.refreshModelSettings(threadId);
       await this.refreshNativeQueue(threadId);
-      this.save();
+      this.save(true);
       return this.history(threadId);
     }
     // The service intentionally omits zero-turn metadata from its interactive
@@ -2330,7 +2448,8 @@ export class RuntimeSession {
         ? (process.env.CODEX_HOME ?? join(homedir(), '.codex'))
         : dirname(dirname(this.options.socket ?? join(homedir(), '.codex', 'ipc', 'ipc.sock')));
     const metadata = new DesktopWorkspaceManagement(
-      this.options.executable ??
+      () =>
+        this.options.executable ??
         (process.platform === 'darwin'
           ? '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
           : 'codex'),
@@ -3129,12 +3248,8 @@ export class RuntimeSession {
     const sha256 = createHash('sha256').update(data).digest('hex');
     if (sha256 !== expectedHash) throw new RuntimeError(400, '文件完整性校验失败');
     const id = randomUUID();
-    const path = join(
-      this.options.directory,
-      'attachments',
-      id + extname(basename(name)).slice(0, 12),
-    );
-    writeFileSync(path, data, { mode: 0o600 });
+    const path = join(this.attachmentDirectory, id + extname(basename(name)).slice(0, 12));
+    writePrivateFileSync(path, data, { flag: 'wx' });
     const attachment = {
       id,
       hostId: this.hostId,
@@ -3306,8 +3421,7 @@ export class RuntimeSession {
           this.state.projects.find((p) => p.id === thread.projectId)?.roots[0] ??
           this.options.root);
     let changed = false;
-    for (const link of parsedLinks ??
-      (message.text.includes('](') ? messageLinks(message.text) : [])) {
+    for (const link of parsedLinks ?? messageLinks(mobileVisualizationLinks(message.text))) {
       const local = localMessagePath(link.reference);
       if (!local) continue;
       const sources = (this.state.messageFileLinks ??= []);
@@ -3387,6 +3501,8 @@ export class RuntimeSession {
           '.pdf': 'application/pdf',
           '.txt': 'text/plain',
           '.md': 'text/markdown',
+          '.html': 'text/html',
+          '.htm': 'text/html',
         };
         file = {
           id: randomUUID(),
@@ -3468,7 +3584,21 @@ export class RuntimeSession {
     item: unknown,
     directory?: string,
   ): Promise<void> {
+    const originalLinks = messageLinks(message.text);
+    if (message.role === 'assistant' && message.kind === 'agentMessage')
+      message.text = mobileVisualizationLinks(message.text);
     const links = messageLinks(message.text);
+    // Only the newly recognized visualization paths supplement upstream paths.
+    paths = [
+      ...new Set([
+        ...paths,
+        ...links.flatMap((link) => {
+          if (originalLinks.some((old) => old.reference === link.reference)) return [];
+          const path = localMessagePath(link.reference);
+          return path ? [path] : [];
+        }),
+      ]),
+    ];
     this.registerMessageReferences(thread, message, directory, links);
     const attachments = message.attachments;
     const root =
@@ -3548,8 +3678,13 @@ export class RuntimeSession {
       if (!attachment) {
         const id = randomUUID();
         const name = `image-${message.id.replace(/[^a-z0-9-]/gi, '').slice(0, 48)}.${mediaType === 'image/jpeg' ? 'jpg' : mediaType.split('/')[1]}`;
-        const path = join(this.options.directory, 'attachments', id + extname(name));
-        await writeFile(path, bytes, { mode: 0o600 });
+        const path = join(this.attachmentDirectory, id + extname(name));
+        const file = await openPrivateFile(path, 'wx');
+        try {
+          await file.writeFile(bytes);
+        } finally {
+          await file.close();
+        }
         attachment = {
           id,
           hostId: this.hostId,
@@ -3582,7 +3717,7 @@ export class RuntimeSession {
   }
 
   private assertReplyOpen(target: ReplyTarget): void {
-    if (this.closed) throw new RuntimeError(503, 'Host 已关闭，旧回复不能继续提交');
+    if (this.closed) throw new RuntimeError(503, 'Host 已关闭，旧回复不能继续提交', 'HOST_CLOSED');
     if (
       machineRuntimeTargetKey(this.replyNamespace) !== machineRuntimeTargetKey(target) ||
       machineRuntimeTargetKey(this.readingTarget()) !== machineRuntimeTargetKey(target)
@@ -3909,6 +4044,7 @@ export class RuntimeSession {
         throw new RuntimeError(409, '原首条输入前置状态已变化');
       receipt.state = 'received';
       receipt.error = null;
+      delete receipt.submissionState;
     } else this.state.receipts.push(receipt);
     try {
       this.save();
@@ -3917,6 +4053,7 @@ export class RuntimeSession {
       // recovery can query it, but cannot silently submit the failed command.
       receipt.state = 'failed';
       receipt.error = 'Host 状态保存失败，消息未提交';
+      receipt.submissionState = 'not-submitted';
       this.saveBackground();
       throw error;
     }
@@ -3926,6 +4063,7 @@ export class RuntimeSession {
       else {
         receipt.state = 'failed';
         receipt.error = '客户端队列不可用，消息未提交；不会由 Host 代为排队或执行';
+        receipt.submissionState = 'not-submitted';
         this.save();
       }
     } else await this.replyAwait(this.execute(receipt, creation), target);
@@ -4094,12 +4232,14 @@ export class RuntimeSession {
     await this.refreshNativeQueue(thread.id);
     if (this.nativeQueueUnsupported) {
       receipt.state = 'failed';
+      receipt.submissionState = 'not-submitted';
       receipt.error = '客户端不支持原生队列，消息未提交；不会由 Host 代为执行';
       this.save();
       return;
     }
     if (!this.nativeQueue.available) {
       receipt.state = 'failed';
+      receipt.submissionState = 'not-submitted';
       receipt.error = '原生队列暂不可用，消息尚未投递';
       this.save();
       return;
@@ -4116,6 +4256,7 @@ export class RuntimeSession {
     ) {
       receipt.state = 'failed';
       receipt.error = '原生队列沿用当前桌面设置，请保持当前设置后排队';
+      receipt.submissionState = 'not-submitted';
       this.save();
       return;
     }
@@ -4153,6 +4294,7 @@ export class RuntimeSession {
             throw new RuntimeError(409, '排队附件实际字节已变化');
         }
         receipt.state = 'submitting';
+        delete receipt.submissionState;
         this.save();
         wrote = true;
       });
@@ -4171,6 +4313,7 @@ export class RuntimeSession {
     } catch (error) {
       if (this.closed) throw error;
       receipt.state = wrote ? 'uncertain' : 'failed';
+      if (!wrote) receipt.submissionState = 'not-submitted';
       receipt.nativeQueue.phase = 'uncertain';
       receipt.error = wrote
         ? '原生排队结果待核对，原消息不会重复投递'
@@ -4406,6 +4549,10 @@ export class RuntimeSession {
             ...(value.state === 'queued' ? { queueDisposition: 'legacy-review' } : {}),
           }),
       target: value.target ?? null,
+      submissionState:
+        value.state === 'failed' && !value.turnId && !value.acceptedTurnId
+          ? (value.submissionState ?? null)
+          : null,
       ...(value.state === 'uncertain' && this.historicalReceiptContexts.has(value.clientMessageId)
         ? {
             noticeContext: 'historical',
@@ -4469,6 +4616,7 @@ export class RuntimeSession {
     this.assertReplyOpen(target);
     const thread = this.thread(reply.threadId);
     this.locks.add(thread.id);
+    delete receipt.submissionState;
     let wireAttempted = false;
     const check = (stage: CreationInputStage) => {
       this.assertReplyOpen(target);
@@ -4636,6 +4784,7 @@ export class RuntimeSession {
       if (this.closed) throw error; // The close snapshot is fenced; no late callback may save or execute.
       if (creation) creation.failure = error;
       receipt.state = wireAttempted && !(error instanceof CodexRejection) ? 'uncertain' : 'failed';
+      if (!wireAttempted) receipt.submissionState = 'not-submitted';
       receipt.error = creation
         ? '首条输入阶段尚未确认，原操作已保留'
         : error instanceof Error
@@ -4925,6 +5074,19 @@ export class RuntimeSession {
       if (cursor) seen.add(cursor);
     } while (cursor && data.length < 1000);
     return data.map(object).filter((v) => v.hidden !== true);
+  }
+
+  async usage(requestId: string) {
+    const target = usageTarget(this.readingTarget());
+    if (!this.ready) return unavailableUsage(target, requestId, 'offline');
+    const response = await readCodexUsage(
+      (method, params) => this.runtime.call(method, params),
+      target,
+      requestId,
+    );
+    if (JSON.stringify(target) !== JSON.stringify(usageTarget(this.readingTarget())))
+      return unavailableUsage(usageTarget(this.readingTarget()), requestId, 'offline');
+    return response;
   }
 
   async models() {
@@ -5359,18 +5521,11 @@ export class RuntimeSession {
     thread.collaborationMode = ['plan', 'default'].includes(string(collaboration.mode))
       ? string(collaboration.mode)
       : undefined;
-    const settings = object(state.latestThreadSettings);
     const currentModel = desktopModelSettings(state);
     thread.runtimeModel = currentModel.model || undefined;
     thread.runtimeEffort = currentModel.effort;
     const latest = turns.at(-1);
-    thread.speed = currentSpeed(
-      settings.serviceTier !== undefined
-        ? settings.serviceTier
-        : state.latestServiceTier !== undefined
-          ? state.latestServiceTier
-          : object(latest?.params).serviceTier,
-    );
+    thread.speed = desktopSpeed(state, latest);
     thread.permissionMode = desktopPermissionMode({ ...state, turns });
     const cwd = string(state.cwd);
     if (isAbsolute(cwd) && state.id === thread.id && this.runtime.ipc.hasOwner(thread.id))
@@ -5555,7 +5710,10 @@ export class RuntimeSession {
             if (this.closed || this.desktopProjections.get(id) !== job) break;
             if (version !== job.version) continue;
             if (this.runtime instanceof DesktopRuntime && this.runtime.ipc.hasOwner(id)) {
-              original.messages = thread.messages;
+              // Same authoritative projection must not rewrite a full history
+              // cache just because the desktop sent another snapshot object.
+              const historyChanged = !isDeepStrictEqual(original.messages, thread.messages);
+              if (historyChanged) original.messages = thread.messages;
               const source = this.desktopReadReply(original, job.state);
               if (source) this.projectReadHead(original, source);
               this.verifiedDesktopMessageIds.set(id, new Set(thread.messages.map((v) => v.id)));
@@ -5563,7 +5721,7 @@ export class RuntimeSession {
                 this.verifiedDesktopMessageIds.delete(
                   this.verifiedDesktopMessageIds.keys().next().value!,
                 );
-              this.emit(id, 'desktop/snapshot', false);
+              this.emit(id, 'desktop/snapshot', false, historyChanged);
             }
             break;
           }
@@ -5583,6 +5741,7 @@ export class RuntimeSession {
     state: Record<string, unknown>,
     valid: () => boolean = () => true,
   ): Promise<void> {
+    if (this.runtime instanceof DesktopRuntime) this.runtime.followSubagents(thread.id, state);
     const turns = desktopTurns(state);
     const previous = thread.messages;
     thread.messages = [];
@@ -5604,7 +5763,11 @@ export class RuntimeSession {
         if (turn.turnId === thread.desktopInitializationTurnId) continue;
         if (['todo-list', 'planImplementation', 'steered'].includes(string(object(item).type)))
           continue;
-        const wire = object(item);
+        const wire =
+          this.runtime instanceof DesktopRuntime
+            ? this.runtime.projectSubagent(object(item), state)
+            : object(item);
+        if (!wire) continue;
         if (wire.type === 'steeringUserMessage') {
           if (!string(wire.serverUserMessageId)) continue;
           await this.upsert(

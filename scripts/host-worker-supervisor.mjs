@@ -2,18 +2,154 @@ import { spawn } from 'node:child_process';
 
 const identifier = (value) =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : undefined;
+// Native aborts can bypass JS diagnostics. Preserve only a fixed classification;
+// neither the fatal text, paths, payloads nor an untrusted JSON object is logged.
+function nativeStderrReason(line) {
+  if (/^FATAL ERROR: .*JavaScript heap out of memory/.test(line))
+    return 'javascript-heap-exhausted';
+  if (/^Assertion failed: .*UV_HANDLE_CLOSING.*async\.c\b/.test(line))
+    return 'libuv-async-handle-closing';
+  if (/^Assertion failed: .*\bfile\b.*\.[ch](?:c|pp)?, line \d+/.test(line))
+    return 'native-assertion';
+  if (/^FATAL ERROR: /.test(line)) return 'node-fatal';
+}
+function ownerFailureMetadata(error) {
+  if (
+    error?.nativeType !== 'UnauthorizedAccessException' ||
+    error?.nativeRejection !== 'WRONG_FILE_OWNER'
+  )
+    return;
+  const value = error?.nativeOwner;
+  const hash = (v) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  if (value?.version === 2) {
+    if (
+      !['check', 'protect', 'protect-file', 'create-file', 'compilation-check'].includes(
+        value.checkedAction,
+      ) ||
+      !['file', 'directory', 'unknown'].includes(value.targetKind) ||
+      ![
+        'none',
+        'process-id',
+        'process-times',
+        'user-hash',
+        'default-owner',
+        'file-owner-hash',
+        'requested-path-hash',
+        'handle-identity-hash',
+        'final-path-hash',
+      ].includes(value.captureStage) ||
+      ![
+        'none',
+        'Win32Exception',
+        'UnauthorizedAccessException',
+        'CryptographicException',
+        'DllNotFoundException',
+        'EntryPointNotFoundException',
+        'SecurityException',
+        'ArgumentException',
+        'Exception',
+      ].includes(value.captureFailure) ||
+      (value.captureStage === 'none') !== (value.captureFailure === 'none')
+    )
+      return;
+    const result = {
+      version: 2,
+      checkedAction: value.checkedAction,
+      targetKind: value.targetKind,
+      captureStage: value.captureStage,
+      captureFailure: value.captureFailure,
+    };
+    for (const k of [
+      'helperUserHash',
+      'helperOwnerHash',
+      'fileOwnerHash',
+      'requestedPathHash',
+      'handleIdentityHash',
+      'finalPathHash',
+    ]) {
+      if (value[k] !== undefined) {
+        if (!hash(value[k])) return;
+        result[k] = value[k];
+      }
+    }
+    if (value.helperPid !== undefined) {
+      if (
+        !Number.isSafeInteger(value.helperPid) ||
+        value.helperPid <= 0 ||
+        value.helperPid > 0xffffffff
+      )
+        return;
+      result.helperPid = value.helperPid;
+    }
+    if (value.helperStartedFileTime !== undefined) {
+      if (
+        typeof value.helperStartedFileTime !== 'string' ||
+        !/^[1-9][0-9]{0,18}$/.test(value.helperStartedFileTime) ||
+        BigInt(value.helperStartedFileTime) > 0x7fffffffffffffffn
+      )
+        return;
+      result.helperStartedFileTime = value.helperStartedFileTime;
+    }
+    if (typeof value.transportPidMatches === 'boolean')
+      result.transportPidMatches = value.transportPidMatches;
+    return result;
+  }
+  if (
+    !value ||
+    value.version !== 1 ||
+    !['check', 'protect', 'protect-file'].includes(value.checkedAction) ||
+    !Number.isSafeInteger(value.helperPid) ||
+    value.helperPid <= 0 ||
+    value.helperPid > 0xffffffff ||
+    !['file', 'directory'].includes(value.targetKind) ||
+    !['helperUserHash', 'requestedPathHash', 'handleIdentityHash'].every((k) => hash(value[k]))
+  )
+    return;
+  const result = {
+    version: 1,
+    checkedAction: value.checkedAction,
+    helperPid: value.helperPid,
+    targetKind: value.targetKind,
+    helperUserHash: value.helperUserHash,
+    requestedPathHash: value.requestedPathHash,
+    handleIdentityHash: value.handleIdentityHash,
+  };
+  for (const key of ['helperOwnerHash', 'fileOwnerHash', 'finalPathHash']) {
+    if (value[key] !== undefined) {
+      if (!hash(value[key])) return;
+      result[key] = value[key];
+    }
+  }
+  if (value.helperStartedFileTime !== undefined) {
+    const time = value.helperStartedFileTime;
+    if (
+      typeof time !== 'string' ||
+      !/^[1-9][0-9]{0,18}$/.test(time) ||
+      BigInt(time) > 0x7fffffffffffffffn
+    )
+      return;
+    result.helperStartedFileTime = time;
+  }
+  if (value.transportPidMatches !== undefined) {
+    if (typeof value.transportPidMatches !== 'boolean') return;
+    result.transportPidMatches = value.transportPidMatches;
+  }
+  return result;
+}
+
 export function safeWorkerFailure(error) {
   const frames = new Set([
     'runtime-persistence.js',
     'runtime-session.js',
     'runtime-server.js',
     'runtime-entry.js',
+    'history-reader.js',
     'desktop-platform.js',
     'windows-desktop-worker.mjs',
     'windows-desktop-recovery.mjs',
     'host-worker-supervisor.mjs',
   ]);
-  return {
+  const result = {
     code: identifier(error?.code),
     syscall: identifier(error?.syscall),
     stage: identifier(error?.stage),
@@ -35,6 +171,108 @@ export function safeWorkerFailure(error) {
       })
       .slice(0, 8),
   };
+  const failures = [
+    'ETIMEDOUT',
+    'ENOENT',
+    'EACCES',
+    'EPERM',
+    'EINVAL',
+    'ENOTDIR',
+    'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+    'WINDOWS_PROCESS_GATE_UNAVAILABLE',
+  ];
+  let cause = error;
+  for (let depth = 0; cause && depth < 4; depth++, cause = cause.cause) {
+    const childFailure =
+      cause.code === 'WINDOWS_PROCESS_GATE_UNAVAILABLE' ||
+      (typeof cause.syscall === 'string' && /^spawn(?:Sync)?\b/.test(cause.syscall)) ||
+      Object.hasOwn(cause, 'status') ||
+      Object.hasOwn(cause, 'signal') ||
+      typeof cause.stderr === 'string' ||
+      Buffer.isBuffer(cause.stderr) ||
+      typeof cause.killed === 'boolean' ||
+      cause.spawnStarted === false ||
+      cause.spawnStarted === 'unknown';
+    if (!childFailure) continue;
+    if (failures.includes(cause.code)) result.helperCauseCode = cause.code;
+    if (Number.isSafeInteger(cause.status) && cause.status >= 0 && cause.status <= 0xffffffff)
+      result.helperStatus = cause.status;
+    if (['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT'].includes(cause.signal))
+      result.helperSignal = cause.signal;
+    if (typeof cause.killed === 'boolean') result.helperKilled = cause.killed;
+    if (cause.spawnStarted === false || cause.spawnStarted === 'unknown')
+      result.helperSpawnStarted = cause.spawnStarted;
+    if (typeof cause.stderr === 'string' || Buffer.isBuffer(cause.stderr)) {
+      const text = String(cause.stderr);
+      result.helperStderrBytes = Buffer.byteLength(text);
+      const marker =
+        /^(WINDOWS_POWERSHELL_MODULE_UNAVAILABLE|WINDOWS_CLI_REJECTED|WINDOWS_DESKTOP_NOT_RUNNING|WINDOWS_DESKTOP_PIPE_REJECTED|WRONG_DESKTOP_USER|WRONG_DESKTOP_SESSION|UNSAFE_WINDOWS_PRIVATE_STATE)\s*$/m.exec(
+          text,
+        )?.[1];
+      result.helperStderrMarker = marker ?? (text.length ? 'unclassified' : 'empty');
+    }
+  }
+  for (const [key, values] of Object.entries({
+    nativeRejection: [
+      'WRONG_FILE_OWNER',
+      'NULL_PRIVATE_DACL',
+      'UNKNOWN_PRIVATE_ACE',
+      'SHARED_PRIVATE_FILE',
+      'UNPROTECTED_PRIVATE_DACL',
+    ],
+    helperStage: ['add-type', 'execute'],
+    nativeStage: [
+      'environment',
+      'source',
+      'directory',
+      'protect-directory',
+      'compiler',
+      'compile',
+      'protect-binary',
+      'publish-binary',
+      'resolve-binary',
+      'bootstrap-native',
+      'recheck-binary',
+      'prepare',
+      'spawn-gate',
+      'spawn',
+      'handshake',
+      'operation',
+    ],
+  }))
+    if (values.includes(error?.[key])) result[key] = error[key];
+  for (const key of ['nativeWin32', 'nativeCleanupWin32'])
+    if (Number.isSafeInteger(error?.[key]) && error[key] >= 0 && error[key] <= 0xffffffff)
+      result[key] = error[key];
+  const owner = ownerFailureMetadata(error);
+  if (owner) result.nativeOwner = owner;
+  if (['native-serve', 'bootstrap-csharp', 'not-emitted'].includes(error?.nativeOwnerOrigin))
+    result.nativeOwnerOrigin = error.nativeOwnerOrigin;
+  if (
+    [
+      'check',
+      'protect',
+      'protect-file',
+      'create-directory',
+      'create-file',
+      'release-file',
+    ].includes(error?.privateStateAction)
+  )
+    result.privateStateAction = error.privateStateAction;
+  if (
+    typeof error?.privateStatePathHash === 'string' &&
+    /^[a-f0-9]{64}$/.test(error.privateStatePathHash)
+  )
+    result.privateStatePathHash = error.privateStatePathHash;
+  if (['notification-lock', 'notification-snapshot'].includes(error?.privateStateRole))
+    result.privateStateRole = error.privateStateRole;
+  if (
+    error?.nativeType === 'UnauthorizedAccessException' &&
+    error?.nativeRejection === 'WRONG_FILE_OWNER' &&
+    error?.nativeStep === 'owner-check'
+  )
+    result.nativeStep = 'owner-check';
+  return result;
 }
 
 export function workerRecoveryState(scope, code) {
@@ -229,7 +467,9 @@ export function superviseWorker({
         state = 'http-unhealthy';
       }
       if (stopping || child !== launched) return;
-      if (!['healthy', 'http-unhealthy', 'persistence-degraded'].includes(state))
+      if (
+        !['healthy', 'http-unhealthy', 'runtime-degraded', 'persistence-degraded'].includes(state)
+      )
         state = 'http-unhealthy';
       if (state !== healthState) {
         healthState = state;
@@ -240,43 +480,53 @@ export function superviseWorker({
     if (probe) probeTimer = setTimeout(checkHealth, probeIntervalMs);
     diagnostic({ event: 'started', childPid: child.pid });
     let buffer = '';
+    const nativeReasons = new Set();
+    const consumeLine = (line) => {
+      const reason = nativeStderrReason(line);
+      if (reason && !nativeReasons.has(reason)) {
+        nativeReasons.add(reason);
+        diagnostic({ event: 'native-runtime-stderr', childPid: launched.pid, reason });
+      }
+      try {
+        const value = JSON.parse(line);
+        if (value.diagnostic !== 'host-runtime-failure') {
+          if (process.env.AGENT_HUB_WINDOWS_TRACE_DIAGNOSTICS === '1') {
+            const summary = windowsTraceSummary(value.windowsTrace);
+            if (summary)
+              diagnostic({
+                event: 'windows-trace-summary',
+                childPid: launched.pid,
+                windowsTrace: summary,
+              });
+          }
+          return;
+        }
+        diagnostic({
+          event: 'runtime-failure',
+          childPid: launched.pid,
+          scope: identifier(value.scope),
+          recoveryState: workerRecoveryState(value.scope, value.code),
+          ...safeWorkerFailure(value),
+          attempt: Number.isSafeInteger(value.attempt) ? value.attempt : undefined,
+        });
+      } catch {
+        // Raw stdout, stderr, exception messages and configuration never enter logs.
+      }
+    };
     child.stderr.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
       if (buffer.length > 16_384) buffer = '';
       const lines = buffer.split('\n');
       buffer = lines.pop();
-      for (const line of lines) {
-        try {
-          const value = JSON.parse(line);
-          if (value.diagnostic !== 'host-runtime-failure') {
-            if (process.env.AGENT_HUB_WINDOWS_TRACE_DIAGNOSTICS === '1') {
-              const summary = windowsTraceSummary(value.windowsTrace);
-              if (summary)
-                diagnostic({
-                  event: 'windows-trace-summary',
-                  childPid: launched.pid,
-                  windowsTrace: summary,
-                });
-            }
-            continue;
-          }
-          diagnostic({
-            event: 'runtime-failure',
-            childPid: child.pid,
-            scope: identifier(value.scope),
-            recoveryState: workerRecoveryState(value.scope, value.code),
-            ...safeWorkerFailure(value),
-            attempt: Number.isSafeInteger(value.attempt) ? value.attempt : undefined,
-          });
-        } catch {
-          // Raw stdout, stderr, exception messages and configuration never enter logs.
-        }
-      }
+      for (const line of lines) consumeLine(line.replace(/\r$/, ''));
     });
     child.on('error', (error) =>
       diagnostic({ event: 'spawn-failure', ...safeWorkerFailure(error) }),
     );
     child.once('close', (code, signal) => {
+      // close follows stdio closure, including a fatal tail without a newline.
+      if (buffer) consumeLine(buffer.replace(/\r$/, ''));
+      buffer = '';
       diagnostic({
         event: 'exited',
         childPid: child.pid,

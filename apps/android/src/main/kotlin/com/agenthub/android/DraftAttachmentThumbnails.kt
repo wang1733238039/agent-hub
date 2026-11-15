@@ -23,20 +23,24 @@ internal object DraftAttachmentThumbnails {
     fun read(storage: NativeSessionStorage,file: CreationFile): Cached = try {
         val raw=storage.read(key(file))
         if(raw==null||raw.length>160*1024) Cached(false,null) else {
-            val value=JSONObject(raw)
-            require(value.keys().asSequence().toSet()==setOf("version","edge","file","png","thumbnailSha256"))
-            require(value.getInt("version")==1&&value.getInt("edge")==EDGE&&value.getJSONObject("file").toString()==file.body().toString())
-            if(value.isNull("png")) { require(value.isNull("thumbnailSha256"));Cached(true,null) } else {
-                val bytes=Base64.decode(value.getString("png"),Base64.NO_WRAP)
-                require(bytes.size in 1..MAX_PNG&&sha(bytes)==value.getString("thumbnailSha256"))
-                val bounds=BitmapFactory.Options().apply { inJustDecodeBounds=true }
-                BitmapFactory.decodeByteArray(bytes,0,bytes.size,bounds)
-                require(bounds.outWidth in 1..EDGE&&bounds.outHeight in 1..EDGE)
-                Cached(true,bytes)
-            }
+            Cached(true,validate(JSONObject(raw),file))
         }
     } catch(cancel: CancellationException) { throw cancel }
       catch(_: Exception) { Cached(false,null) }
+
+    /** The archive and ordinary preview share the same bounded, authenticated manifest checks. */
+    internal fun validate(value: JSONObject,file: CreationFile): ByteArray? {
+        require(value.toString().length<=160*1024&&value.keys().asSequence().toSet()==setOf("version","edge","file","png","thumbnailSha256"))
+        require(value.get("version")==1&&value.get("edge")==EDGE&&value.getJSONObject("file").toString()==file.body().toString())
+        if(value.isNull("png")){require(value.isNull("thumbnailSha256"));return null}
+        val encoded=value.get("png") as String;val bytes=Base64.decode(encoded,Base64.NO_WRAP)
+        require(bytes.size in 1..MAX_PNG&&Base64.encodeToString(bytes,Base64.NO_WRAP)==encoded&&sha(bytes)==value.get("thumbnailSha256"))
+        require(bytes.take(8)==listOf(137,80,78,71,13,10,26,10).map{it.toByte()})
+        val bounds=BitmapFactory.Options().apply {inJustDecodeBounds=true}
+        BitmapFactory.decodeByteArray(bytes,0,bytes.size,bounds)
+        require(bounds.outWidth in 1..EDGE&&bounds.outHeight in 1..EDGE)
+        return bytes
+    }
 
     fun storeIfMissing(storage: NativeSessionStorage,file: CreationFile,source: ByteArray) {
         if(!file.mediaType.startsWith("image/"))return
@@ -67,17 +71,6 @@ internal object DraftAttachmentThumbnails {
         val orientation=try {
             java.io.ByteArrayInputStream(source).use { androidx.exifinterface.media.ExifInterface(it).getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,1) }
         }catch(_: Exception){1}
-        val matrix=android.graphics.Matrix()
-        when(orientation) {
-            2->matrix.setScale(-1f,1f)
-            3->matrix.setRotate(180f)
-            4->matrix.setScale(1f,-1f)
-            5->{ matrix.setRotate(90f);matrix.postScale(-1f,1f) }
-            6->matrix.setRotate(90f)
-            7->{ matrix.setRotate(-90f);matrix.postScale(-1f,1f) }
-            8->matrix.setRotate(-90f)
-            else->return image
-        }
-        return Bitmap.createBitmap(image,0,0,image.width,image.height,matrix,true)
+        return NativeImageOrientation.apply(image,orientation)
     }
 }

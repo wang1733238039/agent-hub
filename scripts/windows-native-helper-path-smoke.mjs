@@ -20,12 +20,16 @@ const physicalRoot = join(
   'Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/CodexManage/native-helpers',
 );
 const bootstrapChecks = [];
+let bootstrapProcesses = 0;
 const aliasChecks = [];
 const permissions = [];
 let first;
 let second;
 let packaged = true;
 let deny;
+let rejectBootstrap = false;
+let compilerFailure;
+let compilerOutput;
 const onPermissionCall = ({ action, path }) => {
   assert.equal(action, 'check', 'Alias recognition must not repair permissions');
   aliasChecks.push(path);
@@ -42,7 +46,7 @@ try {
     if (packaged && typeof path === 'string' && path.startsWith(logicalRoot + sep)) {
       const physical = join(physicalRoot, relative(logicalRoot, path));
       fs.mkdirSync(dirname(physical), { recursive: true });
-      fs.copyFileSync(path, physical);
+      if (!fs.existsSync(physical)) fs.linkSync(path, physical);
       return native(physical, ...options);
     }
     return native(path, ...options);
@@ -50,16 +54,50 @@ try {
   childProcess.execFileSync = (file, args, options) => {
     assert.equal(options.windowsHide, true);
     if (file.endsWith('csc.exe')) {
-      assert(args.includes('/target:winexe'), 'Only the launcher is compiled in this fixture');
-      assert(args.at(-1).endsWith('host-launcher.cs'));
-      fs.writeFileSync(args.find((a) => a.startsWith('/out:')).slice(5), 'synthetic helper');
-      return '';
+      assert.fail('Compiler must stay inside the Native preparation lease');
     }
     assert(file.endsWith('powershell.exe'), 'Unexpected native executable in synthetic fixture');
     assert(args[args.indexOf('-File') + 1].endsWith('private-state.ps1'));
     const action = args[args.indexOf('-Action') + 1];
     const path = args[args.indexOf('-Path') + 1];
+    bootstrapProcesses++;
+    if (action === 'prepare-native') {
+      assert.equal(args[args.indexOf('-NativeName') + 1], 'host-launcher');
+      const budget = Number(args[args.indexOf('-BudgetMs') + 1]);
+      assert(budget > 0 && budget <= options.timeout && budget <= 30000);
+      fs.mkdirSync(path, { recursive: true, mode: 0o700 });
+      compilerOutput = join(path, 'host-launcher.exe');
+      fs.writeFileSync(compilerOutput, 'synthetic helper', { flag: 'wx', mode: 0o600 });
+      const created = fs.lstatSync(compilerOutput, { bigint: true });
+      if (compilerFailure === 'throw') {
+        fs.unlinkSync(compilerOutput);
+        throw Object.assign(Error('synthetic compiler failure'), { status: 1 });
+      }
+      if (compilerFailure === 'replace') {
+        fs.renameSync(compilerOutput, compilerOutput + '.original');
+        fs.writeFileSync(compilerOutput, 'synthetic helper');
+      }
+      return (
+        'PRIVATE_STATE_NATIVE_READY:' +
+        created.dev.toString(16).padStart(8, '0') +
+        ':' +
+        created.ino.toString(16).padStart(16, '0')
+      );
+    }
+    if (action === 'create-directory') fs.mkdirSync(path, { recursive: true, mode: 0o700 });
+    if (action === 'create-file') fs.closeSync(fs.openSync(path, 'wx', 0o600));
     if (action === 'check') bootstrapChecks.push(path);
+    if (action === 'bootstrap-native') {
+      if (rejectBootstrap)
+        throw Object.assign(Error('synthetic unsafe binary ACL'), {
+          stderr: 'UNSAFE_WINDOWS_PRIVATE_STATE\n',
+        });
+      assert(fs.statSync(path).isDirectory());
+      const logical = args[args.indexOf('-BinaryPath') + 1];
+      const physical = args[args.indexOf('-PhysicalPath') + 1];
+      assert(fs.statSync(logical).isFile() && fs.statSync(physical).isFile());
+      bootstrapChecks.push(logical, physical);
+    }
     return 'PRIVATE_STATE_OK';
   };
   syncBuiltinESMExports();
@@ -88,6 +126,31 @@ try {
     'Launcher bootstrap did not check its logical executable',
   );
   assert(permissions[0].calls.length > 0, 'Packaged module bypassed its exact permission fixture');
+  rejectBootstrap = true;
+  const rejected = await import(
+    new URL('../packages/codex-adapter/dist/desktop-platform.js?msix=rejected', import.meta.url)
+  );
+  assert.throws(
+    () => rejected.windowsHostLauncherExecutable(),
+    (error) => error.code === 'UNSAFE_WINDOWS_PRIVATE_STATE',
+  );
+  rejectBootstrap = false;
+  assert.equal(
+    rejected.windowsHostLauncherExecutable(),
+    inside.executable,
+    'A rejected batch cannot seed a cached permission success',
+  );
+  const beforeWarm = bootstrapProcesses;
+  const warm = await import(
+    new URL('../packages/codex-adapter/dist/desktop-platform.js?msix=warm', import.meta.url)
+  );
+  assert.equal(warm.windowsHostLauncherExecutable(), inside.executable);
+  assert.equal(
+    bootstrapProcesses - beforeWarm,
+    1,
+    'A new isolate retains both checks in one warm bootstrap process',
+  );
+
   assert(aliasChecks.includes(inside.executable), 'Physical alias check did not reach its fixture');
   assert(
     aliasChecks.includes(dirname(inside.executable)),
@@ -132,6 +195,32 @@ try {
     /unsafe fixture ACL/,
     'Unsafe alias must fail closed',
   );
+  for (const failure of ['throw', 'replace']) {
+    compilerFailure = failure;
+    process.env.LOCALAPPDATA = join(directory, 'compiler-' + failure);
+    const candidate = await import(
+      new URL(
+        '../packages/codex-adapter/dist/desktop-platform.js?compiler=' + failure,
+        import.meta.url,
+      )
+    );
+    assert.throws(
+      () => candidate.windowsHostLauncherExecutable(),
+      (error) =>
+        failure === 'throw'
+          ? error.code === 'WINDOWS_HELPER_FAILED' && error.cause?.status === 1
+          : error.code === 'WINDOWS_NATIVE_OUTPUT_CHANGED',
+    );
+    assert.equal(
+      fs.existsSync(compilerOutput),
+      failure === 'replace',
+      'Only the original reservation may be cleaned after compiler failure',
+    );
+    if (failure === 'replace')
+      assert.equal(fs.readFileSync(compilerOutput, 'utf8'), 'synthetic helper');
+  }
+  compilerFailure = undefined;
+  process.env.LOCALAPPDATA = local;
   console.log(
     JSON.stringify({
       result: 'passed',

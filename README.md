@@ -1,6 +1,6 @@
 # Codex 手机版
 
-这是 [wang1733238039/codex-mobile](https://github.com/wang1733238039/codex-mobile)
+这是 [wang1733238039/agent-hub](https://github.com/wang1733238039/agent-hub)
 的个人二次开发仓库，基于 [Agent Hub](https://github.com/easyaigc/agent-hub)，保留上游 MIT 许可及完整历史。
 修改前源码保存在 `upstream-backup-20261027` 标签；`upstream` 远端用于核对上游更新。
 
@@ -10,23 +10,23 @@
 
 ## 本分支下载与使用
 
-| 平台    | 当前交付                                                                                                                                                                        |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Android | [下载 Codex 手机版语音预览 APK](https://github.com/wang1733238039/codex-mobile/releases/download/v0.2.0-voice-preview.1/codex-mobile-0.2.0-preview.apk)，Android 8.0+，开发签名 |
-| iPhone  | iOS Simulator 编译通过；真机需自己的签名和设备授权，暂未提供可安装 IPA                                                                                                          |
+| 平台    | 当前交付                                                               |
+| ------- | ---------------------------------------------------------------------- |
+| Android | 本轮同步源码；未发布新 APK。Android 8.0+，构建方法见下文               |
+| iPhone  | iOS Simulator 编译通过；真机需自己的签名和设备授权，暂未提供可安装 IPA |
 
-[版本说明和校验值](https://github.com/wang1733238039/codex-mobile/releases/tag/v0.2.0-voice-preview.1) ·
+[个人仓库版本发布页](https://github.com/wang1733238039/agent-hub/releases) ·
 [安装、连接和语音说明](docs/personal-voice-call.md)
 
 电话图标用于连续语音：说话、原对话执行、朗读本轮回复，再听下一句；提供按钮打断。
 现有网页版继续保留。原生 App 需自己的电脑 Host 连接，网页账号不能直接替代；
-本次实体手机语音和真实任务尚未验收，本机 Host 配置仍受 Windows 脚本执行策略阻塞。
+连续语音的实体手机验收仍待完成。PR3 和 Windows 旧会话打开的历史结果、本轮源码整合验证及限制分别见 [整合记录](docs/github-main-sync-20261115.md)。
 
 本分支源码：
 
 ```sh
-git clone https://github.com/wang1733238039/codex-mobile.git
-cd codex-mobile
+git clone https://github.com/wang1733238039/agent-hub.git
+cd agent-hub
 pnpm install --frozen-lockfile
 ```
 

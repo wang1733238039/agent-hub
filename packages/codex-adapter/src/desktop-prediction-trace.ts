@@ -18,15 +18,17 @@ import {
   windowsTraceSnapshotBatchAvailable,
 } from './desktop-platform.js';
 import {
-  traceSnapshotBatchFits,
+  createTraceSnapshotBatchPlanner,
   traceSnapshotBatchLimits,
   type TraceSnapshotValue,
 } from './desktop-trace-native.js';
 import { createWindowsTraceDiagnostics } from './windows-trace-diagnostics.js';
+import { DesktopSuggestionStore } from './desktop-suggestion-store.js';
 
 const traceSummaries = channel('agent-hub.windows-trace.summary');
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const supportedTraceSchema = (value: unknown): boolean => value === 1 || value === 2;
 const bundleName = /^trace-([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})-(.+)$/i;
 const limits = {
   directoryEntries: 20_000,
@@ -38,6 +40,7 @@ const limits = {
   response: 8 * 1024 * 1024,
   totalBytes: 64 * 1024 * 1024,
   requests: 128,
+  initialDiscoveryPrefix: 1024,
   discoveryPrefix: 16_384,
   protocolEvent: 128 * 1024,
 };
@@ -98,6 +101,7 @@ class PreparedTraceLog {
   private readonly completions: TraceEvent[] = [];
   private readonly terminals: TraceEvent[] = [];
   private validated = false;
+  private schema: unknown;
 
   constructor(
     private readonly bytes: Buffer,
@@ -128,8 +132,12 @@ class PreparedTraceLog {
     return value;
   }
 
-  forTurn(turnId: string) {
-    return this.decode(() => this.turn(turnId));
+  forTurn(turnId: string, schema?: unknown) {
+    return this.decode(() => {
+      const result = this.turn(turnId);
+      if (schema !== undefined) requireValue(this.schema === schema);
+      return result;
+    });
   }
 
   private turn(turnId: string) {
@@ -145,8 +153,10 @@ class PreparedTraceLog {
         requireValue(Buffer.byteLength(this.lines[index]!) <= limits.eventLine);
         const value = this.eventAt(index, true),
           { event, payload } = value;
+        if (index === 0) this.schema = event.schema_version;
         requireValue(
-          event.schema_version === 1 &&
+          supportedTraceSchema(this.schema) &&
+            event.schema_version === this.schema &&
             event.rollout_id === this.threadId &&
             event.seq === index + 1 &&
             Number.isSafeInteger(event.wall_time_unix_ms),
@@ -512,6 +522,7 @@ class TraceSnapshot {
         continue;
       }
       const selected: string[] = [];
+      const planner = createTraceSnapshotBatchPlanner();
       for (
         let at = index;
         at < paths.length && selected.length < traceSnapshotBatchLimits.items;
@@ -521,7 +532,7 @@ class TraceSnapshot {
         if (
           this.directories.has(path) ||
           selected.includes(path) ||
-          !traceSnapshotBatchFits([...selected, path].map((path) => ({ path, maximum: 0 })))
+          !planner.add({ path, maximum: 0 })
         )
           break;
         selected.push(path);
@@ -730,9 +741,7 @@ class TraceSnapshot {
     const length = Math.min(Number(before.size), maximum);
     const cached = this.nativeFiles.get(path);
     const reusable = cached && sameFile(cached.stat, before);
-    requireValue(
-      native.bytes.length === length && sameFile(before, lstatSync(path, { bigint: true })),
-    );
+    this.confirmFileReceipt(path, maximum, prefix, before, native);
     this.guards.push({
       path,
       stat: before,
@@ -766,6 +775,38 @@ class TraceSnapshot {
     return native.bytes;
   }
 
+  private confirmFileReceipt(
+    path: string,
+    maximum: number,
+    prefix: boolean,
+    before: BigIntStats,
+    native: { bytes: Buffer },
+  ): void {
+    const length = Math.min(Number(before.size), maximum);
+    const current = lstatSync(path, { bigint: true });
+    requireValue(native.bytes.length === length);
+    if (sameFile(before, current)) return;
+    // A different chat may append after its native prefix handle closes while
+    // the other batch items finish. Reopen and compare those exact bytes; no
+    // native call is replayed, and full bodies still require identical metadata.
+    requireValue(
+      this.prepared && prefix && sameNode(before, current) && current.size >= before.size,
+    );
+    const guard: Guard = {
+      path,
+      stat: before,
+      directory: false,
+      scope: 'contained',
+      prefixLength: length,
+      prefixSha256: createHash('sha256').update(native.bytes).digest('hex'),
+      // Tentative only. The real receipt below retains its original short-size
+      // guard until a complete configured payload closes that discovery input.
+      prefixMayGrow: true,
+    };
+    this.prefixAfterBatch(guard, current);
+    requireValue(sameNode(current, this.guardStat(guard)));
+  }
+
   /** Ordered discovery inputs; each dispatched B is all-or-nothing, never replayed. */
   files(items: readonly { path: string; maximum: number; prefix?: boolean }[]): Buffer[] {
     if (
@@ -786,6 +827,7 @@ class TraceSnapshot {
         cached: { stat: BigIntStats; bytes: Buffer; identity: string } | undefined;
         reusable: boolean | undefined;
       }[] = [];
+      const planner = createTraceSnapshotBatchPlanner();
       for (
         let at = index;
         at < items.length && plans.length < traceSnapshotBatchLimits.items;
@@ -803,13 +845,7 @@ class TraceSnapshot {
         const reusable = cached && sameFile(cached.stat, before);
         if (
           (reusable && cached.bytes.length >= length) ||
-          !traceSnapshotBatchFits([
-            ...plans.map((plan) => ({
-              path: plan.path,
-              maximum: Math.max(1, plan.length),
-            })),
-            { path: item.path, maximum: Math.max(1, length) },
-          ])
+          !planner.add({ path: item.path, maximum: Math.max(1, length) })
         )
           break;
         plans.push({ ...item, before, length, cached, reusable });
@@ -838,14 +874,19 @@ class TraceSnapshot {
         const plan = plans[at]!,
           value = values[at]!;
         this.nativeResult(plan.path, value);
-        requireValue(
-          value.bytes.length === plan.length &&
-            sameFile(plan.before, lstatSync(plan.path, { bigint: true })),
-        );
+        this.confirmFileReceipt(plan.path, plan.maximum, plan.prefix === true, plan.before, value);
       }
       // Fence early items against changes while a later native item ran.
-      for (const plan of plans)
-        requireValue(sameFile(plan.before, lstatSync(plan.path, { bigint: true })));
+      for (let at = 0; at < plans.length; at++) {
+        const plan = plans[at]!;
+        this.confirmFileReceipt(
+          plan.path,
+          plan.maximum,
+          plan.prefix === true,
+          plan.before,
+          values[at]!,
+        );
+      }
       for (let at = 0; at < plans.length; at++) {
         const plan = plans[at]!;
         result.push(
@@ -884,18 +925,11 @@ class TraceSnapshot {
     if (process.platform === 'win32' && windowsTraceSnapshotBatchAvailable()) {
       for (let index = 0; index < this.guards.length;) {
         const guards: Guard[] = [];
+        const planner = createTraceSnapshotBatchPlanner();
         const width = this.prepared ? traceSnapshotBatchLimits.items : 2;
         for (let at = index; at < this.guards.length && guards.length < width; at++) {
           const next = this.guards[at]!;
-          if (
-            !traceSnapshotBatchFits(
-              [...guards, next].map((guard) => ({
-                path: guard.path,
-                maximum: this.nativeMaximum(guard),
-              })),
-            )
-          )
-            break;
+          if (!planner.add({ path: next.path, maximum: this.nativeMaximum(next) })) break;
           guards.push(next);
         }
         const items = guards.map((guard) => ({
@@ -1069,6 +1103,7 @@ function predictionText(
   response: JsonObject,
   predictionTurnId: string,
   snapshot: TraceSnapshot,
+  allowEmpty = false,
 ): string {
   requireValue(Array.isArray(response.output_items) && response.output_items.length > 0);
   let text: string | null = null;
@@ -1100,7 +1135,9 @@ function predictionText(
     );
     const suggestion = snapshot.json(content.text).suggestion;
     requireValue(
-      typeof suggestion === 'string' && suggestion.trim().length > 0 && suggestion.length <= 16_000,
+      typeof suggestion === 'string' &&
+        (allowEmpty || suggestion.trim().length > 0) &&
+        suggestion.length <= 16_000,
     );
     text = suggestion;
   }
@@ -1114,6 +1151,7 @@ function completedPrediction(
   requests: TraceRequest[],
   completions: TraceEvent[],
   endings: TraceEvent[],
+  allowEmpty = false,
 ): Omit<DesktopPredictionTracePrediction, 'binding'> {
   // The observed native shape has one inference. Until retry selection is verified,
   // never guess which of several requests or terminal records supplies the result.
@@ -1165,7 +1203,7 @@ function completedPrediction(
       response.upstream_request_id === completion.payload.upstream_request_id,
   );
   return {
-    text: predictionText(response, binding.predictionTurnId, snapshot),
+    text: predictionText(response, binding.predictionTurnId, snapshot, allowEmpty),
     completedAt: new Date(Number(ending.event.wall_time_unix_ms)).toISOString(),
     responsePayloadSha256: createHash('sha256').update(bytes).digest('hex'),
   };
@@ -1179,7 +1217,10 @@ function completedPrediction(
  * Filesystem safety is delegated to native Windows handles/DACLs or POSIX guards.
  */
 export class DesktopPredictionTraceReader {
-  constructor(private readonly root: string) {}
+  constructor(
+    private readonly root: string,
+    private readonly targetKey?: () => string,
+  ) {}
 
   isAvailable(): boolean {
     if (process.platform !== 'win32' && !process.getuid) return false;
@@ -1208,6 +1249,22 @@ export class DesktopPredictionTraceReader {
     predictionTurnId: string,
   ): DesktopPredictionTracePrediction | null {
     const result = this.readSnapshot(predictionThreadId, predictionTurnId, true);
+    return result?.prediction ? { binding: result.binding, ...result.prediction } : null;
+  }
+
+  /** Compaction requires the canonical terminal too; an empty result is a tombstone. */
+  readCompletedPredictionForRetention(
+    predictionThreadId: string,
+    predictionTurnId: string,
+  ): DesktopPredictionTracePrediction | null {
+    const result = this.readSnapshot(
+      predictionThreadId,
+      predictionTurnId,
+      true,
+      true,
+      undefined,
+      true,
+    );
     return result?.prediction ? { binding: result.binding, ...result.prediction } : null;
   }
 
@@ -1278,14 +1335,13 @@ export class DesktopPredictionTraceReader {
     });
   }
 
-  private *discoverCandidates(
+  private *discoverDirectories(
     snapshot: TraceSnapshot,
     names: string[],
     notBeforeUnixMs: number,
   ): Generator<{
     name: string;
     directory: string;
-    configured: JsonObject | undefined;
   }> {
     const preparedWindows = process.platform === 'win32' && snapshot.isPreparedDiscovery;
     const width = preparedWindows ? traceSnapshotBatchLimits.items : 1;
@@ -1314,15 +1370,46 @@ export class DesktopPredictionTraceReader {
         group = group.filter((_item, offset) => {
           const manifest = snapshot.json(manifests[offset]!);
           requireValue(
-            manifest.schema_version === 1 && Number.isSafeInteger(manifest.started_at_unix_ms),
+            supportedTraceSchema(manifest.schema_version) &&
+              Number.isSafeInteger(manifest.started_at_unix_ms),
           );
           return Number(manifest.started_at_unix_ms) >= notBeforeUnixMs;
         });
       }
+      yield* group;
+    }
+  }
+
+  private *discoverCandidates(
+    snapshot: TraceSnapshot,
+    names: string[],
+    notBeforeUnixMs: number,
+  ): Generator<{
+    name: string;
+    directory: string;
+    configured: JsonObject | undefined;
+  }> {
+    const preparedWindows = process.platform === 'win32' && snapshot.isPreparedDiscovery;
+    const width = preparedWindows ? traceSnapshotBatchLimits.items : 1;
+    const directories = this.discoverDirectories(snapshot, names, notBeforeUnixMs);
+    for (;;) {
+      // Filtering may leave one eligible directory in each manifest batch.
+      // Repack only these fresh, request-local receipts so prefixes/payloads
+      // keep bounded batches. Excluded manifests retain all commit guards.
+      const group: { name: string; directory: string }[] = [];
+      while (group.length < width) {
+        const next = directories.next();
+        if (next.done) break;
+        group.push(next.value);
+      }
+      if (group.length === 0) return;
+      const prefixMaximum = preparedWindows
+        ? limits.initialDiscoveryPrefix
+        : limits.discoveryPrefix;
       const prefixes = snapshot.files(
         group.map((item) => ({
           path: join(item.directory, 'trace.jsonl'),
-          maximum: limits.discoveryPrefix,
+          maximum: prefixMaximum,
           prefix: true,
         })),
       );
@@ -1330,12 +1417,9 @@ export class DesktopPredictionTraceReader {
         ...item,
         configured: undefined as JsonObject | undefined,
       }));
-      const references: { offset: number; path: string }[] = [];
-      for (let offset = 0; offset < contexts.length; offset++) {
+      const reference = (offset: number, prefix: Buffer) => {
         const item = contexts[offset]!;
-        const lines = snapshot.decode(() =>
-          prefixes[offset]!.toString('utf8').split('\n').slice(0, -1),
-        );
+        const lines = snapshot.decode(() => prefix.toString('utf8').split('\n').slice(0, -1));
         for (const line of lines) {
           const event = snapshot.json(line),
             payload = object(event.payload);
@@ -1344,14 +1428,34 @@ export class DesktopPredictionTraceReader {
             payload.event_type === 'session_configured'
           ) {
             if (!preparedWindows) snapshot.directory(join(item.directory, 'payloads'));
-            references.push({
+            return {
               offset,
               path: payloadPath(item.directory, payload.event_payload, 'protocol_event'),
-            });
-            break;
+            };
           }
         }
+        return undefined;
+      };
+      const discovered = prefixes.map((prefix, offset) => reference(offset, prefix));
+      if (preparedWindows) {
+        // Once the first configured event is complete, later prefix lines were
+        // never parser inputs. Otherwise extend the successful short read to
+        // the original bound, retaining both native/prefix receipts at commit.
+        // A rejected native read never reaches this extension path.
+        const extend = prefixes.flatMap((prefix, offset) =>
+          !discovered[offset] && prefix.length === prefixMaximum ? [offset] : [],
+        );
+        const extended = snapshot.files(
+          extend.map((offset) => ({
+            path: join(contexts[offset]!.directory, 'trace.jsonl'),
+            maximum: limits.discoveryPrefix,
+            prefix: true,
+          })),
+        );
+        for (let at = 0; at < extend.length; at++)
+          discovered[extend[at]!] = reference(extend[at]!, extended[at]!);
       }
+      const references = discovered.filter((item) => item !== undefined);
       const payloadItems = references.map((item) => ({
         path: item.path,
         maximum: limits.protocolEvent,
@@ -1399,13 +1503,31 @@ export class DesktopPredictionTraceReader {
         string,
         { threadId: string; turnId: string; requestedAt: number }
       >();
+      const compact = this.targetKey
+        ? new DesktopSuggestionStore(this.root, this.targetKey()).read(snapshot, sourceThreadId)
+        : undefined;
+      const cached = new Map<string, DesktopPredictionTracePrediction | null>();
+      if (
+        compact &&
+        compact.sourceTurnId === sourceTurnId &&
+        compact.requestedAt >= notBeforeUnixMs
+      ) {
+        const key = JSON.stringify([compact.predictionThreadId, compact.predictionTurnId]);
+        executions.set(key, {
+          threadId: compact.predictionThreadId,
+          turnId: compact.predictionTurnId,
+          requestedAt: compact.requestedAt,
+        });
+        cached.set(key, compact.prediction);
+      }
       for (const { name, directory, configured } of this.discoverCandidates(
         snapshot,
         names,
         notBeforeUnixMs,
       )) {
         if (
-          configured?.thread_source !== 'composer_predictions' ||
+          !configured ||
+          !['composer_predictions', 'thread_sample'].includes(String(configured?.thread_source)) ||
           configured.forked_from_id !== sourceThreadId
         )
           continue;
@@ -1429,6 +1551,30 @@ export class DesktopPredictionTraceReader {
           const event = indexed ? indexed.eventAt(lineIndex++).event : snapshot.json(line);
           const payload = object(event.payload);
           if (payload.type !== 'inference_started') continue;
+          if (configured.thread_source === 'thread_sample') {
+            const request = snapshot.json(
+              payloadBytes(
+                snapshot,
+                directory,
+                payload.request_payload,
+                'inference_request',
+                limits.request,
+              ),
+            );
+            const metadata = object(request.client_metadata)['x-codex-turn-metadata'];
+            requireValue(typeof metadata === 'string' && metadata.length <= limits.eventLine);
+            const sample = snapshot.json(metadata);
+            // thread/sample also serves non-prediction callers. Its name alone
+            // never authorizes exposing their output as a next-user suggestion.
+            if (sample.turn_trigger !== 'composer_predictions') {
+              requireValue(
+                sample.prediction_source_thread_id === undefined &&
+                  sample.prediction_source_turn_id === undefined,
+              );
+              continue;
+            }
+            requireValue(sample.thread_source === 'thread_sample');
+          }
           const turnId = event.codex_turn_id;
           requireValue(validUuid(turnId));
           const binding =
@@ -1443,6 +1589,9 @@ export class DesktopPredictionTraceReader {
           if (binding.sourceThreadId !== sourceThreadId || binding.sourceTurnId !== sourceTurnId)
             continue;
           const key = JSON.stringify([predictionThreadId, turnId]);
+          // Existing native evidence always supersedes a compacted copy. A
+          // changed or unfinished live record must never fall back to a cache.
+          cached.delete(key);
           const requestedAt = Number(event.wall_time_unix_ms);
           requireValue(Number.isSafeInteger(requestedAt) && requestedAt >= 0);
           executions.set(key, {
@@ -1463,6 +1612,13 @@ export class DesktopPredictionTraceReader {
       }
       const results: DesktopPredictionTracePrediction[] = [];
       for (const execution of selected) {
+        const key = JSON.stringify([execution.threadId, execution.turnId]);
+        if (cached.has(key)) {
+          const prediction = cached.get(key);
+          requireValue(prediction);
+          results.push(prediction);
+          continue;
+        }
         const read = () =>
           this.readSnapshot(
             execution.threadId,
@@ -1493,6 +1649,7 @@ export class DesktopPredictionTraceReader {
     includePrediction: boolean,
     recovery = false,
     sharedSnapshot?: TraceSnapshot,
+    allowEmpty = false,
   ): {
     binding: DesktopPredictionTraceBinding;
     prediction: Omit<DesktopPredictionTracePrediction, 'binding'> | null;
@@ -1520,7 +1677,7 @@ export class DesktopPredictionTraceReader {
         const manifestBytes = snapshot.file(join(directory, 'manifest.json'), limits.manifest);
         const manifest = snapshot.json(manifestBytes);
         requireValue(
-          manifest.schema_version === 1 &&
+          supportedTraceSchema(manifest.schema_version) &&
             validUuid(manifest.trace_id) &&
             name === `trace-${manifest.trace_id}-${predictionThreadId}` &&
             manifest.rollout_id === predictionThreadId &&
@@ -1535,7 +1692,7 @@ export class DesktopPredictionTraceReader {
         if (includePrediction) requireValue(log.length === 0 || log.at(-1) === 10);
         const indexed = snapshot
           .preparedLog(join(directory, 'trace.jsonl'), log, directory, predictionThreadId)
-          ?.forTurn(predictionTurnId);
+          ?.forTurn(predictionTurnId, manifest.schema_version);
         if (indexed) {
           if (recovery) terminalMessages.push(...indexed.terminals);
           if (includePrediction) {
@@ -1557,7 +1714,7 @@ export class DesktopPredictionTraceReader {
             event = snapshot.json(log.subarray(offset, end));
             offset = end + 1;
             requireValue(
-              event.schema_version === 1 &&
+              event.schema_version === manifest.schema_version &&
                 event.rollout_id === predictionThreadId &&
                 event.seq === expectedSequence++ &&
                 Number.isSafeInteger(event.wall_time_unix_ms),
@@ -1613,9 +1770,9 @@ export class DesktopPredictionTraceReader {
               clientMetadata['x-codex-turn-metadata'].length <= limits.eventLine,
           );
           const metadata = snapshot.json(clientMetadata['x-codex-turn-metadata']);
-          if (recovery) {
+          if (recovery || metadata.thread_source === 'thread_sample') {
             requireValue(
-              metadata.thread_source === 'composer_predictions' &&
+              ['composer_predictions', 'thread_sample'].includes(String(metadata.thread_source)) &&
                 metadata.turn_trigger === 'composer_predictions' &&
                 Array.isArray(request.input),
             );
@@ -1679,7 +1836,7 @@ export class DesktopPredictionTraceReader {
       }
       const prediction =
         includePrediction && binding
-          ? completedPrediction(snapshot, binding, requests, completions, endings)
+          ? completedPrediction(snapshot, binding, requests, completions, endings, allowEmpty)
           : null;
       if (recovery) {
         requireValue(prediction && terminalMessages.length === 1 && endings.length === 1);

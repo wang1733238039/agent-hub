@@ -10,11 +10,15 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -22,51 +26,161 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.semantics.testTag as semanticTestTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.sin
 
 @Composable internal fun VoicePermission(controller: VoiceInputController?) {
-    var launched by remember { mutableStateOf<String?>(null) }
-    val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted->
-        val id=launched;launched=null
-        if(id!=null) controller?.permissionResult(id,granted)
-    }
-    LaunchedEffect(controller?.permissionRequest,launched) {
-        val id=controller?.permissionRequest
-        if(id!=null && launched==null) { launched=id;permission.launch(Manifest.permission.RECORD_AUDIO) }
-    }
-}
-@Composable internal fun VoiceInputStrip(voice: VoiceInputController,text: String) {
-    val colors=MaterialTheme.colorScheme
-    Column(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=4.dp).floatingProduct(MobileDesign.composerRadius).padding(4.dp).testTag("voice-panel"),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Text(text.ifEmpty { "随心输入" },Modifier.fillMaxWidth().padding(horizontal=14.dp).padding(top=10.dp).testTag("dictation-transcript"),fontSize=17.sp,color=if(text.isEmpty()) colors.onSurfaceVariant else colors.onSurface,maxLines=6)
-        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(3.dp)) {
-            Box(Modifier.background(colors.onSurface.copy(alpha=0.06f),CircleShape)) { IconAction("close",if(voice.phase in listOf(VoiceInputController.Phase.LISTENING,VoiceInputController.Phase.REQUESTING)) "取消录音" else "结束等待","cancel-dictation",onClick=voice::cancel) }
-            if(voice.phase==VoiceInputController.Phase.FINISHING) {
-                VoiceTranscriptionActivity(voice.status,Modifier.weight(1f))
-            } else Canvas(Modifier.weight(1f).height(44.dp).testTag("dictation-waveform").semantics { contentDescription=voice.status }) {
-                val count=maxOf(1,(size.width/8.dp.toPx()).toInt());val center=count/2
-                repeat(count) { index->
-                    val sample=index-center+voice.levels.size/2;val bar=sample in voice.levels.indices
-                    val height=if(bar) (4+voice.levels[sample].coerceIn(0f,1f)*32).dp.toPx() else 3.dp.toPx()
-                    drawRoundRect(colors.onSurfaceVariant.copy(alpha=if(bar) 0.85f else 0.4f),Offset((index+0.5f)*size.width/count-1.5.dp.toPx(),(size.height-height)/2),Size(3.dp.toPx(),height),CornerRadius(1.5.dp.toPx()))
-                }
-            }
-            Box(Modifier.background(colors.onSurface.copy(alpha=0.06f),CircleShape)) {
-                if(voice.phase==VoiceInputController.Phase.FINISHING) {
-                    IconButton(onClick=voice::finish,enabled=false,modifier=Modifier.size(48.dp).testTag("stop-dictation").semantics { contentDescription=voice.status }) {
-                        CircularProgressIndicator(Modifier.size(18.dp),color=colors.onSurfaceVariant,strokeWidth=2.dp)
-                    }
-                } else IconAction(if(voice.phase==VoiceInputController.Phase.FAILED) "refresh" else "stop",if(voice.phase==VoiceInputController.Phase.FAILED) "重试转写" else "结束录音并转写","stop-dictation",voice.phase in listOf(VoiceInputController.Phase.LISTENING,VoiceInputController.Phase.FAILED),voice::finish)
+    // Both the physical launch identity and original capture ID survive saved-state restoration.
+    // Completing it retires that registry key before any new capture can request permission.
+    var launched by rememberSaveable { mutableStateOf<String?>(null) }
+    var completed by rememberSaveable { mutableStateOf<String?>(null) }
+    var launcherEpoch by rememberSaveable { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    val currentController by rememberUpdatedState(controller)
+    key(launcherEpoch) {
+        val submittedEpoch=launcherEpoch
+        val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted->
+            if(launcherEpoch==submittedEpoch) {
+                val id=launched;launched=null;launcherEpoch=java.util.UUID.randomUUID().toString()
+                if(id!=null) { completed=id;currentController?.permissionResult(id,granted) }
             }
         }
-        if(voice.phase!=VoiceInputController.Phase.FINISHING) Text(voice.status,Modifier.padding(horizontal=14.dp).testTag("voice-status"),fontSize=12.sp,color=colors.onSurfaceVariant)
-        if(voice.phase==VoiceInputController.Phase.FAILED) TextButton(onClick=voice::rerecord,modifier=Modifier.padding(horizontal=14.dp).heightIn(min=48.dp).testTag("voice-record-again")) { Text("重新录音",fontSize=17.sp,color=Color(0xFF007AFF)) }
+        LaunchedEffect(controller?.permissionRequest,launched) {
+            val id=controller?.permissionRequest
+            if(launcherEpoch==submittedEpoch && id!=null && launched==null && id!=completed) { launched=id;permission.launch(Manifest.permission.RECORD_AUDIO) }
+        }
+    }
+}
+@OptIn(ExperimentalLayoutApi::class)
+@Composable internal fun VoiceInputStrip(voice: VoiceInputController,text: String) {
+    val colors=MaterialTheme.colorScheme
+    val status=voice.statusCopyKey?.let {productText(it)} ?: voice.status
+    val stopHint=productText("轻触停止录音")
+    BoxWithConstraints(Modifier.fillMaxWidth().testTag("voice-adaptive-layout")) {
+        val compact=maxWidth.value/LocalDensity.current.fontScale<340f
+        val scroll=rememberScrollState()
+        // In a bounded composer the recovery actions own scrolling. An outer sheet scrolls an unbounded child.
+        val scrolling=if(maxHeight!=Dp.Infinity)Modifier.verticalScroll(scroll) else Modifier
+        Column(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=4.dp).floatingProduct(MobileDesign.composerRadius).then(scrolling).padding(4.dp).testTag("voice-panel"),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            val displayedText=if(voice.transcript.isEmpty())text else text+if(text.isEmpty() || text.last().isWhitespace())voice.transcript else "\n"+voice.transcript
+            Text(if(displayedText.isEmpty())productText("随心输入") else displayedText,Modifier.fillMaxWidth().padding(horizontal=14.dp).padding(top=10.dp).testTag("dictation-transcript"),fontSize=17.sp,color=if(displayedText.isEmpty()) colors.onSurfaceVariant else colors.onSurface)
+            val activity: @Composable (Modifier)->Unit={ modifier ->
+                when(voice.phase) {
+                    VoiceInputController.Phase.FINISHING->VoiceTranscriptionActivity(status,modifier)
+                    VoiceInputController.Phase.LISTENING->VoiceListeningActivity(voice.levels,status,stopHint,voice::finish,modifier)
+                    VoiceInputController.Phase.FAILED->VoiceFailureTitle(productText(voice.failureTitleKey),modifier)
+                    else->VoiceWaveform(voice.levels,modifier.testTag("dictation-waveform").semantics { contentDescription=status })
+                }
+            }
+            val close: @Composable ()->Unit={
+                Box(Modifier.background(colors.onSurface.copy(alpha=0.06f),CircleShape)) { IconAction("close",productText(if(voice.phase in listOf(VoiceInputController.Phase.LISTENING,VoiceInputController.Phase.REQUESTING)) "取消录音" else "丢弃录音"),"cancel-dictation",enabled=!voice.discarding && !voice.savedFileBusy,onClick=voice::discard) }
+            }
+            val stop: @Composable ()->Unit={
+                Box(Modifier.background(colors.onSurface.copy(alpha=0.06f),CircleShape)) {
+                    if(voice.phase==VoiceInputController.Phase.FINISHING) {
+                        IconButton(onClick=voice::finish,enabled=false,modifier=Modifier.size(48.dp).testTag("stop-dictation").semantics { contentDescription=status }) {
+                            CircularProgressIndicator(Modifier.size(18.dp),color=colors.onSurfaceVariant,strokeWidth=2.dp)
+                        }
+                    } else if(voice.phase==VoiceInputController.Phase.FAILED) {
+                        val retry=voice.hasRetryableRecording
+                        VoiceFailurePrimaryAction(label=productText(if(voice.discardFailed)"重试丢弃"else if(retry)"重试转写"else"重新录音"),
+                            enabled=if(voice.discardFailed)true else if(retry)voice.canRetry else voice.canRecordAgain,
+                            onClick={if(voice.discardFailed)voice.discard()else if(retry)voice.finish()else voice.rerecord()})
+                    } else IconAction("stop",productText("结束录音并转写"),"stop-dictation",voice.phase==VoiceInputController.Phase.LISTENING,onClick=voice::finish)
+                }
+            }
+            if(compact) {
+                activity(Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth().testTag("voice-compact-controls"),verticalAlignment=Alignment.CenterVertically) { close();Spacer(Modifier.weight(1f));stop() }
+            }else Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(3.dp)) { close();activity(Modifier.weight(1f));stop() }
+            if(voice.phase!=VoiceInputController.Phase.FINISHING) Text(status,Modifier.fillMaxWidth().padding(horizontal=14.dp).testTag("voice-status"),fontSize=12.sp,color=colors.onSurfaceVariant)
+            if(voice.provider==VoiceInputController.Provider.SYSTEM)Text(productText("手机系统语音服务可能需要联网。"),Modifier.padding(horizontal=14.dp),fontSize=12.sp,color=colors.onSurfaceVariant)
+            if(voice.canEndWaiting)VoiceRecoveryTextButton(label=productText("结束等待"),onClick=voice::endWaiting,modifier=Modifier.padding(horizontal=14.dp).heightIn(min=48.dp).testTag("voice-end-waiting"),fontSize=17.sp)
+            if(voice.canFillRecognizedText)VoiceRecoveryTextButton(label=productText("填入已识别文字"),onClick={ voice.fillRecognizedText() },modifier=Modifier.padding(horizontal=14.dp).heightIn(min=48.dp).testTag("voice-fill-recognized-text"),fontSize=17.sp)
+            if(voice.canInspectSavedFile || voice.savedFileBusy) {
+                Column(Modifier.fillMaxWidth().padding(horizontal=14.dp).testTag("saved-file-asr"),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                    Text(productText("在手机识别原录音"),fontSize=17.sp,modifier=Modifier.fillMaxWidth().testTag("saved-file-title"))
+                    Text(productText("仅下载语言模型需要联网，录音留在本机。"),fontSize=12.sp,modifier=Modifier.fillMaxWidth().testTag("saved-file-privacy"))
+                    FlowRow(Modifier.fillMaxWidth().testTag("saved-file-languages"),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                        for(locale in listOf("zh-CN","en-US"))VoiceRecoveryLanguageChip(selected=voice.savedFileLocale==locale,
+                            onClick={voice.chooseSavedFileLocale(locale)},enabled=voice.canInspectSavedFile,
+                            label=productText(if(locale=="zh-CN")"中文（普通话）"else"英语（美国）"),modifier=Modifier.heightIn(min=48.dp).testTag("saved-file-locale-$locale"))
+                    }
+                    Text(productText(voice.savedFileStatusKey),fontSize=12.sp,modifier=Modifier.fillMaxWidth().testTag("saved-file-status").semantics {liveRegion=androidx.compose.ui.semantics.LiveRegionMode.Polite})
+                    VoiceRecoveryTextButton(label=productText("检查离线模型"),onClick=voice::inspectSavedFile,enabled=voice.canInspectSavedFile && voice.savedFileLocale.isNotEmpty(),modifier=Modifier.heightIn(min=48.dp).testTag("saved-file-probe"))
+                    if(voice.savedFileProbe?.availability in setOf(SavedVoiceAvailability.MISSING,SavedVoiceAvailability.CORRUPT))
+                        VoiceRecoveryTextButton(label=productText("下载离线模型（约45MB）"),onClick=voice::downloadSavedFileModel,enabled=voice.canInspectSavedFile,modifier=Modifier.heightIn(min=48.dp).testTag("saved-file-download"))
+                    VoiceRecoveryTextButton(label=productText("识别并填入原草稿"),onClick=voice::transcribeSavedFile,enabled=voice.canTranscribeSavedFile,modifier=Modifier.heightIn(min=48.dp).testTag("saved-file-transcribe"))
+                }
+            }
+            if(voice.canRerecordWithSystem)VoiceRecoveryTextButton(label=productText("改用手机重新录音"),onClick=voice::recordAgainWithSystem,modifier=Modifier.padding(horizontal=14.dp).heightIn(min=48.dp).testTag("voice-rerecord-system"),fontSize=17.sp)
+            if(voice.phase==VoiceInputController.Phase.FAILED && (voice.hasRetryableRecording || voice.canFillRecognizedText)) VoiceRecoveryTextButton(label=productText("重新录音"),onClick=voice::rerecord,enabled=voice.canRecordAgain,colors=ButtonDefaults.textButtonColors(contentColor=Color(0xFF007AFF)),modifier=Modifier.padding(horizontal=14.dp).heightIn(min=48.dp).testTag("voice-record-again"),fontSize=17.sp)
+        }
+    }
+}
+
+/** Composer and question replies share the same persistent failure presentation. */
+@Composable internal fun VoiceFailureTitle(title: String,modifier: Modifier=Modifier) {
+    Row(modifier.heightIn(min=48.dp).testTag("voice-failure-title").semantics(mergeDescendants=true){},verticalAlignment=Alignment.CenterVertically,
+        horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        val color=voiceFailureTint()
+        val iconSize=with(LocalDensity.current){VoiceFailureStyle.fontSize.toDp()}
+        Canvas(Modifier.size(iconSize).testTag("voice-failure-icon")) {
+            val u=size.width/24f
+            drawCircle(color,10f*u,Offset(12f*u,12f*u),style=androidx.compose.ui.graphics.drawscope.Stroke(1.7f*u))
+            drawLine(color,Offset(12f*u,6f*u),Offset(12f*u,13f*u),1.7f*u)
+            drawCircle(color,1f*u,Offset(12f*u,17f*u))
+        }
+        Text(title,Modifier.weight(1f).testTag("voice-failure-label"),fontSize=VoiceFailureStyle.fontSize,
+            lineHeight=VoiceFailureStyle.lineHeight,fontWeight=VoiceFailureStyle.titleWeight,color=color)
+    }
+}
+
+/** PR60: icon-only failure action. The parent supplies the same circular background as close.
+ * Native Text is the single accessible name in Compose1.12; there is no rendered text label. */
+@Composable internal fun VoiceFailurePrimaryAction(label: String,enabled: Boolean,onClick: ()->Unit) {
+    IconButton(onClick=onClick,enabled=enabled,modifier=Modifier.size(VoiceFailureStyle.actionHitSize)
+        .testTag("stop-dictation").semantics {text=AnnotatedString(label)}) {VoiceFailureRetryIcon()}
+}
+
+/** Decorative fixed17dp clockwise glyph, matching iOS PR60 fixed17pt system image mapping. */
+@Composable internal fun VoiceFailureRetryIcon() {
+    ProductIcon("refresh",Modifier.size(VoiceFailureStyle.actionIconSize).testTag("voice-retry-icon"),LocalContentColor.current)
+}
+
+/** N067/N068: central stop action, mirrored side meters, one accessible button. */
+@Composable internal fun VoiceListeningActivity(levels: List<Float>,status: String,stopHint: String,onStop: ()->Unit,modifier: Modifier=Modifier) {
+    Row(modifier.heightIn(min=48.dp).testTag("dictation-waveform")
+        .clickable(role=Role.Button,onClick=onStop)
+        .semantics { contentDescription=stopHint;stateDescription=status },
+        verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+        VoiceWaveform(levels,Modifier.weight(1f).clearAndSetSemantics { semanticTestTag="dictation-waveform-leading" })
+        Text(stopHint,Modifier.clearAndSetSemantics { semanticTestTag="dictation-stop-hint" },fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,textAlign=TextAlign.Center)
+        VoiceWaveform(levels,Modifier.weight(1f).clearAndSetSemantics { semanticTestTag="dictation-waveform-trailing" },mirrored=true)
+    }
+}
+@Composable private fun VoiceWaveform(levels: List<Float>,modifier: Modifier=Modifier,mirrored: Boolean=false) {
+    val color=MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(modifier.height(44.dp)) {
+        val count=maxOf(1,(size.width/8.dp.toPx()).toInt());val center=count/2
+        repeat(count) { index->
+            val sample=index-center+levels.size/2;val bar=sample in levels.indices
+            val height=if(bar) (4+levels[sample].coerceIn(0f,1f)*32).dp.toPx() else 3.dp.toPx()
+            val x=(index+0.5f)*size.width/count
+            drawRoundRect(color.copy(alpha=if(bar) 0.85f else 0.4f),Offset((if(mirrored) size.width-x else x)-1.5.dp.toPx(),(size.height-height)/2),Size(3.dp.toPx(),height),CornerRadius(1.5.dp.toPx()))
+        }
     }
 }
 

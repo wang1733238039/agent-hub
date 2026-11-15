@@ -1,3 +1,4 @@
+import { diagnosticEvent } from './diagnostic-events.js';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { lstatSync, readFileSync } from 'node:fs';
@@ -6,15 +7,21 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { CodexHistoryReader } from './history-reader.js';
+import { DesktopInstallation } from './desktop-installation.js';
+import {
+  subagentActivityStatus,
+  subagentIds,
+  subagentItem,
+  subagentTranscript,
+  type SubagentTranscript,
+} from './subagents.js';
 import { DesktopFrameDecoder, desktopFrameLimits } from './desktop-framing.js';
 import { DesktopLiveWindow, type DesktopLiveObservation } from './desktop-live-window.js';
 import { configuredPermissionSettings, permissionSettings } from './generation-settings.js';
 import {
-  loadWindowsDesktop,
   openWindowsDesktopPipe,
   supportsDesktopStreamVersion,
   windowsDesktopPipe,
-  readMacDesktopVersion,
   type WindowsDesktopIdentity,
 } from './desktop-platform.js';
 import {
@@ -262,6 +269,9 @@ export class DesktopIpc {
   >();
   private modelReads = new Map<string, Promise<void>>();
   private modelEpoch = 0;
+  private connectionEpoch = 0;
+  private connecting: Promise<void> | undefined;
+  private connectionAbort: AbortController | undefined;
   ready = false;
   onSnapshot: (id: string, state: WireObject) => void = () => {};
   onUnavailable: (id: string) => void = () => {};
@@ -274,7 +284,18 @@ export class DesktopIpc {
     private readonly path: string,
     private readonly frameOptions: { drainTimeoutMs?: number } = {},
   ) {}
-  async connect(): Promise<void> {
+  connect(): Promise<void> {
+    if (this.connecting) return this.connecting;
+    const work = this.connectOnce().finally(() => {
+      if (this.connecting === work) this.connecting = undefined;
+    });
+    this.connecting = work;
+    return work;
+  }
+  private async connectOnce(): Promise<void> {
+    const epoch = this.connectionEpoch;
+    const abort = new AbortController();
+    this.connectionAbort = abort;
     if (process.platform !== 'win32') {
       const uid = process.getuid?.();
       const dir = lstatSync(dirname(this.path)),
@@ -294,8 +315,12 @@ export class DesktopIpc {
     }
     const socket =
       process.platform === 'win32'
-        ? await openWindowsDesktopPipe(this.windowsIdentity!)
+        ? await openWindowsDesktopPipe(this.windowsIdentity!, abort.signal)
         : connect(this.path);
+    if (epoch !== this.connectionEpoch) {
+      socket.destroy();
+      throw new Error('Desktop IPC startup cancelled');
+    }
     this.socket = socket;
     const frames = new DesktopFrameDecoder(
       (body) => {
@@ -344,13 +369,32 @@ export class DesktopIpc {
     });
     if (process.platform !== 'win32')
       await new Promise<void>((resolve, reject) => {
-        socket.once('connect', resolve);
-        socket.once('error', reject);
+        const connected = () => {
+          cleanup();
+          resolve();
+        };
+        const failed = () => {
+          cleanup();
+          reject(new Error('Desktop IPC startup closed'));
+        };
+        const cleanup = () => {
+          socket.removeListener('connect', connected);
+          socket.removeListener('error', failed);
+          socket.removeListener('close', failed);
+        };
+        socket.once('connect', connected);
+        socket.once('error', failed);
+        socket.once('close', failed);
       });
     const initialized = await this.request('initialize', { clientType: 'codex-manage' });
     this.clientId = string(object(initialized.result).clientId);
     if (!this.clientId) throw new Error('Desktop IPC initialization failed');
+    if (epoch !== this.connectionEpoch || socket !== this.socket || socket.destroyed) {
+      socket.destroy();
+      throw new Error('Desktop IPC startup cancelled');
+    }
     this.ready = true;
+    diagnosticEvent({ scope: 'desktop-ipc', stage: 'ready' });
   }
   private write(message: WireObject, beforeExecutionWrite?: () => void): void {
     if (!this.socket || this.socket.destroyed)
@@ -977,14 +1021,37 @@ export class DesktopIpc {
     return object(result.result);
   }
   close(): void {
+    this.connectionEpoch++;
+    this.connectionAbort?.abort();
+    this.ready = false;
     this.socket?.destroy();
   }
 }
 
+interface ParentSubagents {
+  reported: WireObject;
+  toolChildren: Set<string>;
+  activities: Map<string, { itemId: string; status: string | undefined }>;
+}
+
 export class DesktopRuntime {
+  private subagentParents = new Map<string, Set<string>>();
+  private parentChildren = new Map<string, Set<string>>();
+  private subagentReads = new Set<string>();
+  private subagentRetryAt = new Map<string, number>();
+  private subagentHistory = new Map<string, SubagentTranscript>();
+  private subagentHistoryTimer?: NodeJS.Timeout;
+  private subagentHistoryReading = false;
+  private subagentHistoryOffset = 0;
+  private subagentsClosed = false;
+  private parentSubagents = new WeakMap<WireObject, ParentSubagents>();
   readonly ipc: DesktopIpc;
   readonly reader: CodexHistoryReader;
   version = '';
+  private connecting: Promise<void> | undefined;
+  private closed = false;
+  private readonly installation: DesktopInstallation;
+  private metadataGeneration: string | undefined;
   onEvent: (method: string, params: WireObject) => void = () => {};
   onRequest: (id: string | number, method: string, params: WireObject) => void = () => {};
   onDisconnect: () => void = () => {};
@@ -1003,10 +1070,17 @@ export class DesktopRuntime {
           ? windowsDesktopPipe
           : join(homedir(), '.codex', 'ipc', 'ipc.sock')),
     );
+    this.installation = new DesktopInstallation(options, hostId);
     this.reader = new CodexHistoryReader(hostId, name, options.executable);
-    this.ipc.onSnapshot = (threadId, state) =>
+    this.ipc.onSnapshot = (threadId, state) => {
+      // Child snapshots never become top-level chats or grant execution control.
       this.onEvent('desktop/snapshot', { threadId, state });
-    this.ipc.onUnavailable = (threadId) => this.onEvent('desktop/unavailable', { threadId });
+      this.publishSubagentParents(threadId);
+    };
+    this.ipc.onUnavailable = (threadId) => {
+      this.onEvent('desktop/unavailable', { threadId });
+      this.publishSubagentParents(threadId);
+    };
     this.ipc.onDiscovered = (threadId) => this.onEvent('desktop/discovered', { threadId });
     this.ipc.onObservation = (threadId, observation) =>
       this.onEvent('desktop/observation', { threadId, observation });
@@ -1015,7 +1089,160 @@ export class DesktopRuntime {
     this.reader.onDisconnect = () => this.ipc.close();
   }
   get ready(): boolean {
-    return this.ipc.ready && this.reader.ready;
+    return this.installation.available && this.ipc.ready && this.reader.ready;
+  }
+  private publishSubagentParents(childId: string): void {
+    for (const threadId of this.subagentParents.get(childId) ?? []) {
+      const state = this.ipc.state(threadId);
+      if (state) this.onEvent('desktop/snapshot', { threadId, state });
+    }
+  }
+  followSubagents(parentId: string, state: WireObject): void {
+    const recent = desktopTurns(state)
+      .flatMap((turn) => list(turn.items).flatMap((item) => subagentIds(object(item))))
+      .filter((id) => id !== parentId)
+      .reverse();
+    const ids = new Set([...new Set(recent)].slice(0, 32).reverse());
+    for (const old of this.parentChildren.get(parentId) ?? []) {
+      if (ids.has(old)) continue;
+      this.subagentParents.get(old)?.delete(parentId);
+      if (!this.subagentParents.get(old)?.size) this.subagentParents.delete(old);
+    }
+    this.parentChildren.set(parentId, ids);
+    while (this.parentChildren.size > 32) {
+      const oldest = this.parentChildren.keys().next().value!;
+      for (const id of this.parentChildren.get(oldest)!) {
+        this.subagentParents.get(id)?.delete(oldest);
+        if (!this.subagentParents.get(id)?.size) {
+          this.subagentParents.delete(id);
+          this.subagentHistory.delete(id);
+          this.subagentRetryAt.delete(id);
+        }
+      }
+      this.parentChildren.delete(oldest);
+    }
+    if (ids.size && !this.subagentHistoryTimer && !this.subagentsClosed) {
+      this.subagentHistoryTimer = setInterval(() => void this.refreshSubagentHistory(), 1500);
+      this.subagentHistoryTimer.unref();
+    }
+    for (const id of ids) {
+      const parents = this.subagentParents.get(id) ?? new Set<string>();
+      parents.add(parentId);
+      this.subagentParents.set(id, parents);
+      if (
+        this.ipc.hasOwner(id) ||
+        this.subagentReads.has(id) ||
+        (this.subagentRetryAt.get(id) ?? 0) > Date.now()
+      )
+        continue;
+      this.subagentReads.add(id);
+      this.subagentRetryAt.set(id, Date.now() + 15_000);
+      void this.ipc
+        .follow(id, 1500)
+        .catch(() => undefined)
+        .finally(() => {
+          this.subagentReads.delete(id);
+          this.publishSubagentParents(id);
+        });
+    }
+  }
+  private subagentsForParent(state: WireObject): ParentSubagents {
+    const cached = this.parentSubagents.get(state);
+    if (cached) return cached;
+    const parent: ParentSubagents = {
+      reported: {},
+      toolChildren: new Set(),
+      activities: new Map(),
+    };
+    for (const turn of desktopTurns(state)) {
+      for (const value of list(turn.items)) {
+        const item = object(value);
+        if (item.type === 'collabAgentToolCall') {
+          Object.assign(parent.reported, object(item.agentsStates));
+          for (const id of subagentIds(item)) parent.toolChildren.add(id);
+        } else if (item.type === 'subAgentActivity') {
+          const [id] = subagentIds(item);
+          if (!id || id === state.id) continue;
+          const previous = parent.activities.get(id);
+          parent.activities.set(id, {
+            itemId: previous?.itemId ?? string(item.id),
+            status: subagentActivityStatus(item.kind) ?? previous?.status,
+          });
+        }
+      }
+    }
+    this.parentSubagents.set(state, parent);
+    return parent;
+  }
+  projectSubagent(item: WireObject, parentState?: WireObject): WireObject | undefined {
+    let tool = item;
+    if (item.type === 'subAgentActivity') {
+      const [id] = subagentIds(item);
+      if (!id || id === parentState?.id) return undefined;
+      const parent = parentState && this.subagentsForParent(parentState);
+      const activity = parent?.activities.get(id);
+      if (parent && (parent.toolChildren.has(id) || activity?.itemId !== item.id)) return undefined;
+      tool = {
+        ...item,
+        id: 'desktop-subagent-' + id,
+        type: 'collabAgentToolCall',
+        tool: string(item.agentPath),
+        receiverThreadIds: [id],
+        agentsStates: { [id]: { status: activity?.status ?? subagentActivityStatus(item.kind) } },
+      };
+    } else if (item.type === 'collabAgentToolCall' && parentState) {
+      const { reported } = this.subagentsForParent(parentState);
+      const states = { ...object(item.agentsStates) };
+      for (const id of subagentIds(item)) if (reported[id]) states[id] = reported[id];
+      tool = { ...item, agentsStates: states };
+    }
+    return subagentItem(
+      tool,
+      (id) => {
+        const state = this.ipc.state(id);
+        return state ? { ...state, turns: desktopTurns(state) } : undefined;
+      },
+      (id) => this.subagentHistory.get(id),
+    );
+  }
+  private async refreshSubagentHistory(): Promise<void> {
+    if (this.subagentsClosed || this.subagentHistoryReading || !this.ready) return;
+    const ids = [...this.subagentParents.keys()].filter(
+      (id) =>
+        !this.ipc.hasOwner(id) &&
+        (!this.subagentHistory.has(id) ||
+          [...this.subagentParents.get(id)!].some((parent) => {
+            const state = this.ipc.state(parent);
+            return state && desktopTurns(state).some((turn) => turn.status === 'inProgress');
+          })),
+    );
+    if (!ids.length) return;
+    this.subagentHistoryReading = true;
+    const start = this.subagentHistoryOffset % ids.length;
+    const batch = [...ids.slice(start), ...ids.slice(0, start)].slice(0, 4);
+    this.subagentHistoryOffset += batch.length;
+    try {
+      await Promise.allSettled(
+        batch.map(async (id) => {
+          // Metadata is evidence of saved output only, never of a live child owner.
+          const result = await this.reader.read('thread/read', {
+            threadId: id,
+            includeTurns: true,
+          });
+          const child = object(result.thread);
+          if (this.subagentsClosed || child.id !== id || !this.subagentParents.has(id)) return;
+          const value = subagentTranscript(child.turns);
+          const previous = this.subagentHistory.get(id);
+          if (previous?.text === value.text && previous.omitted === value.omitted) return;
+          this.subagentHistory.set(id, value);
+          while (this.subagentHistory.size > 128)
+            this.subagentHistory.delete(this.subagentHistory.keys().next().value!);
+          this.publishSubagentParents(id);
+        }),
+      );
+    } finally {
+      this.subagentHistoryReading = false;
+    }
   }
   /** Read this computer's desktop choice fresh; never copy another Host's settings. */
   async defaultPermissions(cwd: string): Promise<WireObject> {
@@ -1076,25 +1303,74 @@ export class DesktopRuntime {
       return false;
     }
   }
-  async connect(): Promise<void> {
-    // Collect optional acceptance metadata without checking build compatibility.
-    let actual: string;
-    if (process.platform === 'win32') {
-      if (!this.options.windowsDesktopConfig)
-        throw new Error('CODEX_DESKTOP_WINDOWS_CONFIG required');
-      const windows = loadWindowsDesktop(this.options.windowsDesktopConfig, this.hostId);
-      actual = windows.archive.version;
-      this.ipc.windowsIdentity = windows.identity;
-    } else {
-      actual = readMacDesktopVersion();
-    }
-    this.version = actual;
-    if (!this.reader.ready) await this.reader.connect();
+  connect(recoverInstallation = false): Promise<void> {
+    if (this.closed) return Promise.reject(new Error('Desktop runtime closed'));
+    if (this.connecting) return this.connecting;
+    const work = this.connectOnce(recoverInstallation).finally(() => {
+      if (this.connecting === work) this.connecting = undefined;
+    });
+    this.connecting = work;
+    return work;
+  }
+  private async connectOnce(recoverInstallation: boolean): Promise<void> {
+    const check = () => {
+      if (this.closed) {
+        this.ipc.close();
+        this.reader.close();
+        throw new Error('Desktop runtime closed');
+      }
+    };
+    let installed;
     try {
-      await this.ipc.connect();
+      installed = await this.installation.resolve(recoverInstallation || !this.ipc.ready);
     } catch (error) {
+      // A trust/protocol discovery failure must revoke live command readiness.
+      this.ipc.close();
+      throw error;
+    }
+    check();
+    await this.reader.configureExecutable(installed.executable, installed.generation);
+    this.metadataGeneration = installed.generation;
+    this.options.executable = installed.executable;
+    this.version = installed.version;
+    if (installed.windows) {
+      const previous = this.ipc.windowsIdentity;
+      const current = installed.windows.identity;
+      if (
+        previous &&
+        (previous.pid !== current.pid ||
+          previous.startedAtUnixMs !== current.startedAtUnixMs ||
+          previous.executableSha256 !== current.executableSha256)
+      )
+        this.ipc.close();
+      this.ipc.windowsIdentity = current;
+    }
+    check();
+    if (!this.reader.ready) await this.reader.connect();
+    check();
+    try {
+      if (!this.ipc.ready) await this.ipc.connect();
+      check();
+    } catch (error) {
+      this.ipc.close();
       this.reader.close();
       throw error;
+    }
+  }
+  /** Auxiliary readers share trusted discovery, but never execution/replay. */
+  async connectMetadataReader(
+    reader: CodexHistoryReader,
+    recover = false,
+    active = () => true,
+  ): Promise<void> {
+    await this.connect(recover);
+    if (this.closed || !active()) throw new Error('Desktop metadata reader closed');
+    await reader.configureExecutable(this.options.executable!, this.metadataGeneration);
+    if (this.closed || !active()) throw new Error('Desktop metadata reader closed');
+    if (!reader.ready) await reader.connect();
+    if (this.closed || !active()) {
+      reader.close();
+      throw new Error('Desktop runtime closed');
     }
   }
   async call(
@@ -1113,7 +1389,11 @@ export class DesktopRuntime {
         },
       };
     }
-    if (['thread/items/list', 'model/list'].includes(method))
+    if (
+      ['thread/items/list', 'model/list', 'account/read', 'account/rateLimits/read'].includes(
+        method,
+      )
+    )
       return this.reader.read(method, params);
     if (method === 'turn/start') {
       const state = this.ipc.state(threadId);
@@ -1288,6 +1568,12 @@ export class DesktopRuntime {
     /* Desktop retains all unsupported approvals. */
   }
   close(): void {
+    this.closed = true;
+    this.subagentsClosed = true;
+    if (this.subagentHistoryTimer) clearInterval(this.subagentHistoryTimer);
+    this.subagentParents.clear();
+    this.parentChildren.clear();
+    this.subagentHistory.clear();
     this.ipc.close();
     this.reader.close();
   }

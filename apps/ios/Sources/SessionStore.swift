@@ -1,9 +1,102 @@
 import SwiftUI
+import Combine
 import UniformTypeIdentifiers
 import MobileCore
 
+struct DraftImportDestination: Hashable {
+  let target: String
+  let generation: String?
+}
+
+struct EasyWorkDraftClearIntent {
+  let target: String
+  let draft: Draft
+  let textRevision: UInt64
+  let menuIdentity: String
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
+  #if DEBUG
+  // A standard app-hosted XCTest may inspect the existing UI-owned store.
+  // Never construct a second writer or expose a remote test command endpoint.
+  private(set) static weak var hostedEasyWorkAcceptanceStore: SessionStore?
+  private(set) static weak var hostedEasyWorkAcceptanceVoice: VoiceInputController?
+  // Exact independent Native case only: fail after the durable local capture,
+  // before any transport call or may-write disposition. Never persisted.
+  var devReplyBeforeTransportForAcceptance: ((PendingReply) throws -> Void)?
+  private var hostedReplySendWorkCount = 0
+  private var hostedReplyQueryWorkCount = 0
+  private var hostedEventWorkCount = 0
+  var devMetadataCreateBeforeTransportForAcceptance: ((String) throws -> Void)?
+  var devMetadataCreateAfterVerifiedForAcceptance: ((String, Conversation) throws -> Void)?
+  struct HostedMigrationExportObservation {
+    let caseId: String
+    let url: URL?
+    let error: String?
+    let cancelled: Bool
+  }
+  private(set) var hostedMigrationExportObservation: HostedMigrationExportObservation?
+  @Published var hostedEasyWorkProductUIPresented = false
+  private(set) var hostedEasyWorkDraftClearObservations: [[String: Any]] = []
+  func observeHostedEasyWorkDraftClear(_ phase: String, intent: EasyWorkDraftClearIntent?, capturedTarget: String) {
+    guard Self.hostedEasyWorkAcceptanceEnabled else { return }
+    hostedEasyWorkDraftClearObservations.append([
+      "phase": phase, "targetStillCurrent": targetKey == capturedTarget,
+      "intentPresent": intent != nil, "intentTargetStillCurrent": intent?.target == targetKey,
+      "draftValueStillCurrent": intent?.draft == draft,
+      "textRevisionStillCurrent": intent.map { drafts.textRevisions[$0.target, default: 0] == $0.textRevision } ?? false,
+      "capturedAttachmentCount": intent?.draft.attachments.count ?? -1,
+      "currentAttachmentCount": draft.attachments.count,
+      "currentImporting": isImporting, "recoveryRequired": localRecoveryRequired
+    ])
+  }
+  var hostedEasyWorkReadLoopState:[String:Any] {
+    ["eventTaskActive":eventTask != nil && eventTask?.isCancelled==false,
+     "eventRecoveryTaskActive":eventRecoveryTask != nil && eventRecoveryTask?.isCancelled==false,
+     "replyRecoveryTaskActive":replyRecoveryTask != nil && replyRecoveryTask?.isCancelled==false,
+     "replyRecoveryFlightCount":replyRecoveryFlights.count,
+     "replySendWorkCount":hostedReplySendWorkCount,
+     "replyQueryWorkCount":hostedReplyQueryWorkCount,
+     "eventWorkCount":hostedEventWorkCount,
+     "eventsCapability":saved.workspaces[client?.id ?? ""]?.capabilities?.contains("events")==true,
+     "applicationActive":UIApplication.shared.applicationState == .active,
+     "runtimeState":runtime?.state ?? "none","historyLoading":historyLoading,
+     "selectedThreadId":selectedThreadId ?? "none"]
+  }
+  private static let hostedEasyWorkAcceptanceRun=ProcessInfo.processInfo.environment["EASYWORK_HOSTED_NATIVE_CASE"]
+  static var hostedEasyWorkAcceptanceEnabled: Bool {
+    guard let run=hostedEasyWorkAcceptanceRun else { return false }
+    let process=ProcessInfo.processInfo
+    guard Bundle.main.bundleIdentifier=="com.easyai.agenthub.easyworkacceptance",
+      process.arguments.contains("-ui-testing"),process.arguments.contains("-restore-testing"),
+      UUID(uuidString:run)?.uuidString.lowercased()==run,
+      NSClassFromString("XCTestCase") != nil else { return false }
+    return true
+  }
+  static var hostedEasyWorkProductUIEnabled: Bool {
+    hostedEasyWorkAcceptanceEnabled
+      && ProcessInfo.processInfo.environment["EASYWORK_HOSTED_NATIVE_PRODUCT_UI"] == "1"
+  }
+  func attachHostedEasyWorkAcceptance(voice: VoiceInputController? = nil) {
+    guard Self.hostedEasyWorkAcceptanceEnabled else { return }
+    Self.hostedEasyWorkAcceptanceStore=self
+    if let voice { Self.hostedEasyWorkAcceptanceVoice=voice }
+  }
+  // Observe only the real system export callback in the single App-owned store.
+  // This never opens a file, starts an export, or supplies an output location.
+  func observeHostedMigrationExport(_ result: Result<URL, Error>?) {
+    guard Self.hostedEasyWorkAcceptanceEnabled,
+      Self.hostedEasyWorkAcceptanceStore === self,
+      hostedMigrationExportObservation == nil,
+      let run=Self.hostedEasyWorkAcceptanceRun else { return }
+    switch result {
+    case .some(.success(let url)): hostedMigrationExportObservation = .init(caseId: run, url: url, error: nil, cancelled: false)
+    case .some(.failure(let error)): hostedMigrationExportObservation = .init(caseId: run, url: nil, error: error.localizedDescription, cancelled: false)
+    case .none: hostedMigrationExportObservation = .init(caseId: run, url: nil, error: nil, cancelled: true)
+    }
+  }
+  #endif
   // A Published getter copies this large value, including all cache dictionaries,
   // even when a view only reads one member. Keep mutation notifications while
   // allowing ordinary stored-property reads and immutable persistence snapshots.
@@ -23,17 +116,37 @@ final class SessionStore: ObservableObject {
   // Interaction-only gate: changing it must not invalidate the chat view.
   var sidebarInteracting = false
   @Published var sheet: AppSheet?
+  @Published var projectGitContext: ProjectGitContext?
+  var projectGitClient: Client? {
+    guard let client, client.agentConnection?.target.agentId == "easywork" else { return nil }
+    return readingClient(client)
+  }
   @Published var search = ""
   @Published var chatSearchJump: ChatSearchJump?
   @Published private(set) var chatActionBusy: [String: String] = [:]
+  @Published private var chatActionQueryErrors: [String: String] = [:]
   private var errorRevision: UInt64 = 0
   @Published private var operationFailure: OperationFailure? { didSet { errorRevision &+= 1 } }
   var error: String? {
     get { operationFailure?.message }
-    set { operationFailure = newValue.map { OperationFailure(message: $0) } }
+    set {
+      // The alert action and SwiftUI's presentation binding can both dismiss it.
+      // A second clear has no new state to publish during presentation teardown.
+      guard newValue != nil || operationFailure != nil else { return }
+      operationFailure = newValue.map { OperationFailure(message: $0) }
+    }
   }
   var errorTitle: String { operationFailure?.title ?? L10n.tr("无法完成操作") }
-  func presentError(_ failure: Error) { operationFailure = OperationFailure(failure) }
+  func presentError(_ failure: Error, line: UInt = #line) {
+    #if DEBUG
+    ConnectionNoticeDiagnostics.record("present:\(line):\(String(describing: type(of: failure)))")
+    #endif
+    operationFailure = OperationFailure(failure)
+  }
+  func presentImportError(_ failure: Error, target: String) {
+    guard targetKey == target else { return }
+    presentError(failure)
+  }
   @Published var loading = false
   @Published private var loadingHistoryRequests: [String: Int] = [:]
   @Published var historyCursor: String?
@@ -68,9 +181,24 @@ final class SessionStore: ObservableObject {
   @Published private var connectionPhases: [String: ConnectionPhase] = [:]
   @Published var models: [CodexModel] = []
   @Published private(set) var aiSharingRequest: AISharingRequest?
+  #if DEBUG
+  private var sidebarPublishTraceSubscription: AnyCancellable?
+  private var sidebarPublishTrace: [[String: Any]] = []
+  private func recordSidebarPublishTrace(run: String) {
+    guard sidebarPublishTrace.count < 600 else { return }
+    sidebarPublishTrace.append(["at": Date().timeIntervalSince1970, "stack": Thread.callStackSymbols])
+    let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("easywork-store-publish-" + run + ".json")
+    do {
+      try JSONSerialization.data(withJSONObject: sidebarPublishTrace, options: [.sortedKeys]).write(to: file,
+        options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    } catch { print("EASYWORK_STORE_PUBLISH_TRACE_WRITE_FAILED", error) }
+  }
+  #endif
 
   private var eventTask: Task<Void, Never>?
   private var lastConnectionSuccess: [String: TimeInterval] = [:]
+  private var connectionAuthorizationNotices = ConnectionAuthorizationNotices<ConnectionAuthorizationIdentity<AgentRuntimeTarget>?>()
   private var workspaceRefreshGeneration: UUID?
   private var workspaceRefreshOwner: UUID?
   private var pendingManualHistoryRefresh: (client: UUID, history: UUID)?
@@ -186,6 +314,7 @@ private var userRequestedWorkspaceGeneration: UUID?
   #endif
 
   init() {
+    MobileReadingAuthority.install(SharedMobileRules.mergeDeviceReading)
     testMode = ProcessInfo.processInfo.arguments.contains("-ui-testing")
     if testMode && !ProcessInfo.processInfo.arguments.contains("-restore-testing") {
       UserDefaults.standard.removeObject(forKey: VoiceTranscriptionPreference.storageKey)
@@ -211,6 +340,13 @@ private var userRequestedWorkspaceGeneration: UUID?
       #endif
     }
     guard !localRecoveryRequired else { return }
+    #if DEBUG
+    if testMode, Bundle.main.bundleIdentifier == "com.easyai.agenthub.easyworkacceptance",
+      let run = ProcessInfo.processInfo.environment["EASYWORK_SIDEBAR_STATE_TRACE"],
+      run.range(of: #"^[a-zA-Z0-9_-]{1,80}$"#, options: .regularExpression) != nil {
+      sidebarPublishTraceSubscription = objectWillChange.sink { [weak self] _ in self?.recordSidebarPublishTrace(run: run) }
+    }
+    #endif
     finishLocalRestoration()
   }
 
@@ -282,6 +418,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     if saved.readingDeviceId == nil { saved.readingDeviceId = UUID().uuidString }
     let migrateDetachedReplies = saved.mobileCacheVersion != 2
     dirtyHistoryKeys.formUnion(SharedMobileRules.migrateCache(&saved))
+    let repairedUnverifiedReading = discardUnverifiedEasyWorkReading()
     if migrateDetachedReplies {
       for host in saved.clients where !host.isDemo {
         let target = host.agentConnection?.target ?? saved.workspaces[host.id]?.readTarget ?? host.codexDirect?.target
@@ -320,6 +457,21 @@ private var userRequestedWorkspaceGeneration: UUID?
     if testMode && !ProcessInfo.processInfo.arguments.contains("-restore-testing") {
       enableDemo()
     }
+    #if DEBUG
+    // Only the independent F73 acceptance App may receive a real Host binding from XCTest.
+    if testMode, ProcessInfo.processInfo.arguments.contains("-usage-acceptance"),
+      Bundle.main.bundleIdentifier == "com.easyai.agenthub.usage.acceptance",
+      let raw = ProcessInfo.processInfo.environment["USAGE_ACCEPTANCE_FIXTURE"],
+      let fixture = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+      let value = fixture["client"], let data = try? JSONSerialization.data(withJSONObject: value),
+      let client = try? JSONDecoder().decode(Client.self, from: data), !client.isDemo,
+      let token = fixture["token"] as? String {
+      saved = SavedSession()
+      saved.clients = [client]; saved.selectedClientId = client.id
+      try? CredentialVault.set(token, id: client.id)
+      drawerOpen = true
+    }
+    #endif
     if saved.runtimes == nil { saved.runtimes = [:] }
     if saved.outbox == nil { saved.outbox = [:] }
     // Older versions only changed the banner when ending a wait. Move those
@@ -333,6 +485,14 @@ private var userRequestedWorkspaceGeneration: UUID?
       CodexHostRoutes.shared.register(saved.clients[index])
     }
     if let hostId = saved.selectedClientId { restoreSelection(hostId) }
+    #if DEBUG && targetEnvironment(simulator)
+    if testMode && !ProcessInfo.processInfo.arguments.contains("-restore-testing")
+      && ProcessInfo.processInfo.arguments.contains("-subagent-reading-fixture"), client?.isDemo == true {
+      let section = String(repeating: "Original C2 text 100% %@ 🧭 stays intact.\n", count: 1000)
+      saved.history[targetKey] = [ChatMessage(id: "c2-fixture-child", role: "tool", text: "C2 original child",
+        kind: "subAgent", status: "completed", detail: "C2_DETAIL_HEAD\n" + section + "C2_DETAIL_MIDDLE\n" + section + "C2_DETAIL_TAIL")]
+    }
+    #endif
     #if DEBUG
     if testMode && ProcessInfo.processInfo.arguments.contains("-history-short-paging-fixture") {
       saved.history[targetKey] = (0..<72).map { index in
@@ -364,10 +524,11 @@ private var userRequestedWorkspaceGeneration: UUID?
     }
     for pending in (saved.threadForks ?? [:]).values where pending.phase.isPending && pending.detached != true {
       // Restoring a receipt can never take over the user's current screen.
-      if let host = forkClient(for: pending.source) {
+      if let host = forkClient(for: pending) {
         observeFork(host, pending: pending, navigation: nil)
       }
     }
+    if repairedUnverifiedReading { persist() }
   }
 
   var client: Client? {
@@ -490,7 +651,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     if saved.aiSharingGrants?.contains(where: { $0.scope == scope }) == true { return true }
     aiSharingRequest = AISharingRequest(scope: scope, targetKey: targetKey, computerName: host.name,
       agentName: saved.workspaces[host.id]?.clientType?.name ?? (scope.target.agentId == "easywork" ? "EasyWork" : "Codex"),
-      modelName: scope.model == "codex-dictation" ? L10n.tr("Codex 语音转写") : scope.model == "follow-computer" ? L10n.tr("跟随电脑端配置") : models.first(where: { $0.id == scope.model })?.name ?? scope.model)
+      modelName: scope.model == "codex-dictation" ? L10n.tr(scope.target.agentId == "easywork" ? "EasyWork 语音转写" : "Codex 语音转写") : scope.model == "follow-computer" ? L10n.tr("跟随电脑端配置") : models.first(where: { $0.id == scope.model })?.name ?? scope.model)
     sheet = .aiSharing
     return false
   }
@@ -536,6 +697,24 @@ private var userRequestedWorkspaceGeneration: UUID?
       ? DemoData.projects.filter { $0.hostId == client.id && !(saved.demoDeletedProjectIds ?? []).contains($0.id) }
         + (saved.workspaces[client.id]?.projects ?? []).filter { !(saved.demoDeletedProjectIds ?? []).contains($0.id) }
       : saved.workspaces[client.id]?.projects ?? []
+  }
+  private var recentProjectScope: String? {
+    guard let host = client else { return nil }
+    if host.isDemo { return "recent-projects-demo:" + host.id }
+    return SharedMobileRules.nativeReadingKey(mobileReadingTarget(host), threadId: nil)
+  }
+  var recentProjects: [Project] {
+    guard let scope = recentProjectScope, let history = saved.recentProjects else { return [] }
+    let available = projects.filter { $0.hostId == client?.id }
+    return history.recentIDs(in: scope, availableIDs: Set(available.map(\.id))).compactMap { id in
+      available.first { $0.id == id }
+    }
+  }
+  private func rememberRecentProject(_ id: String?) {
+    guard let id, let scope = recentProjectScope,
+      projects.contains(where: { $0.id == id && $0.hostId == client?.id }) else { return }
+    if saved.recentProjects == nil { saved.recentProjects = RecentProjects() }
+    saved.recentProjects?.record(id, in: scope)
   }
   var threads: [Conversation] {
     guard let client else { return [] }
@@ -623,8 +802,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     guard pendingConnection == nil else { return "pending-connection" }
     guard selectedThreadId != nil else { return "no-thread" }
     guard let workspace = saved.workspaces[host.id] else { return "no-workspace" }
-    guard ["desktop-runtime", "easywork-runtime"].contains(workspace.connectionMode) else { return "runtime-mode" }
-    guard supportsSuggestionSource(workspace) else { return "capability" }
+    guard suggestionSourceKind(workspace, host: host) != nil else { return "runtime-or-capability" }
     guard let target = workspace.readTarget,
       target == mobileReadingTarget(host) else { return "target" }
     guard let runtime else { return "no-runtime" }
@@ -646,16 +824,22 @@ private var userRequestedWorkspaceGeneration: UUID?
   private func suggestionScope(requiringOnline: Bool) -> DesktopSuggestionScope? {
     guard let host = client, !host.isDemo, (!requiringOnline || host.online), pendingConnection == nil,
       let threadId = selectedThreadId,
-      let workspace = saved.workspaces[host.id], supportsSuggestionSource(workspace),
+      let workspace = saved.workspaces[host.id], let sourceKind = suggestionSourceKind(workspace, host: host),
       let target = workspace.readTarget, target == mobileReadingTarget(host),
       let runtime, runtime.state == "idle", runtime.canControl == true,
       let sourceTurnId = runtime.suggestionSourceTurnId, !sourceTurnId.isEmpty else { return nil }
+    if sourceKind == .runtime,
+      (isImporting || pending != nil || pendingDesktopCreation != nil || sendingKeys.contains(targetKey)) { return nil }
     return DesktopSuggestionScope(target: target, threadId: threadId, sourceTurnId: sourceTurnId,
       navigation: clientGeneration.uuidString + ":" + historyGeneration.uuidString,
-      connection: (host.endpoint ?? "") + ":" + (host.codexDirect?.fingerprint ?? ""),
-      requiresDisplayedSource: workspace.capabilities?.contains("desktop:suggestions:displayed:v1") == true,
-      requiresNativeSource: workspace.connectionMode == "desktop-runtime" && workspace.capabilities?.contains("desktop:suggestions:displayed:v1") != true,
-      requiresRuntimeSource: workspace.connectionMode == "easywork-runtime")
+      connection: (host.endpoint ?? "") + ":" + (sourceKind == .runtime
+        ? host.agentConnection?.credentialRef ?? "" : host.codexDirect?.fingerprint ?? ""),
+      requiresDisplayedSource: sourceKind == .desktopDisplay,
+      requiresNativeSource: sourceKind == .nativeTrace,
+      requiresRuntimeSource: sourceKind == .runtime)
+  }
+  private func suggestionSourceKind(_ workspace: WorkspaceSnapshot, host: Client) -> DesktopSuggestionSourceKind? {
+    (try? AgentClients.resolve(host))?.desktopSuggestionSource(host, workspace: workspace)
   }
   func readNextTurnSuggestion(_ host: Client, scope: DesktopSuggestionScope) async throws -> DesktopSuggestionResponse {
     try await suggestionReadAhead.read(scope) {
@@ -688,7 +872,8 @@ private var userRequestedWorkspaceGeneration: UUID?
         currentSuggestion: currentSuggestion, currentDraft: suggestionDraftSnapshot) else { return false }
     setText(text, target: action.draft.targetKey)
     drafts.suggestionUndo = DesktopSuggestionDraftUndo(scope: action.scope, suggestionId: action.suggestion.id,
-      originalText: action.draft.text, applied: suggestionDraftSnapshot)
+      originalText: action.draft.text, applied: suggestionDraftSnapshot,
+      handledVersionKey: action.suggestion.handledVersionKey(targetKey: action.draft.targetKey, sourceTurnId: action.scope.sourceTurnId))
     return true
   }
   func undoDesktopSuggestion(_ undo: DesktopSuggestionDraftUndo) -> Bool {
@@ -722,9 +907,10 @@ private var userRequestedWorkspaceGeneration: UUID?
       workspaceAvailable: workspace != nil, connectionMode: workspace?.connectionMode, conversations: conversations)
   }
   func isConnecting(_ host: Client) -> Bool {
-    !host.isDemo && !host.online && connectionPhases[host.id] != .failed
+    host.migrationNeedsVerification != true && !host.isDemo && !host.online && connectionPhases[host.id] != .failed
   }
   func connectionLabel(for host: Client) -> String {
+    if host.migrationNeedsVerification == true { return L10n.tr("迁移后需重新配对") }
     if host.online { return L10n.tr("已连接") }
     if host.isDemo { return L10n.tr("离线 · 查看缓存") }
     switch connectionPhases[host.id] {
@@ -746,7 +932,8 @@ private var userRequestedWorkspaceGeneration: UUID?
   }
   private func recordConnectionFailure(_ failure: Error, host: Client, displayError: Bool = true, startedAt: TimeInterval? = nil) {
     let transient: Bool
-    if let url = failure as? URLError {
+    if failure is RecoverableConnectionReadFailure { transient = true }
+    else if let url = failure as? URLError {
       transient = [.networkConnectionLost, .notConnectedToInternet, .timedOut, .cannotFindHost,
         .cannotConnectToHost, .dnsLookupFailed, .resourceUnavailable, .backgroundSessionWasDisconnected].contains(url.code)
     } else if case HostServiceError.unavailable = failure { transient = true }
@@ -769,7 +956,15 @@ private var userRequestedWorkspaceGeneration: UUID?
     // Background reads must not reopen a blocking alert every scan/retry.
     // Explicit connection attempts keep their own inline reauthorization action.
     if case HostServiceError.rejected(401, _) = failure, host.agentConnection == nil { return }
-    if !transient && displayError && client?.id == host.id { presentError(failure) }
+    if !transient && displayError && client?.id == host.id {
+      let show = connectionAuthorizationNotices.shouldPresent(target: host.id,
+        identity: host.agentConnection?.authorizationNoticeIdentity,
+        failure: (failure as? any ConnectionAuthorizationFailure)?.authorizationNoticeKey)
+      #if DEBUG
+      ConnectionNoticeDiagnostics.record("automatic:\(String(describing: type(of: failure))):\((failure as? any ConnectionAuthorizationFailure)?.authorizationNoticeKey ?? "unclassified"):\(show)")
+      #endif
+      if show { presentError(failure) }
+    }
   }
   private func mobileUnreadSnapshots() async throws -> (scopes: [AgentRuntimeTarget], snapshots: [MobileUnreadSnapshot]) {
     // Keep one frozen input across batches; newer work cancels this projection.
@@ -787,6 +982,7 @@ private var userRequestedWorkspaceGeneration: UUID?
       let workspace = state.workspaces[host.id]
       let context = ReadingKeyContext(host, workspace: workspace)
       scopes.append(context.machine)
+      guard host.migrationNeedsVerification != true else { continue }
       for thread in workspace?.threads ?? [] {
         // Bulk directory projection must not occupy one uninterrupted frame.
         // A brief suspension lets native scrolling/layout run between batches.
@@ -804,7 +1000,7 @@ private var userRequestedWorkspaceGeneration: UUID?
         let record = state.mobileReads?[key]
         let latest = thread.readState?.latest
         var localReply: (messageId: String, contentVersion: String)?
-        if latest == nil, let reply = state.history[cacheKey(host, threadId: thread.id,
+        if latest == nil, thread.readAuthorityRevision == nil, let reply = state.history[cacheKey(host, threadId: thread.id,
           state: state, machine: context.machine)]?.last(where: {
           $0.role == "assistant" && !["inProgress", "running", "streaming", "unknown"].contains($0.status ?? "completed")
         }) {
@@ -814,10 +1010,28 @@ private var userRequestedWorkspaceGeneration: UUID?
           latest: latest, read: record?.position,
           unread: ReadingReconciliation.unread(state: thread.readState, legacyUnread: thread.hasUnreadTurn == true,
             fallbackUnread: thread.showsUnreadDot, record: record, baseline: state.mobileReadBaselines?[key]),
-          localReply: localReply))
+          localReply: localReply, authorityCounter: thread.readAuthorityRevision))
       }
     }
     return (scopes, snapshots)
+  }
+  @discardableResult private func discardUnverifiedEasyWorkReading() -> Bool {
+    var changed = false
+    for host in saved.clients where host.migrationNeedsVerification == true && host.agentConnection?.target.agentId == "easywork" {
+      guard var workspace = saved.workspaces[host.id] else { continue }
+      for index in workspace.threads.indices {
+        let key = readingKey(host, threadId: workspace.threads[index].id)
+        readingTasks.removeValue(forKey: key)?.cancel()
+        if saved.mobileReads?.removeValue(forKey: key) != nil { changed = true }
+        if saved.mobileReadBaselines?.removeValue(forKey: key) != nil { changed = true }
+        if workspace.threads[index].readState != nil || workspace.threads[index].readAuthorityRevision != nil || workspace.threads[index].hasUnreadTurn != nil { changed = true }
+        workspace.threads[index].readState = nil
+        workspace.threads[index].readAuthorityRevision = nil
+        workspace.threads[index].hasUnreadTurn = nil
+      }
+      saved.workspaces[host.id] = workspace
+    }
+    return changed
   }
   func synchronizeMobileUnread() {
     unreadProjectionTask?.cancel()
@@ -850,12 +1064,13 @@ private var userRequestedWorkspaceGeneration: UUID?
     }
   }
   var visibleReadPosition: ReadPosition? {
+    guard client?.migrationNeedsVerification != true else { return nil }
     guard let state = conversation?.readState, state.version == 1 else { return nil }
     let position = state.latest
-    return messages.contains { $0.role == "assistant" && position.matches(messageId: $0.id, text: $0.text, status: $0.status) } ? position : nil
+    return messages.contains { $0.role == "assistant" && position.matches(messageId: $0.id, text: $0.text, status: $0.status, projection: $0.readingProjection) } ? position : nil
   }
   func recordVisibleContent() {
-    guard let host = client, let thread = conversation, !host.isDemo, !historyLoading else { return }
+    guard let host = client, let thread = conversation, !host.isDemo, host.migrationNeedsVerification != true, !historyLoading else { return }
     let reply = messages.last { $0.role == "assistant" && !["inProgress", "running", "streaming", "unknown"].contains($0.status ?? "completed") }
     let validPosition = visibleReadPosition
     if let validPosition { recordVisibleRead(validPosition) }
@@ -882,7 +1097,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     }
     let context = readingContextKey
     let value = MobileVisibleRead(target: scope, threadId: thread.id, position: validPosition,
-      noticeIds: Set(visible.map(\.id)), legacyReply: thread.readState == nil ? reply.map {
+      noticeIds: Set(visible.map(\.id)), legacyReply: thread.readState == nil && thread.readAuthorityRevision == nil ? reply.map {
         ($0.id, ReadPosition.contentVersion(messageId: $0.id, text: $0.text, status: $0.status ?? "completed"))
       } : nil)
     unreadReconciler.submitVisible(value) { [weak self] result in
@@ -907,9 +1122,18 @@ private var userRequestedWorkspaceGeneration: UUID?
       old.version == new.version, old.latest.revision > new.latest.revision {
       result.readState = old
     }
+    if let oldCounter = prior?.readAuthorityRevision,
+      incoming.readAuthorityRevision == nil || incoming.readAuthorityRevision! < oldCounter {
+      result.readState = prior?.readState; result.readAuthorityRevision = oldCounter
+    }
+    if let oldCounter = prior?.readAuthorityRevision, incoming.readAuthorityRevision == oldCounter,
+      incoming.readState?.latest != prior?.readState?.latest {
+      result.readState = prior?.readState; result.readAuthorityRevision = oldCounter
+    }
     return result
   }
   private func reconcileReading(_ host: Client, updatedThreadId: String? = nil) {
+    guard host.migrationNeedsVerification != true else { return }
     let readerId = readingClient(host).readingScopeId
     // A conversation snapshot updates one summary, not the entire directory.
     // Other pending acknowledgements must still be retried at the same time.
@@ -932,9 +1156,9 @@ private var userRequestedWorkspaceGeneration: UUID?
     }
   }
   func recordVisibleRead(_ position: ReadPosition) {
-    guard let host = client, let thread = conversation, !host.isDemo,
+    guard let host = client, let thread = conversation, !host.isDemo, host.migrationNeedsVerification != true,
       let state = thread.readState, state.version == 1, state.latest == position,
-      messages.contains(where: { $0.role == "assistant" && position.matches(messageId: $0.id, text: $0.text, status: $0.status) }) else { return }
+      messages.contains(where: { $0.role == "assistant" && position.matches(messageId: $0.id, text: $0.text, status: $0.status, projection: $0.readingProjection) }) else { return }
     let key = readingKey(host, threadId: thread.id)
     let old = saved.mobileReads?[key]
     guard old?.position != position, (old?.position.revision ?? 0) <= position.revision else {
@@ -946,6 +1170,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     syncReading(host, threadId: thread.id)
   }
   private func syncReading(_ host: Client, threadId: String, knownKey: String? = nil) {
+    guard host.migrationNeedsVerification != true else { return }
     let key = knownKey ?? readingKey(host, threadId: threadId)
     guard readingTasks[key] == nil, host.online,
       saved.workspaces[host.id]?.capabilities?.contains("threads:read-state") == true,
@@ -1152,6 +1377,7 @@ private var userRequestedWorkspaceGeneration: UUID?
   var selectedModel: CodexModel? { models.first { $0.id == (draft.model ?? runtime?.generationSettings?.model) } }
   var modelLabel: String { selectedModel?.name ?? draft.model ?? runtime?.generationSettings?.model ?? L10n.tr("电脑默认") }
   var availableEfforts: [String] { selectedModel?.supportedEfforts ?? [] }
+  var separatesEasyWorkCurrentSettings: Bool { client?.agentConnection?.target.agentId == "easywork" && selectedThreadId != nil }
   var selectedEffort: String? { draft.effort ?? runtime?.generationSettings?.effort }
   var generationDisplay: GenerationDisplay {
     SessionPolicies.shared.generationDisplay(threadSelected: selectedThreadId != nil,
@@ -1164,6 +1390,13 @@ private var userRequestedWorkspaceGeneration: UUID?
   }
   var displayedEffortLabel: String {
     generationDisplay.effort.map { effortLabel($0) } ?? L10n.tr("跟随电脑")
+  }
+  var currentModelLabel: String {
+    let model = runtime?.generationSettings?.model
+    return models.first { $0.id == model }?.name ?? model ?? L10n.tr("同步中")
+  }
+  var currentEffortLabel: String {
+    runtime?.generationSettings?.effort.map { effortLabel($0) } ?? L10n.tr("跟随电脑")
   }
   var selectedPermissionMode: String? { draft.permissionMode ?? runtime?.generationSettings?.permissionMode }
   var permissionOptions: [AgentPermissionOption] { guard let client, let agent = try? AgentClients.resolve(client) else { return [] }; return agent.permissionOptions(client) }
@@ -1205,8 +1438,8 @@ private var userRequestedWorkspaceGeneration: UUID?
       creationPending: pendingDesktopCreation != nil, importing: isImporting,
       running: isRunning, preferredReplyMode: replyMode)
   }
-  var isWritable: Bool { conversation?.archived != true && SessionPolicies.shared.writable(access: accessPolicy) }
-  var canCompose: Bool { conversation?.archived != true && codexStorageConflictMessage == nil && SessionPolicies.shared.compose(access: accessPolicy) }
+  var isWritable: Bool { client?.migrationNeedsVerification != true && conversation?.archived != true && SessionPolicies.shared.writable(access: accessPolicy) }
+  var canCompose: Bool { client?.migrationNeedsVerification != true && conversation?.archived != true && codexStorageConflictMessage == nil && SessionPolicies.shared.compose(access: accessPolicy) }
   var canCreateThread: Bool { SessionPolicies.shared.createThread(access: accessPolicy) }
   var canCreateProject: Bool {
     client?.isDemo == true || saved.workspaces[client?.id ?? ""]?.capabilities?.contains("projects:create") == true
@@ -1227,13 +1460,19 @@ private var userRequestedWorkspaceGeneration: UUID?
     return ThreadForkSource(target: mobileReadingTarget(host), threadId: threadId)
   }
   private func forkClient(for source: ThreadForkSource) -> Client? {
-    saved.clients.first { $0.id == source.target.hostId && mobileReadingTarget($0) == source.target }
+    let matches = saved.clients.filter { mobileReadingTarget($0) == source.target }
+    if let selected = client, let exact = matches.first(where: { $0.id == selected.id }) { return exact }
+    return matches.count == 1 ? matches.first : nil
+  }
+  private func forkClient(for pending: PendingThreadFork) -> Client? {
+    saved.clients.first { $0.id == pending.request.hostId && mobileReadingTarget($0) == pending.sourceTarget
+      && (pending.sourceCredentialRef == nil || $0.agentConnection?.credentialRef == pending.sourceCredentialRef) }
   }
   private func forkBaseReason(_ source: ThreadForkSource?) -> String? {
     let host = source.flatMap { forkClient(for: $0) }
     let workspace = host.flatMap { saved.workspaces[$0.id] }
-    let reason = ThreadForkRules.shared.baseReason(supportedSource: host != nil && host?.isDemo == false && source?.target.agentId == "codex",
-      desktopConnected: workspace?.connectionMode == "desktop-runtime" && workspace?.agentConnectionState?.runtimeConnected != false,
+    let reason = ThreadForkRules.shared.baseReason(supportedSource: host != nil && host?.isDemo == false,
+      desktopConnected: workspace?.agentConnectionState?.runtimeConnected ?? (workspace?.connectionMode == "desktop-runtime"),
       capabilities: workspace?.capabilities ?? [], online: host?.online == true)
     return reason.map { L10n.tr(LocalizedText(stringLiteral: $0)) }
   }
@@ -1244,7 +1483,9 @@ private var userRequestedWorkspaceGeneration: UUID?
     let reason = ThreadForkRules.shared.reason(turnId: turnId, baseReason: forkBaseReason(source),
       pending: source.map { visibleForks($0).contains(where: { $0.phase.isPending && $0.detached != true }) } ?? false,
       options: availability, environment: environment.rawValue,
-      worktreeCapability: source.map { saved.workspaces[$0.target.hostId]?.capabilities?.contains("threads:fork:worktree") == true } ?? false,
+      worktreeCapability: source.flatMap { forkClient(for: $0) }.map {
+        saved.workspaces[$0.id]?.capabilities?.contains("threads:fork:worktree") == true
+      } ?? false,
       optionError: source.flatMap { forkOptionErrors[$0.key] })
     return reason.map { L10n.tr(LocalizedText(stringLiteral: $0)) }
   }
@@ -1276,10 +1517,14 @@ private var userRequestedWorkspaceGeneration: UUID?
   func forkThread(source: ThreadForkSource?, turnId: String?, environment: ThreadForkEnvironment) {
     guard let source, source == forkSource, let turnId, let host = forkClient(for: source),
       forkReason(source: source, turnId: turnId, environment: environment) == nil else { return }
-    guard requireAISharing(host) else { return }
+    // EasyWork forks copy existing metadata on this same authenticated Host.
+    // They do not submit conversation content to a model provider.
+    if host.agentConnection?.target.agentId != "easywork" {
+      guard requireAISharing(host) else { return }
+    }
     let request = ThreadForkRequest(hostId: host.id, threadId: source.threadId, turnId: turnId,
       clientOperationId: UUID().uuidString, environment: environment)
-    let pending = PendingThreadFork(request: request, sourceTarget: source.target, createdAt: Date(), phase: .submitted)
+    let pending = PendingThreadFork(request: request, sourceTarget: source.target, sourceCredentialRef: host.agentConnection?.credentialRef, createdAt: Date(), phase: .submitted)
     if saved.threadForks == nil { saved.threadForks = [:] }
     saved.threadForks?[pending.id] = pending
     forkNavigationOwners[source.key] = pending.id
@@ -1313,7 +1558,7 @@ private var userRequestedWorkspaceGeneration: UUID?
   private func acceptFork(_ operation: ThreadForkOperation, host: Client, pending: PendingThreadFork,
     navigation: ForkNavigation?) async throws {
     guard operation.request == pending.request, saved.threadForks?[pending.id]?.request == pending.request,
-      forkClient(for: pending.source) != nil else { throw HostServiceError.wrongHost }
+      forkClient(for: pending) != nil else { throw HostServiceError.wrongHost }
     if operation.phase == .confirmed {
       guard let id = operation.forkedThreadId, !id.isEmpty, id != pending.request.threadId else {
         throw HostServiceError.invalidResponse
@@ -1339,7 +1584,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     guard let navigation else { return false }
     return navigation.client == clientGeneration && navigation.history == historyGeneration && navigation.draft == draft
       && !drawerOpen
-      && forkSource == pending.source && forkClient(for: pending.source) != nil
+      && forkSource == pending.source && forkClient(for: pending) != nil
       && saved.threadForks?[pending.id]?.detached != true
       && forkNavigationOwners[pending.source.key] == pending.id
   }
@@ -1349,7 +1594,8 @@ private var userRequestedWorkspaceGeneration: UUID?
     let agent = try AgentClients.resolve(host)
     let workspace = try await completeReadingThreadPages(
       try await agent.workspace(readingClient(host), projectCursor: nil, threadCursor: nil), host: host)
-    guard workspace.hostId == host.id, workspace.connectionMode == "desktop-runtime",
+    guard workspace.hostId == host.id, (workspace.agentConnectionState?.runtimeConnected ?? (workspace.connectionMode == "desktop-runtime")),
+      workspace.capabilities?.contains("threads:fork") == true,
       workspace.projects.allSatisfy({ $0.hostId == host.id }), workspace.threads.allSatisfy({ $0.hostId == host.id }),
       workspace.readTarget == nil || workspace.readTarget == pending.sourceTarget else { throw HostServiceError.wrongHost }
     let history = try await agent.history(readingClient(host), threadId: id, cursor: nil)
@@ -1380,7 +1626,7 @@ private var userRequestedWorkspaceGeneration: UUID?
         saved.threadForks?[pending.id]?.phase.isPending == true,
         saved.threadForks?[pending.id]?.detached != true {
         do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-        guard !forkQueryingIDs.contains(pending.id), forkClient(for: pending.source) != nil else { continue }
+        guard !forkQueryingIDs.contains(pending.id), forkClient(for: pending) != nil else { continue }
         do {
           let operation = try await AgentClients.resolve(host).forkStatus(host, threadId: pending.request.threadId, operationId: pending.id)
           try await acceptFork(operation, host: host, pending: pending, navigation: navigation)
@@ -1395,7 +1641,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     }
   }
   func queryFork(_ pending: PendingThreadFork) {
-    guard forkSource == pending.source, let host = forkClient(for: pending.source),
+    guard forkSource == pending.source, let host = forkClient(for: pending),
       !forkQueryingIDs.contains(pending.id), !forkSubmittingIDs.contains(pending.id) else { return }
     forkQueryingIDs.insert(pending.id)
     // Detached uncertain receipts are read-only. Opening a known child is a new explicit navigation intent.
@@ -1574,7 +1820,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     return messages.contains(where: { $0.role == "user" })
       && canSubmit(Draft(text: L10n.tr(LocalizedText(stringLiteral: SharedMobileRules.runAgainText(restart: false)))))
   }
-  private var composerDecision: (action: ComposerAction, enabled: Bool) {
+  var composerDecision: (action: ComposerAction, enabled: Bool) {
     return SharedMobileRules.composer(stopping: stoppingKeys.contains(targetKey), running: isRunning,
       sending: sendingKeys.contains(targetKey), creationPending: pendingDesktopCreation.map { $0.phase != "rejected" } == true,
       draft: draft, canSend: canSend, canStop: canStop, canRunAgain: canRunAgain,
@@ -1595,13 +1841,31 @@ private var userRequestedWorkspaceGeneration: UUID?
     // Both actions are explicit new turns in the selected Host/Thread.
     send(content: Draft(text: L10n.tr(LocalizedText(stringLiteral: SharedMobileRules.runAgainText(restart: restart)))))
   }
+  @Published private var scopedImports: [DraftImportDestination: Int] = [:]
+  func captureDraftImportDestination() -> DraftImportDestination {
+    let current = attachmentDestination()
+    return DraftImportDestination(target: current.key, generation: current.generation)
+  }
+  func isDraftImportCurrent(_ destination: DraftImportDestination) -> Bool {
+    !localRecoveryRequired && destination.generation != nil
+      && drafts.values[destination.target]?.attachmentImportGeneration == destination.generation
+  }
   var isImporting: Bool {
-    recoveringAttachmentKeys.contains(targetKey) || localImportTargets.values.contains {
+    scopedImports[DraftImportDestination(target: targetKey, generation: draft.attachmentImportGeneration), default: 0] > 0 || recoveringAttachmentKeys.contains(targetKey) || localImportTargets.values.contains {
       $0.key == targetKey && $0.generation == draft.attachmentImportGeneration
     }
   }
   func beginImport(_ target: String) { imports[target, default: 0] += 1 }
   func endImport(_ target: String) { imports[target] = max(0, imports[target, default: 0] - 1) }
+  func beginImport(_ destination: DraftImportDestination) {
+    guard isDraftImportCurrent(destination) else { return }
+    scopedImports[destination, default: 0] += 1
+  }
+  func endImport(_ destination: DraftImportDestination) {
+    let remaining = max(0, scopedImports[destination, default: 0] - 1)
+    if remaining == 0 { scopedImports.removeValue(forKey: destination) }
+    else { scopedImports[destination] = remaining }
+  }
   var colorScheme: ColorScheme? {
     saved.appearance == .system ? nil : saved.appearance == .dark ? .dark : .light
   }
@@ -1690,6 +1954,12 @@ private var userRequestedWorkspaceGeneration: UUID?
     }
   }
 
+  func finishValidatedAgentConnection(_ id: String) async throws {
+    selectClient(id, refreshAutomatically: false, dismissSheet: false)
+    try await persistBeforeCommand()
+    sheet = nil
+    if client?.isDemo == false { Task { await refresh() } }
+  }
   func persistForBackground() {
     guard !localRecoveryRequired else { return }
     synchronizeMobileUnread()
@@ -1740,7 +2010,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     persist()
   }
 
-  func selectClient(_ id: String, refreshAutomatically: Bool = true) {
+  func selectClient(_ id: String, refreshAutomatically: Bool = true, dismissSheet: Bool = true) {
     guard saved.clients.contains(where: { $0.id == id }) else { return }
     clientGeneration = UUID()
     historyGeneration = UUID()
@@ -1751,7 +2021,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     restoreSelection(id)
     drawerOpen = false
     search = ""
-    sheet = nil
+    if dismissSheet { sheet = nil }
     historyCursor = nil
     error = nil
     persist()
@@ -1814,6 +2084,9 @@ private var userRequestedWorkspaceGeneration: UUID?
 
   func migrationPayload() throws -> EncryptedMigration.Payload {
     var snapshot = saved; snapshot.drafts = drafts.values
+    let hostRevocations = TaskNotificationShared.read([String: TaskHostNotificationRevocation].self, name: "pending-host-revocations.json") ?? [:]
+    let hasEasyWork = (snapshot.clients + hostRevocations.values.map(\.client)).contains { !$0.isDemo && $0.agentConnection?.target.agentId == "easywork" }
+    try VoiceMigrationSafety.requireCaptureStable()
     var files: [LocalAttachment] = []
     for draft in snapshot.drafts.values { files.append(contentsOf: draft.attachments) }
     for pending in snapshot.outbox?.values ?? Dictionary<String, PendingReply>().values { files.append(contentsOf: pending.sourceAttachments ?? []) }
@@ -1824,24 +2097,26 @@ private var userRequestedWorkspaceGeneration: UUID?
     }
     var attachments: [String: Data] = [:]
     for file in files { attachments[file.fileName] = try Data(contentsOf: attachmentURL(file)) }
-    let hostRevocations = TaskNotificationShared.read([String: TaskHostNotificationRevocation].self, name: "pending-host-revocations.json") ?? [:]
-    let notificationClients = snapshot.clients + hostRevocations.values.map(\.client)
-    let ids = Set(notificationClients.filter { !$0.isDemo }.flatMap { [$0.id, $0.agentConnection?.credentialRef].compactMap { $0 } }
-      + ["easywork-device-identity", "easywork-oidc-session", "agent-cache-key-v1"])
+    let archiveRevocations: [String: TaskHostNotificationRevocation] = hasEasyWork ? [:] : hostRevocations
+    let notificationClients = snapshot.clients + archiveRevocations.values.map(\.client)
+    let ids = try EncryptedMigration.credentialIds(notificationClients, requireGrant: true, read: CredentialVault.existingToken)
     var credentials: [String: String] = [:]
     for id in ids { let value = CredentialVault.token(id); if !value.isEmpty { credentials[id] = value } }
     var sounds: [String: Data] = [:]
     for item in TaskNotificationSoundLibrary.sounds where item.imported {
       sounds[item.id] = try Data(contentsOf: TaskNotificationSoundLibrary.directory.appendingPathComponent(item.id))
     }
-    return EncryptedMigration.Payload(bundleIdentifier: Bundle.main.bundleIdentifier ?? "", state: snapshot,
+    let voiceSource = try PendingVoiceMigration.capture(), voiceOriginals = voiceSource.bundle
+    return EncryptedMigration.Payload(version: voiceOriginals == nil ? 1 : 2, bundleIdentifier: Bundle.main.bundleIdentifier ?? "", state: snapshot,
       credentials: credentials, attachments: attachments, notificationPreferences: TaskNotificationShared.preferences,
-      notificationKey: TaskNotificationShared.secret("device-key"), notificationDeviceId: TaskNotificationShared.read(String.self, name: "device-id.json"),
-      notificationBindings: TaskNotificationShared.bindings, notificationSounds: TaskNotificationSoundLibrary.sounds.filter(\.imported), soundFiles: sounds,
-      notificationSeen: TaskNotificationShared.read([String].self, name: "seen.json"), notificationNotices: TaskNotificationShared.notices, notificationHostRevocations: hostRevocations)
+      notificationKey: hasEasyWork ? nil : TaskNotificationShared.secret("device-key"), notificationDeviceId: hasEasyWork ? nil : TaskNotificationShared.read(String.self, name: "device-id.json"),
+      notificationBindings: hasEasyWork ? [:] : TaskNotificationShared.bindings, notificationSounds: TaskNotificationSoundLibrary.sounds.filter(\.imported), soundFiles: sounds,
+      notificationSeen: hasEasyWork ? [] : TaskNotificationShared.read([String].self, name: "seen.json"), notificationNotices: hasEasyWork ? [] : TaskNotificationShared.notices, notificationHostRevocations: archiveRevocations, easyworkAuthorizationPolicyVersion: 1, notificationInstallationPolicyVersion: hasEasyWork ? 1 : nil, pendingVoiceOriginals: voiceOriginals, pendingVoiceSource: voiceSource)
   }
 
   func restoreMigration(_ payload: EncryptedMigration.Payload) throws {
+    try VoiceMigrationSafety.requireCaptureStable()
+    try EncryptedMigration.validateOriginals(payload)
     guard MigrationIdentityPolicy.accepts(source: payload.bundleIdentifier, destination: Bundle.main.bundleIdentifier) else {
       throw HostServiceError.message(L10n.tr("这份备份不属于当前 App 或受支持的旧版本，现有数据未更改。"))
     }
@@ -1850,8 +2125,31 @@ private var userRequestedWorkspaceGeneration: UUID?
       throw HostServiceError.message(L10n.tr("请在尚未添加真实电脑的新安装中导入迁移文件，现有连接未更改。"))
     }
     let notificationClients = payload.state.clients + (payload.notificationHostRevocations?.values.map(\.client) ?? [])
-    let allowedIds = Set(notificationClients.filter { !$0.isDemo }.flatMap { [$0.id, $0.agentConnection?.credentialRef].compactMap { $0 } }
-      + ["easywork-device-identity", "easywork-oidc-session", "agent-cache-key-v1"])
+    let hasEasyWork = notificationClients.contains { $0.agentConnection?.target.agentId == "easywork" }
+    guard payload.notificationInstallationPolicyVersion == nil || payload.notificationInstallationPolicyVersion == 1 else { throw HostServiceError.invalidResponse }
+    let useLocalNotificationIdentity = hasEasyWork || payload.notificationInstallationPolicyVersion == 1
+    if hasEasyWork {
+      for id in EncryptedMigration.installationCredentials {
+        guard try CredentialVault.existingToken(id)?.isEmpty != false else {
+          throw HostServiceError.message(L10n.tr("此安装已有设备身份或登录请求，原资料已保留，请使用新安装导入。"))
+        }
+      }
+    }
+    if useLocalNotificationIdentity {
+      let protectedNames: Set<String> = ["preferences.json", "pending-revocations.json", "pending-host-revocations.json", "easywork-presentation-v1.json"]
+      let existing = FileManager.default.fileExists(atPath: TaskNotificationShared.directory.path)
+        ? try FileManager.default.contentsOfDirectory(atPath: TaskNotificationShared.directory.path) : []
+      guard TaskNotificationShared.secret("device-key") == nil, TaskNotificationShared.secret("bindings") == nil,
+        !existing.contains(where: { protectedNames.contains($0) || $0.hasPrefix("notice-") }),
+        !TaskNotificationSoundLibrary.sounds.contains(where: \.imported) else {
+        throw HostServiceError.message(L10n.tr("此安装已有通知设置或声音资料，原资料已保留，请使用新安装导入。"))
+      }
+    }
+    guard payload.easyworkAuthorizationPolicyVersion == nil || payload.easyworkAuthorizationPolicyVersion == 1 else { throw HostServiceError.invalidResponse }
+    let requiredIds = try EncryptedMigration.credentialIds(notificationClients, requireGrant: payload.easyworkAuthorizationPolicyVersion == 1, read: { payload.credentials[$0] })
+    // Legacy archives may contain installation credentials. Accept their format
+    // for recovery, but never install another phone's identity or login.
+    let allowedIds = requiredIds.union(payload.easyworkAuthorizationPolicyVersion == nil ? EncryptedMigration.installationCredentials : [])
     guard payload.credentials.keys.allSatisfy({ allowedIds.contains($0) }),
       payload.attachments.keys.allSatisfy(EncryptedMigration.safeFilename),
       payload.soundFiles.keys.allSatisfy({ EncryptedMigration.safeFilename($0) && $0.hasSuffix(".caf") }),
@@ -1871,7 +2169,9 @@ private var userRequestedWorkspaceGeneration: UUID?
     if let detached = payload.state.detachedDesktopCreations { for pendingList in detached.values { for pending in pendingList { attachmentReferences.append(contentsOf: pending.attachments) } } }
     guard attachmentReferences.allSatisfy({ EncryptedMigration.safeFilename($0.fileName) && payload.attachments[$0.fileName]?.count == $0.size }) else { throw HostServiceError.invalidResponse }
     for data in payload.soundFiles.values { try TaskNotificationSoundLibrary.validateArchiveSound(data) }
-    let previous = Dictionary(uniqueKeysWithValues: payload.credentials.keys.map { ($0, CredentialVault.token($0)) })
+    let voiceRestore = try PendingVoiceMigration.prepareRestore(payload.pendingVoiceOriginals)
+    let credentials = payload.credentials.filter { !EncryptedMigration.installationCredentials.contains($0.key) }
+    let previous = Dictionary(uniqueKeysWithValues: credentials.keys.map { ($0, CredentialVault.token($0)) })
     let previousSecrets = ["device-key", "bindings"].map { ($0, TaskNotificationShared.secret($0)) }
     var importedState = payload.state
     // Consent belongs to this installation; a migrated backup cannot grant permission.
@@ -1881,10 +2181,37 @@ private var userRequestedWorkspaceGeneration: UUID?
     importedState.codexReaderScopeIds = nil // Imported readers never impersonate the prior phone.
     importedState.mobileReads = [:]
     importedState.mobileReadBaselines = [:]
+    let easyworkIds = Set(importedState.clients.filter { $0.agentConnection?.target.agentId == "easywork" }.map(\.id))
+    for (key, original) in importedState.replyRecovery ?? [:] where easyworkIds.contains(original.original.hostId) {
+      importedState.replyRecovery?[key]?.retryConsumed = true
+    }
+    for index in importedState.clients.indices where easyworkIds.contains(importedState.clients[index].id) {
+      importedState.clients[index].migrationNeedsVerification = true
+      importedState.clients[index].online = false
+    }
+    // The original bodies, operation IDs and targets stay immutable. Imported
+    // requests are archived locally; re-pairing cannot replay them.
+    for (key, original) in importedState.outbox ?? [:] where easyworkIds.contains(original.hostId) {
+      if importedState.detachedReplies == nil { importedState.detachedReplies = [:] }
+      if !(importedState.detachedReplies?[key]?.contains { $0.id == original.clientMessageId } ?? false) {
+        importedState.detachedReplies?[key, default: []].append(DetachedReplyRecord(original: original))
+      }
+      importedState.outbox?.removeValue(forKey: key)
+    }
+    for (key, original) in importedState.desktopCreations ?? [:] where easyworkIds.contains(original.hostId) {
+      if importedState.detachedDesktopCreations == nil { importedState.detachedDesktopCreations = [:] }
+      if !(importedState.detachedDesktopCreations?[key]?.contains { $0.clientOperationId == original.clientOperationId } ?? false) {
+        importedState.detachedDesktopCreations?[key, default: []].append(original)
+      }
+      importedState.desktopCreations?.removeValue(forKey: key)
+    }
+    for (id, original) in importedState.threadForks ?? [:] where original.sourceTarget.agentId == "easywork" {
+      importedState.threadForks?[id]?.detached = true
+    }
     var rollback: [(URL, Data?)] = []
     func preserve(_ url: URL) { rollback.append((url, try? Data(contentsOf: url))) }
     do {
-      for (id, value) in payload.credentials { try CredentialVault.set(value, id: id) }
+      for (id, value) in credentials { try CredentialVault.set(value, id: id) }
       let attachments = persistenceURL.deletingLastPathComponent().appendingPathComponent("Attachments", isDirectory: true)
       try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
       for (name, data) in payload.attachments { let url = attachments.appendingPathComponent(name); preserve(url); try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }
@@ -1892,25 +2219,29 @@ private var userRequestedWorkspaceGeneration: UUID?
       for (name, data) in payload.soundFiles { let url = TaskNotificationSoundLibrary.directory.appendingPathComponent(name); preserve(url); try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }
       for name in ["sounds.json", "device-id.json", "preferences.json", "seen.json", "pending-revocations.json", "pending-host-revocations.json", "mobile-unread-v1.json"] { preserve(TaskNotificationShared.directory.appendingPathComponent(name)) }
       try TaskNotificationShared.write(payload.notificationSounds, name: "sounds.json")
-      if let key = payload.notificationKey { try TaskNotificationShared.setSecret(key, account: "device-key") }
-      if let id = payload.notificationDeviceId { try TaskNotificationShared.write(id, name: "device-id.json") }
-      try TaskNotificationShared.setBindings(payload.notificationBindings)
-      try TaskNotificationShared.write(payload.notificationSeen ?? [], name: "seen.json")
-      try TaskNotificationShared.write(Array(payload.notificationBindings.keys), name: "pending-revocations.json")
-      try TaskNotificationShared.write(payload.notificationHostRevocations ?? [:], name: "pending-host-revocations.json")
-      for event in payload.notificationNotices ?? [] { preserve(TaskNotificationShared.directory.appendingPathComponent("notice-" + event.id + ".json")); try TaskNotificationShared.remember(event) }
+      if !useLocalNotificationIdentity {
+        if let key = payload.notificationKey { try TaskNotificationShared.setSecret(key, account: "device-key") }
+        if let id = payload.notificationDeviceId { try TaskNotificationShared.write(id, name: "device-id.json") }
+        try TaskNotificationShared.setBindings(payload.notificationBindings)
+      }
+      try TaskNotificationShared.write(useLocalNotificationIdentity ? [] : payload.notificationSeen ?? [], name: "seen.json")
+      try TaskNotificationShared.write(useLocalNotificationIdentity ? [] : Array(payload.notificationBindings.keys), name: "pending-revocations.json")
+      try TaskNotificationShared.write(useLocalNotificationIdentity ? [:] : payload.notificationHostRevocations ?? [:], name: "pending-host-revocations.json")
+      for event in useLocalNotificationIdentity ? [] : payload.notificationNotices ?? [] { preserve(TaskNotificationShared.directory.appendingPathComponent("notice-" + event.id + ".json")); try TaskNotificationShared.remember(event) }
       var prefs = payload.notificationPreferences; prefs.enabled = false; prefs.generation += 1; prefs.revision = UUID().uuidString
       try TaskNotificationShared.write(prefs, name: "preferences.json")
       let data = try importedState.clients.contains(where: { $0.agentConnection != nil }) ? AgentCache.encode(importedState) : JSONEncoder().encode(importedState)
       try MobileUnreadBadge.reset()
+      try voiceRestore?.publish()
       try persistenceWriter.replaceLegacy(data)
     } catch {
+      let migrationFailure = voiceRestore?.preserveEvidenceAfterFailure(error) ?? error
       for (url, data) in rollback.reversed() { if let data { try? data.write(to: url, options: [.atomic]) } else { try? FileManager.default.removeItem(at: url) } }
       for (id, value) in previous { try? CredentialVault.set(value, id: id) }
       for (account, data) in previousSecrets { if let data { try? TaskNotificationShared.setSecret(data, account: account) } else { TaskNotificationShared.removeSecret(account) } }
-      throw error
+      throw migrationFailure
     }
-    eventTask?.cancel(); saved = importedState; drafts.values = saved.drafts; saved.drafts = [:]; captureCodexStorageKeys(); preserveCodexReaderScopeIds()
+    eventTask?.cancel(); saved = importedState; discardUnverifiedEasyWorkReading(); drafts.values = saved.drafts; saved.drafts = [:]; captureCodexStorageKeys(); preserveCodexReaderScopeIds()
     saved.historyCacheNamespace = UUID().uuidString
     saved.historyCacheKeys = nil; saved.historyCacheEncrypted = nil
     dirtyHistoryKeys = Set(saved.history.keys)
@@ -1918,6 +2249,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     if let id = saved.selectedClientId { restoreSelection(id) }
     TaskNotificationController.shared.reloadAfterMigration()
     synchronizeMobileUnread()
+    persist()
   }
 
   func finishConnectionLink(presentation: UUID? = nil) {
@@ -1958,6 +2290,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     guard thread.hostId == client?.id else { return }
     if let project, !thread.belongs(to: project) { return }
     selectedProjectId = thread.projectId ?? project?.id
+    rememberRecentProject(project?.id ?? selectedProjectId)
     if saved.lastThreadProjects == nil { saved.lastThreadProjects = [:] }
     saved.lastThreadProjects?[thread.hostId] = selectedProjectId
     saved.lastThreads[thread.hostId] = thread.id
@@ -2000,12 +2333,14 @@ private var userRequestedWorkspaceGeneration: UUID?
   }
 
   func newConversation(in project: Project) {
-    guard project.hostId == client?.id, canCreateThread, client?.online == true else {
+    guard project.hostId == client?.id, projects.contains(where: { $0.id == project.id }),
+      canCreateThread, client?.online == true else {
       return
     }
     historyGeneration = UUID()
     selectedThreadId = nil
     selectedProjectId = project.id
+    rememberRecentProject(project.id)
     saved.newProjects[project.hostId] = project.id
     applyNewConversationDefaults()
     drawerOpen = false
@@ -2075,6 +2410,24 @@ private var userRequestedWorkspaceGeneration: UUID?
     drafts.values[targetKey]?.attachments.removeAll { $0.id == attachment.id }
     removeUnreferencedAttachment(attachment)
     persist()
+  }
+  func captureEasyWorkDraftClearIntent() -> EasyWorkDraftClearIntent? {
+    guard client?.agentConnection?.target.agentId == "easywork", !localRecoveryRequired else { return nil }
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+    guard let bytes = try? encoder.encode(draft) else { return nil }
+    let revision = drafts.textRevisions[targetKey, default: 0]
+    return EasyWorkDraftClearIntent(target: targetKey, draft: draft, textRevision: revision,
+      menuIdentity: targetKey + ":" + String(revision) + ":" + HostService.hash(bytes))
+  }
+  @discardableResult func clearEasyWorkDraft(_ intent: EasyWorkDraftClearIntent) -> Bool {
+    #if DEBUG
+    observeHostedEasyWorkDraftClear("store-guard", intent: intent, capturedTarget: intent.target)
+    #endif
+    guard client?.agentConnection?.target.agentId == "easywork", !localRecoveryRequired,
+      targetKey == intent.target, draft == intent.draft,
+      drafts.textRevisions[intent.target, default: 0] == intent.textRevision else { return false }
+    clearDraft(target: intent.target)
+    return true
   }
   func clearDraft(target: String) {
     for (id, destination) in localImportTargets where destination.key == target { localImportCancellations[id]?() }
@@ -2282,13 +2635,34 @@ private var userRequestedWorkspaceGeneration: UUID?
   }
   #endif
 
-  func importData(_ data: Data, name: String, isImage: Bool, target: String) throws {
+  func importData(_ data: Data, name: String, isImage: Bool, target: String,
+    destination: DraftImportDestination? = nil) throws {
+    if let destination {
+      guard target == destination.target, isDraftImportCurrent(destination) else { return }
+    }
     guard AttachmentPreparationRules.shared.canReserve(existing: Int32(drafts.values[target]?.attachments.count ?? 0),
       reserved: Int32((drafts.values[target]?.attachmentImportGeneration).map { attachmentSlots[$0, default: 0] } ?? 0), requested: 1) else { throw AttachmentError.tooMany }
     let directory = persistenceURL.deletingLastPathComponent().appendingPathComponent("Attachments", isDirectory: true)
     let prepared = try LocalAttachmentPreparation.prepare(.data(data, name: name, image: isImage), directory: directory)
     drafts.values[target, default: Draft()].attachments.append(prepared.file)
     persist()
+  }
+  func importFile(_ url: URL, target: String, destination: DraftImportDestination? = nil) {
+    if let destination {
+      guard target == destination.target, isDraftImportCurrent(destination) else { return }
+    }
+    let accessed = url.startAccessingSecurityScopedResource()
+    defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+    do {
+      let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+      guard size <= 20 * 1024 * 1024 else { throw AttachmentError.tooLarge }
+      let type = UTType(filenameExtension: url.pathExtension)
+      try importData(
+        Data(contentsOf: url), name: url.lastPathComponent,
+        isImage: type?.conforms(to: .image) == true, target: target, destination: destination)
+    } catch {
+      if destination.map(isDraftImportCurrent) ?? true { self.presentImportError(error, target: target) }
+    }
   }
 
   func sendDemo(content override: Draft? = nil) {
@@ -2371,6 +2745,9 @@ private var userRequestedWorkspaceGeneration: UUID?
   }
 
   private func selectVerifiedClient(_ id: String) {
+    // Only an explicitly authenticated connection replacement clears the notice.
+    // Late reads and route discovery cannot revive a revoked authorization.
+    connectionAuthorizationNotices.reset(id)
     // The connection flow has just authenticated and validated this workspace.
     // Start its current chat from that snapshot, without another serial catalog
     // request. Ordinary foreground/sidebar/unread refresh still updates it.
@@ -2529,6 +2906,10 @@ private var userRequestedWorkspaceGeneration: UUID?
     #endif
     guard !sidebarInteracting else { return }
     guard pendingConnection == nil, let host = client, !host.isDemo, host.endpoint != nil || host.agentConnection != nil else { return }
+    guard host.migrationNeedsVerification != true else {
+      if userInitiated { error = L10n.tr("迁移的 EasyWork 连接需要重新配对，请先核对电脑身份。") }
+      return
+    }
     let generation = clientGeneration
     if userInitiated { userRequestedWorkspaceGeneration = generation }
     if workspaceRefreshGeneration == generation {
@@ -2785,6 +3166,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     beforePrepend: (@MainActor (Int) -> Void)? = nil) async -> Bool {
     guard let host = client, !host.isDemo, let id = threadId ?? selectedThreadId else { return false }
     guard selectedThreadId == id, threads.contains(where: { $0.id == id && $0.hostId == host.id }) else { return false }
+    guard host.migrationNeedsVerification != true else { return false }
     let generation = historyGeneration
     let key = cacheKey(host, threadId: id)
     if more {
@@ -2923,6 +3305,7 @@ private var userRequestedWorkspaceGeneration: UUID?
 
   private func startReplyRecovery() {
     guard pendingConnection == nil, let host = client, !host.isDemo else { return }
+    guard host.migrationNeedsVerification != true else { return }
     let generation = clientGeneration
     // Receipt recovery must not wait for a history request, long poll or an
     // events capability. A stalled read can otherwise strand a completed send.
@@ -2943,6 +3326,7 @@ private var userRequestedWorkspaceGeneration: UUID?
   func startEvents(initialReadGrace: TimeInterval = 0) {
     startReplyRecovery()
     guard pendingConnection == nil, let host = client, !host.isDemo else { return }
+    guard host.migrationNeedsVerification != true else { return }
     let generation = clientGeneration
     guard eventTask == nil || eventTask?.isCancelled == true,
       saved.workspaces[host.id]?.capabilities?.contains("events") == true else { return }
@@ -2970,7 +3354,13 @@ private var userRequestedWorkspaceGeneration: UUID?
         do { try await Task.sleep(for: .seconds(1)) } catch { return }
       }
     }
+    #if DEBUG
+    if Self.hostedEasyWorkAcceptanceEnabled { hostedEventWorkCount += 1 }
+    #endif
     eventTask = Task {
+      #if DEBUG
+      defer { if Self.hostedEasyWorkAcceptanceEnabled { hostedEventWorkCount -= 1 } }
+      #endif
       var epoch = ""
       var cursor = 0
       var activeThread: String?
@@ -3318,12 +3708,18 @@ private var userRequestedWorkspaceGeneration: UUID?
     let sendFlight = UUID()
     replySendFlights[oldKey] = sendFlight
     sendingKeys.insert(oldKey)
+    #if DEBUG
+    if Self.hostedEasyWorkAcceptanceEnabled { hostedReplySendWorkCount += 1 }
+    #endif
     Task {
       var key = oldKey
       var attempt: PendingReply?
       var clearedDraft: Draft?
       var mayHaveSubmitted = false
       defer {
+        #if DEBUG
+        if Self.hostedEasyWorkAcceptanceEnabled { hostedReplySendWorkCount -= 1 }
+        #endif
         for target in Set([oldKey, key]) where replySendFlights[target] == sendFlight {
           replySendFlights.removeValue(forKey: target)
           sendingKeys.remove(target)
@@ -3333,12 +3729,37 @@ private var userRequestedWorkspaceGeneration: UUID?
       do {
         var threadId = existingId
         if threadId == nil {
-          let operationId = drafts.values[oldKey]?.operationId ?? UUID().uuidString
+          let originalOperationId = drafts.values[oldKey]?.operationId
+          let operationId = originalOperationId ?? UUID().uuidString
           drafts.values[oldKey, default: Draft()].operationId = operationId
           try await persistBeforeCommand()
           try validateAISharing(host, scope: sharingScope)
-          let thread: Conversation = try await AgentClients.resolve(host).createThread(host, projectId: selectedProject?.id, operationId: operationId)
+          let provider = try AgentClients.resolve(host)
+          let thread: Conversation
+          if host.agentConnection?.target.agentId == "easywork", originalOperationId != nil {
+            // An already captured metadata intent may have committed before the
+            // App lost its result. Absence is not permission to write it again.
+            guard let recovered = try await provider.threadCreationStatus(host,
+              projectId: selectedProject?.id, operationId: operationId) else {
+              throw HostServiceError.message(L10n.tr("操作结果仍不确定，请查询状态并核对桌面结果。"))
+            }
+            thread = recovered
+          } else {
+            #if DEBUG
+            if Self.hostedEasyWorkAcceptanceEnabled,
+              ProcessInfo.processInfo.environment["EASYWORK_HOSTED_NATIVE_METADATA_CREATE_CASE"] == Self.hostedEasyWorkAcceptanceRun {
+              try devMetadataCreateBeforeTransportForAcceptance?(operationId)
+            }
+            #endif
+            thread = try await provider.createThread(host, projectId: selectedProject?.id, operationId: operationId)
+          }
           guard thread.hostId == host.id else { throw HostServiceError.wrongHost }
+          #if DEBUG
+          if Self.hostedEasyWorkAcceptanceEnabled,
+            ProcessInfo.processInfo.environment["EASYWORK_HOSTED_NATIVE_METADATA_CREATE_CASE"] == Self.hostedEasyWorkAcceptanceRun {
+            try devMetadataCreateAfterVerifiedForAcceptance?(operationId, thread)
+          }
+          #endif
           threadId = thread.id
           if !(saved.workspaces[host.id]?.threads.contains(where: { $0.id == thread.id })
             ?? false)
@@ -3402,6 +3823,13 @@ private var userRequestedWorkspaceGeneration: UUID?
         if connectsDesktop { try requireReplyTarget(host, threadId: threadId, generation: generation) }
         try validateAISharing(host, scope: sharingScope)
         if replySendFlights[key] == sendFlight { transfers[key] = L10n.tr("提交给 \(host.name)…") }
+        #if DEBUG
+        if Self.hostedEasyWorkAcceptanceEnabled,
+          ProcessInfo.processInfo.environment["EASYWORK_HOSTED_NATIVE_REPLY_PREFLIGHT_CASE"]
+            == ProcessInfo.processInfo.environment["EASYWORK_HOSTED_NATIVE_CASE"] {
+          try devReplyBeforeTransportForAcceptance?(configuredReply)
+        }
+        #endif
         // Persist a may-write disposition BEFORE the first transport call. A
         // restart, lost response, HTTP rejection or owner idle cannot undo it.
         saved.replyRecovery?[configuredReply.clientMessageId]?.phase = "uncertain"
@@ -3427,7 +3855,17 @@ private var userRequestedWorkspaceGeneration: UUID?
         if !isDetachedReply(configuredReply, key: key), client?.id == host.id && selectedThreadId == threadId {
           // Acceptance already released the immutable outbox item. A slow
           // canonical refresh must not keep the next input's send lock held.
-          Task { await loadHistory(threadId: threadId) }
+          Task {
+            await loadHistory(threadId: threadId)
+            // A direct EasyWork first send creates a new selected conversation.
+            // Resume its normal event/recovery loop after the first snapshot,
+            // just as the staged creation path does. This never resends input.
+            if existingId == nil, host.agentConnection?.target.agentId == "easywork",
+              client?.id == host.id, selectedThreadId == threadId,
+              client?.agentConnection?.target == host.agentConnection?.target {
+              startEvents()
+            }
+          }
         }
       } catch {
         let definitelyUnsubmitted = !mayHaveSubmitted
@@ -3858,7 +4296,8 @@ private var userRequestedWorkspaceGeneration: UUID?
       && codexStorageConflictMessage == nil
   }
   private func replyQueryRecord(_ host: Client, reply: PendingReply) -> ReplyRecoveryRecord? {
-    guard let record = saved.replyRecovery?[reply.clientMessageId], record.trust == replyRecoveryTrust(host),
+    guard reply.hostId == host.id,
+      let record = saved.replyRecovery?[reply.clientMessageId], record.trust == replyRecoveryTrust(host),
       record.target == aiSharingScope(host, model: reply.model).target,
       ReplyRecoveryPolicy.sameIntent(reply, record: record) else { return nil }
     return record
@@ -3891,8 +4330,16 @@ private var userRequestedWorkspaceGeneration: UUID?
       replyRecoveryQueries[key] = (pending.clientMessageId, now + delay, delay)
     }
     replyRecoveryFlights[key] = flight
+    #if DEBUG
+    if Self.hostedEasyWorkAcceptanceEnabled { hostedReplyQueryWorkCount += 1 }
+    #endif
     Task {
-      defer { if replyRecoveryFlights[key] == flight { replyRecoveryFlights.removeValue(forKey: key) } }
+      defer {
+        #if DEBUG
+        if Self.hostedEasyWorkAcceptanceEnabled { hostedReplyQueryWorkCount -= 1 }
+        #endif
+        if replyRecoveryFlights[key] == flight { replyRecoveryFlights.removeValue(forKey: key) }
+      }
       do {
         let provider = try AgentClients.resolve(host)
         do {
@@ -4208,7 +4655,7 @@ private var userRequestedWorkspaceGeneration: UUID?
     return SharedMobileRules.workspaceArchiveEligible(
       knownTarget: thread.hostId == host.id && threads.contains { $0.id == thread.id && $0.hostId == thread.hostId },
       archived: thread.archived == true, singleBusy: chatActionBusy[cacheKey(host, threadId: thread.id)] != nil,
-      singlePending: !pendingChatActions(thread.id).isEmpty, batchPending: workspaceArchivePendingIds(excluding: operationId).contains(thread.id))
+      singlePending: pendingChatActions(thread.id).contains { SharedMobileRules.chatActionBlocksInput($0.phase, waitingEnded: $0.waitingEnded == true) }, batchPending: workspaceArchivePendingIds(excluding: operationId).contains(thread.id))
   }
   func manageWorkspace(_ action: WorkspaceManagementAction, ids: [String], labels: [String: String]) async throws {
     guard !managementBusy, let host = client, host.online, canManageWorkspace(action), !ids.isEmpty, ids.count <= 100 else { throw HostServiceError.unavailable }
@@ -4296,7 +4743,7 @@ private var userRequestedWorkspaceGeneration: UUID?
         saved.workspaces[host.id]?.threads = projects.map { thread in
           Conversation(id: thread.id, hostId: thread.hostId, projectId: thread.projectId.flatMap { ids.contains($0) ? nil : $0 },
             title: thread.title, state: thread.state, projectIds: thread.projectIds?.filter { !ids.contains($0) }, hasUnreadTurn: thread.hasUnreadTurn,
-            readState: thread.readState, pendingAsyncQuestionCount: thread.pendingAsyncQuestionCount, archiveUnavailableReason: thread.archiveUnavailableReason)
+            readState: thread.readState, readAuthorityRevision: thread.readAuthorityRevision, pendingAsyncQuestionCount: thread.pendingAsyncQuestionCount, archiveUnavailableReason: thread.archiveUnavailableReason)
         }
       }
       saved.expanded[host.id]?.subtract(ids)
@@ -4456,7 +4903,7 @@ extension SessionStore {
     return SharedMobileRules.chatCanManage(demo: host.isDemo, online: host.online, supported: supportsChatManagement,
       knownTarget: thread.hostId == host.id && threads.contains { $0.id == thread.id && $0.hostId == thread.hostId },
       busy: busy || managementBusy,
-      pending: pendingChatActions(thread.id).contains { $0.id != operationId } || workspaceArchivePendingIds().contains(thread.id))
+      pending: pendingChatActions(thread.id).contains { $0.id != operationId && SharedMobileRules.chatActionBlocksInput($0.phase, waitingEnded: $0.waitingEnded == true) } || workspaceArchivePendingIds().contains(thread.id))
   }
   func chatTaskStatus(_ thread: Conversation) -> String {
     let selected = thread.hostId == client?.id && thread.id == selectedThreadId
@@ -4480,34 +4927,36 @@ extension SessionStore {
     let archive = thread.archived == true ? L10n.tr("已归档") : L10n.tr("未归档")
     return L10n.tr("\(archive) · 任务状态：\(chatTaskStatus(thread))")
   }
-  func manageChat(_ action: ChatAction, thread: Conversation?) {
-    guard let thread, thread.id == selectedThreadId, canManageChat(thread), let host = client else { return }
+  @discardableResult
+  func manageChat(_ action: ChatAction, thread: Conversation?, title: String? = nil, showsErrorAlert: Bool = true) -> (operation: ChatActionReceipt, task: Task<Bool, Never>)? {
+    guard let thread, thread.id == selectedThreadId, canManageChat(thread), let host = client, action != .rename || supportsChatRename else { return nil }
     let operation = ChatActionReceipt(hostId: host.id, target: mobileReadingTarget(host), threadId: thread.id,
-      clientOperationId: UUID().uuidString, action: action, phase: "submitted")
+      clientOperationId: UUID().uuidString, action: action, phase: "submitted", title: title)
+    guard SharedMobileRules.chatActionValid(operation.request) else { return nil }
     if saved.chatActionReceipts == nil { saved.chatActionReceipts = [:] }
     saved.chatActionReceipts?[operation.id] = operation
     let key = cacheKey(host, threadId: thread.id), generation = historyGeneration
     chatActionBusy[key] = operation.id
-    Task {
+    let task = Task {
       defer { if chatActionBusy[key] == operation.id { chatActionBusy.removeValue(forKey: key) } }
       do { try await persistBeforeCommand() }
       catch {
         saved.chatActionReceipts?[operation.id]?.phase = "rejected"
         saved.chatActionReceipts?[operation.id]?.error = L10n.tr("未发送操作：无法保存本地记录。")
-        persist(); return
+        persist(); return false
       }
       guard let current = client, current.id == host.id, current.endpoint == host.endpoint,
         mobileReadingTarget(current) == operation.target, historyGeneration == generation,
         selectedThreadId == thread.id, canManageChatExcluding(thread, operationId: operation.id) else {
         saved.chatActionReceipts?[operation.id]?.phase = "rejected"
         saved.chatActionReceipts?[operation.id]?.error = L10n.tr("未发送操作：目标已变化。")
-        persist(); return
+        persist(); return false
       }
       do {
         let receipt = try await AgentClients.resolve(host).chatAction(host, request: operation.request)
         try await acceptChatAction(receipt, original: operation, host: host, originGeneration: generation)
       } catch {
-        if let phase = saved.chatActionReceipts?[operation.id]?.phase, ["confirmed", "rejected"].contains(phase) { return }
+        if let phase = saved.chatActionReceipts?[operation.id]?.phase, ["confirmed", "rejected"].contains(phase) { return phase == "confirmed" }
         saved.chatActionReceipts?[operation.id]?.phase = "outcome-unknown"
         let rejected: Bool
         if case HostServiceError.rejected(let code, _) = error, [400, 401, 403, 404, 409, 422].contains(code) { rejected = true }
@@ -4515,36 +4964,73 @@ extension SessionStore {
         if rejected { saved.chatActionReceipts?[operation.id]?.phase = "rejected" }
         saved.chatActionReceipts?[operation.id]?.error = error.userFacingDescription
         persist()
-        if let current = client, current.id == host.id, current.endpoint == host.endpoint, mobileReadingTarget(current) == operation.target, historyGeneration == generation, selectedThreadId == operation.threadId {
+        if showsErrorAlert, let current = client, current.id == host.id, current.endpoint == host.endpoint, mobileReadingTarget(current) == operation.target, historyGeneration == generation, selectedThreadId == operation.threadId {
           self.error = rejected ? ChatAction.errorDescription(error.userFacingDescription) : L10n.tr("操作结果待确认，请在对话选项中查询原记录。")
         }
       }
+      return saved.chatActionReceipts?[operation.id]?.phase == "confirmed"
     }
+    return (operation, task)
   }
-  func endChatActionWaiting(_ operation: ChatActionReceipt) {
+  var supportsChatRename: Bool {
+    guard let host = client else { return false }
+    return supportsChatManagement && saved.workspaces[host.id]?.capabilities?.contains("threads:rename") == true
+  }
+  func captureChatRename() -> ChatRenameContext? {
+    guard supportsChatRename, let host = client, let thread = conversation, canManageChat(thread) else { return nil }
+    return ChatRenameContext(host: host, thread: thread, target: mobileReadingTarget(host), generation: historyGeneration)
+  }
+  func chatRenameContextCurrent(_ context: ChatRenameContext) -> Bool {
+    guard let host = client else { return false }
+    return host.id == context.host.id && host.endpoint == context.host.endpoint && mobileReadingTarget(host) == context.target
+      && historyGeneration == context.generation && selectedThreadId == context.thread.id
+  }
+  func chatActionReceipt(_ id: String) -> ChatActionReceipt? { saved.chatActionReceipts?[id] }
+  func chatActionQueryError(_ id: String) -> String? { chatActionQueryErrors[id] }
+  func endChatActionWaiting(_ operation: ChatActionReceipt, showsErrorAlert: Bool = true) {
     guard saved.chatActionReceipts?[operation.id]?.request == operation.request else { return }
+    chatActionQueryErrors.removeValue(forKey: operation.id)
     Task {
       saved.chatActionReceipts?[operation.id]?.waitingEnded = true
-      do { try await persistBeforeCommand() }
-      catch { saved.chatActionReceipts?[operation.id]?.waitingEnded = operation.waitingEnded; self.presentError(error) }
+      do {
+        try await persistBeforeCommand()
+        if let host = client, host.id == operation.hostId, mobileReadingTarget(host) == operation.target {
+          let key = cacheKey(host, threadId: operation.threadId)
+          if chatActionBusy[key] == operation.id { chatActionBusy.removeValue(forKey: key) }
+        }
+      } catch {
+        saved.chatActionReceipts?[operation.id]?.waitingEnded = operation.waitingEnded
+        chatActionQueryErrors[operation.id] = error.userFacingDescription
+        if showsErrorAlert { self.presentError(error) }
+      }
     }
   }
-  func queryChatAction(_ operation: ChatActionReceipt) {
-    guard let host = client, mobileReadingTarget(host) == operation.target else { return }
+  @discardableResult
+  func queryChatAction(_ operation: ChatActionReceipt, showsErrorAlert: Bool = true) -> Task<Bool, Never>? {
+    guard let host = client, host.id == operation.hostId, mobileReadingTarget(host) == operation.target else { return nil }
     let generation = historyGeneration
-    Task {
+    chatActionQueryErrors.removeValue(forKey: operation.id)
+    return Task {
       do {
         let receipt = try await AgentClients.resolve(host).chatActionStatus(host, threadId: operation.threadId, operationId: operation.id)
         try await acceptChatAction(receipt, original: operation, host: host, originGeneration: generation)
+        chatActionQueryErrors.removeValue(forKey: operation.id)
+        return receipt.phase == "confirmed"
       } catch {
-        if let current = client, current.id == host.id, current.endpoint == host.endpoint,
+        let detail: String
+        if case HostServiceError.rejected(let code, _) = error, code == 404 {
+          detail = L10n.tr("未查到原聊天操作记录，结果仍未确认；不会重新提交。")
+        } else { detail = error.userFacingDescription }
+        if let receipt = saved.chatActionReceipts?[operation.id], receipt.request == operation.request, receipt.pending {
+          chatActionQueryErrors[operation.id] = detail
+        }
+        if showsErrorAlert, let current = client, current.id == host.id, current.endpoint == host.endpoint,
           mobileReadingTarget(current) == operation.target, historyGeneration == generation,
           selectedThreadId == operation.threadId {
-          if case HostServiceError.rejected(let code, _) = error, code == 404 {
-            self.error = L10n.tr("未查到原聊天操作记录，结果仍未确认；不会重新提交。")
-          } else { self.presentError(error) }
+          self.error = detail
         }
       }
+      return false
     }
   }
   private func acceptChatAction(_ receipt: ChatActionReceipt, original: ChatActionReceipt, host: Client, originGeneration: UUID) async throws {
@@ -4565,7 +5051,9 @@ extension SessionStore {
       if receipt.action == .delete {
         saved.workspaces[host.id]?.threads.removeAll { $0.id == receipt.threadId }
         if selectedThreadId == receipt.threadId {
-          historyGeneration = UUID(); eventTask?.cancel(); selectedThreadId = nil; historyCursor = nil
+          eventTask?.cancel()
+          if canCreateProjectless { newProjectlessConversation() }
+          else { historyGeneration = UUID(); selectedThreadId = nil; historyCursor = nil }
         }
       }
       await refresh()

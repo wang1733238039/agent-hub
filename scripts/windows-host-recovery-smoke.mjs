@@ -1,6 +1,7 @@
 import './windows-hidden-spawn-guard.mjs';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import {
   mkdtempSync,
@@ -9,6 +10,7 @@ import {
   readFileSync,
   existsSync,
   readdirSync,
+  unlinkSync,
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +19,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { superviseWorker, workerRecoveryState } from './host-worker-supervisor.mjs';
 import { installWindowsPrivateStateFixture } from './fixtures/windows-private-state-boundary.mjs';
 
-// Actual discovery, archive parsing and atomic publication. Only OS trust APIs
+// Actual discovery, archive parsing and atomic publication. Only OS identity APIs
 // are stubbed; this is not Windows signature/DACL/desktop acceptance.
 const directory = mkdtempSync(join(tmpdir(), 'windows-recovery-'));
 const permissions = installWindowsPrivateStateFixture(
@@ -31,12 +33,18 @@ const originalEnv = {
   LOCALAPPDATA: process.env.LOCALAPPDATA,
   PSModulePath: process.env.PSModulePath,
 };
+const originalEnvHash = createHash('sha256').update(JSON.stringify(originalEnv)).digest('hex');
+const restoreEnvironment = () => {
+  for (const [key, value] of Object.entries(originalEnv))
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+};
 let supervisor;
 let closePrivateState;
 try {
   const { discoverWindowsDesktopCli, refreshWindowsHostConfiguration } =
     await import('./windows-desktop-recovery.mjs');
-  const { inspectWindowsPipe, closeWindowsPrivateStateBackend } =
+  const { inspectWindowsPipe, loadWindowsDesktop, closeWindowsPrivateStateBackend } =
     await import('../packages/codex-adapter/dist/desktop-platform.js');
   closePrivateState = closeWindowsPrivateStateBackend;
   const owner = join(directory, 'installed/Codex.exe');
@@ -78,10 +86,9 @@ try {
     executableSha256: 'a'.repeat(64),
     sameUser: true,
     sameSession: true,
-    trustedPublisher: true,
   };
   let failure;
-  let trust = true;
+  let validCli = true;
   const calls = [];
   process.env.SystemRoot = join(directory, 'system');
   process.env.LOCALAPPDATA = join(directory, 'user');
@@ -107,8 +114,8 @@ try {
       return JSON.stringify(identity);
     }
     if (args.some((v) => v.endsWith('desktop-cli.ps1'))) {
-      if (!trust)
-        throw Object.assign(new Error('private signature error'), {
+      if (!validCli)
+        throw Object.assign(new Error('private CLI identity error'), {
           stderr: 'WINDOWS_CLI_REJECTED\n',
         });
       return JSON.stringify({ sha256: args.includes(cli) ? 'b'.repeat(64) : 'c'.repeat(64) });
@@ -147,6 +154,112 @@ try {
   assert.equal(resultDesktop.verification, desktop.verification);
   assert.equal(resultDesktop.custom, desktop.custom);
   assert(!refreshWindowsHostConfiguration(hostPath).changed, 'Repeated startup is idempotent');
+  // Reproduce the live worker's stale startup paths after a desktop update.
+  // The ordinary strict inspector still rejects them. Runtime reconnection
+  // resolves the current native owner without rewriting any private state.
+  writeFileSync(desktopPath, JSON.stringify({ ...desktop, archive: 'missing-old-archive' }));
+  const staleBytes = readFileSync(desktopPath);
+  assert.throws(() => loadWindowsDesktop(desktopPath, 'host'), /Wrong Windows desktop/);
+  const live = loadWindowsDesktop(desktopPath, 'host', { executable: 'missing-cli' });
+  assert.equal(live.identity.executable, owner);
+  assert.equal(live.executable, cli);
+  assert.equal(live.archive.version, 'future-metadata');
+  assert.deepEqual(readFileSync(desktopPath), staleBytes);
+  assert.deepEqual(
+    readFileSync(hostPath),
+    Buffer.from(JSON.stringify(refreshed.configuration, null, 2) + '\n'),
+  );
+  // The shared runtime coordinator must also recover independently of IPC.
+  // Only OS trust APIs above are replaced; discovery/cache/generation are real.
+  const { DesktopInstallation } =
+    await import('../packages/codex-adapter/dist/desktop-installation.js');
+  const originalNow = Date.now;
+  let clock = originalNow();
+  const originalCli = readFileSync(cli);
+  const migratedCli = join(directory, 'installed/resources/codex.exe');
+  try {
+    Date.now = () => clock;
+    const coordinator = new DesktopInstallation(
+      { windowsDesktopConfig: desktopPath, executable: 'missing-cli' },
+      'host',
+    );
+    const beforeDiscovery = calls.filter((args) => args.includes('inspect')).length;
+    const snapshots = await Promise.all(Array.from({ length: 12 }, () => coordinator.resolve()));
+    assert(
+      snapshots.every((value) => value === snapshots[0]),
+      'Concurrent independent readers share one discovery',
+    );
+    assert.equal(calls.filter((args) => args.includes('inspect')).length, beforeDiscovery + 1);
+    assert.equal(snapshots[0].executable, cli);
+    unlinkSync(cli);
+    writeFileSync(migratedCli, 'synthetic current bundled cli');
+    const migrated = await coordinator.resolve();
+    assert.equal(
+      migrated.executable,
+      migratedCli,
+      'A missing cached CLI invalidates even the success TTL',
+    );
+    assert.notEqual(migrated.generation, snapshots[0].generation);
+    clock += 1100;
+    identity.pid++;
+    const reopened = await coordinator.resolve(true);
+    assert.notEqual(
+      reopened.generation,
+      migrated.generation,
+      'Same-path desktop reopen changes metadata generation',
+    );
+    const inspectedBeforeReplacement = calls.filter((args) => args.includes('inspect')).length;
+    writeFileSync(migratedCli, 'synthetic same-path changed CLI bytes');
+    const samePathReplacement = await coordinator.resolve();
+    assert.notEqual(samePathReplacement.generation, reopened.generation);
+    assert.equal(
+      calls.filter((args) => args.includes('inspect')).length,
+      inspectedBeforeReplacement + 1,
+      'Same-path file replacement invalidates trust even within the one-second discovery floor',
+    );
+    identity.pid--;
+    validCli = false;
+    clock += 1100;
+    await assert.rejects(
+      coordinator.resolve(true),
+      (error) => error.code === 'WINDOWS_CLI_NOT_FOUND',
+    );
+    assert.equal(coordinator.available, false);
+    const failedCalls = calls.length;
+    await assert.rejects(
+      coordinator.resolve(true),
+      (error) => error.code === 'WINDOWS_CLI_NOT_FOUND',
+    );
+    assert.equal(calls.length, failedCalls, 'Even forced requests respect failure backoff');
+    validCli = true;
+    clock += 1001;
+    assert.equal((await coordinator.resolve()).executable, migratedCli);
+    assert.equal(coordinator.available, true);
+    assert.deepEqual(
+      readFileSync(desktopPath),
+      staleBytes,
+      'Live recovery never rewrites private startup configuration',
+    );
+  } finally {
+    Date.now = originalNow;
+    validCli = true;
+    if (existsSync(migratedCli)) unlinkSync(migratedCli);
+    writeFileSync(cli, originalCli);
+  }
+  for (const property of ['sameUser', 'sameSession']) {
+    identity[property] = false;
+    assert.throws(() => loadWindowsDesktop(desktopPath, 'host', { executable: cli }), /identity/);
+    identity[property] = true;
+  }
+  validCli = false;
+  assert.throws(
+    () => loadWindowsDesktop(desktopPath, 'host', { executable: cli }),
+    (error) => error.code === 'WINDOWS_CLI_NOT_FOUND',
+  );
+  validCli = true;
+  assert.deepEqual(readFileSync(desktopPath), staleBytes);
+  refreshWindowsHostConfiguration(hostPath);
+
   const before = readFileSync(hostPath);
   const desktopBefore = readFileSync(desktopPath);
   for (const reason of ['WINDOWS_DESKTOP_NOT_RUNNING', 'WINDOWS_POWERSHELL_MODULE_UNAVAILABLE']) {
@@ -159,13 +272,13 @@ try {
     assert.deepEqual(readFileSync(desktopPath), desktopBefore);
   }
   failure = undefined;
-  trust = false;
+  validCli = false;
   assert.throws(
     () => refreshWindowsHostConfiguration(hostPath),
     (error) => error.code === 'WINDOWS_CLI_NOT_FOUND',
   );
   assert.deepEqual(readFileSync(hostPath), before);
-  trust = true;
+  validCli = true;
   const second = join(directory, 'user/OpenAI/Codex/bin/abcdef0123456789');
   mkdirSync(second);
   writeFileSync(join(second, 'codex.exe'), 'different synthetic payload');
@@ -201,16 +314,20 @@ try {
   Object.defineProperty(process, 'platform', originalPlatform);
   childProcess.execFileSync = originalExec;
   syncBuiltinESMExports();
+  restoreEnvironment();
 
   // A real Node HTTP child hangs, then degrades, then recovers. Probe transitions
   // never kill a live worker, and stop prevents further probes or launches.
   const child = join(directory, 'http-child.mjs');
   const marker = join(directory, 'port');
+  const environmentProof = join(directory, 'child-environment-sha256');
   const control = join(directory, 'health-control');
   writeFileSync(control, 'http-unhealthy');
   writeFileSync(
     child,
-    `import {createServer} from 'node:http'; import {writeFileSync,readFileSync} from 'node:fs';
+    `import {createServer} from 'node:http'; import {writeFileSync,readFileSync} from 'node:fs'; import {createHash} from 'node:crypto';
+const environment={SystemRoot:process.env.SystemRoot,LOCALAPPDATA:process.env.LOCALAPPDATA,PSModulePath:process.env.PSModulePath};
+writeFileSync(${JSON.stringify(environmentProof)},createHash('sha256').update(JSON.stringify(environment)).digest('hex'));
 const server=createServer((_req,res)=>{ const state=readFileSync(${JSON.stringify(control)},'utf8'); if(state!=='http-unhealthy')res.end(JSON.stringify({state})); }); server.listen(0,'127.0.0.1',()=>writeFileSync(${JSON.stringify(marker)},String(server.address().port)));
 process.on('message',()=>{server.closeAllConnections();server.close(()=>process.exit(0));}); process.once('disconnect',()=>process.exit(1));`,
   );
@@ -239,12 +356,29 @@ process.on('message',()=>{server.closeAllConnections();server.close(()=>process.
       }
     },
   });
+  const childFailure = (reason, entry) =>
+    new Error(
+      `${reason}: ${JSON.stringify({
+        exitCode: entry?.exitCode ?? null,
+        signal: entry?.signal ?? null,
+        spawnCode: entry?.code ?? null,
+        markerPresent: existsSync(marker),
+        probeCount,
+        actualHttpTimeouts,
+        starts: reports.filter((v) => v.event === 'started').length,
+        states: [...new Set(reports.map((v) => v.state).filter(Boolean))],
+      })}`,
+    );
   const until = async (condition) => {
     for (let i = 0; i < 200; i++) {
+      const exited = reports.find((v) => v.event === 'exited');
+      if (exited) throw childFailure('Recovery fixture child exited', exited);
+      const spawnFailure = reports.find((v) => v.event === 'spawn-failure');
+      if (spawnFailure) throw childFailure('Recovery fixture child spawn failed', spawnFailure);
       if (condition()) return;
       await delay(10);
     }
-    throw new Error('Recovery fixture timed out');
+    throw childFailure('Recovery fixture timed out');
   };
   await until(
     () =>
@@ -252,7 +386,15 @@ process.on('message',()=>{server.closeAllConnections();server.close(()=>process.
       actualHttpTimeouts > 0 &&
       reports.some((v) => v.state === 'http-unhealthy'),
   );
+  assert.equal(
+    readFileSync(environmentProof, 'utf8'),
+    originalEnvHash,
+    'Real HTTP child must inherit the original system environment',
+  );
   probeState = 'persistence-degraded';
+  writeFileSync(control, probeState);
+  await until(() => reports.some((v) => v.state === probeState));
+  probeState = 'runtime-degraded';
   writeFileSync(control, probeState);
   await until(() => reports.some((v) => v.state === probeState));
   probeState = 'healthy';
@@ -276,10 +418,11 @@ process.on('message',()=>{server.closeAllConnections();server.close(()=>process.
   console.log(
     JSON.stringify({
       result: 'passed',
-      evidence: 'OS trust fixture plus isolated real Node child; not Windows acceptance',
+      evidence: 'OS identity fixture plus isolated real Node child; not Windows acceptance',
       hashedCliDiscovery: true,
       startupRefreshPreservesConfiguration: true,
       liveWorkerNeverKilledForHealth: true,
+      originalChildEnvironment: true,
       actualHttpTimeouts,
     }),
   );
@@ -290,8 +433,6 @@ process.on('message',()=>{server.closeAllConnections();server.close(()=>process.
   Object.defineProperty(process, 'platform', originalPlatform);
   childProcess.execFileSync = originalExec;
   syncBuiltinESMExports();
-  for (const [key, value] of Object.entries(originalEnv))
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
+  restoreEnvironment();
   rmSync(directory, { recursive: true, force: true });
 }

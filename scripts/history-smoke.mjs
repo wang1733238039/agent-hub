@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { CodexHistoryReader } from '../packages/codex-adapter/dist/index.js';
@@ -16,10 +17,12 @@ await writeFile(
   executable,
   `#!/usr/bin/env node
 import { createInterface } from 'node:readline';
-import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, closeSync } from 'node:fs';
 createInterface({input:process.stdin}).on('line', line => {
  const r=JSON.parse(line); appendFileSync(${JSON.stringify(log)},r.method+'\\n');
  if(r.id===undefined)return;
+ if(r.method==='model/list' && existsSync(${JSON.stringify(join(directory, 'silent-reader'))}))return;
+
  let result={};
  if(r.method==='project/list')result=r.params.cursor?{data:[{id:'later-project',name:'fixture',roots:[{path:'/later'}]}]}:{data:[{id:'p',name:'fixture',roots:[{path:'/fixture'}]},{id:'nested',name:'fixture',roots:[{path:'/fixture/nested'}]},{id:'ambiguous-a',name:'first',roots:[{path:'/shared'}]},{id:'ambiguous-b',name:'second',roots:[{path:'/shared'}]}],nextCursor:'projects-page-2'};
  if(r.method==='thread/list')result={data:r.params.cursor?[{id:'page-2-legacy',projectId:null,cwd:'/fixture',name:'older fixture',preview:''},{id:'page-2-project',projectId:null,cwd:'/later',name:'other fixture',preview:''}]:[{id:'t',projectId:'p',name:'fixture thread',preview:''},{id:'legacy',projectId:null,cwd:${JSON.stringify(process.platform === 'win32' ? '/FiXtUrE/' : '/fixture/')},name:'legacy title',preview:''},{id:'nested-thread',projectId:null,cwd:'/fixture/nested',name:'nested title',preview:''},{id:'canonical',projectId:'nested',cwd:'/fixture',name:'assigned title',preview:''},{id:'descendant',projectId:null,cwd:'/fixture/other',name:'unassigned child',preview:''},{id:'ambiguous',projectId:null,cwd:'/shared',name:'ambiguous title',preview:''},{id:'same-name',projectId:null,cwd:'/elsewhere/fixture',name:'different directory',preview:''}],nextCursor:r.params.cursor?null:'threads-page-2'};
@@ -29,12 +32,25 @@ createInterface({input:process.stdin}).on('line', line => {
  const diff={id:'diff',type:'fileChange',changes:[{path:'example.swift',diff:'+fixture'}],status:'completed'};
  const tool={id:'mcp',type:'mcpToolCall',server:'fixture',tool:'inspect',status:'failed',error:{message:'fixture failure'}};
  if(r.method==='thread/read')result={thread:{id:r.params.threadId==='wrong-target'?'foreign-thread':r.params.threadId,...(r.params.threadId==='legacy'?{turns:[{items:[command,diff,tool]}]}:{historyMode:'paginated'})}};
+ if(r.method==='thread/read' && r.params.threadId==='image-input')result={thread:{id:'image-input',turns:[{id:'image-turn',status:'completed',items:[{id:'item-1',type:'userMessage',content:[{type:'text',text:'read this image'},{type:'localImage',path:${JSON.stringify(join(directory, 'image.png'))}}]},{id:'item-2',type:'userMessage',content:[{type:'text',text:'unregistered sources'},{type:'localImage',path:'relative.png'},{type:'image',url:'data:image/png;base64,AAAA'}]}]}]}};
  if(r.method==='thread/turns/list') { if(r.params.limit!==1||r.params.itemsView!=='notLoaded')throw Error('Unbounded turn read'); result={data:[{id:'latest-turn',status:'completed'}],nextCursor:null}; }
  if(r.method==='thread/items/list')result={data:r.params.cursor?[{item:tool},{item:{id:'old',type:'userMessage',content:[{type:'text',text:'older'}]}}]:[{item:{id:'a',type:'agentMessage',text:'reply'}},{item:diff},{item:command},{item:{id:'u',type:'userMessage',content:[{type:'text',text:'prompt'}]}}],nextCursor:r.params.cursor?null:'older-page'};
  if(r.method==='thread/list' && r.params.sortKey==='recency_at' && existsSync(${JSON.stringify(join(directory, 'legacy-sort'))})) {
   process.stdout.write(JSON.stringify({id:r.id,error:{code:-32602,message:'Unsupported recency sort'}})+'\\n');return;
  }
  process.stdout.write(JSON.stringify({id:r.id,result})+'\\n');
+});
+// Fixture-only IPC closes its input after the parent's metadata writes drain.
+// Acknowledgement uses a separate pipe, not a response racing that very close.
+process.on('message', message => {
+ if(message?.kind!=='fixture-close-input')return;
+ const inputHandle=process.stdin._handle;
+ process.stdin.pause(); closeSync(0);
+ const closed=()=>process.send({kind:'fixture-input-closed'});
+ if(process.platform==='win32') {
+  if(!inputHandle || typeof inputHandle.close!=='function')throw Error('Fixture stdin handle unavailable');
+  inputHandle.close(closed);
+ } else closed();
 });
 `,
   { mode: 0o700 },
@@ -44,7 +60,10 @@ createInterface({input:process.stdin}).on('line', line => {
 const originalSpawn = childProcess.spawn;
 childProcess.spawn = (command, args, options) =>
   command === executable
-    ? originalSpawn(process.execPath, [executable, ...args], options)
+    ? originalSpawn(process.execPath, [executable, ...args], {
+        ...options,
+        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      })
     : originalSpawn(command, args, options);
 syncBuiltinESMExports();
 const reader = new CodexHistoryReader('fixture-host', 'Fixture', executable);
@@ -85,6 +104,25 @@ try {
   await assert.rejects(reader.history('other-thread'));
   reader.registerCatalogThread('wrong-target');
   await assert.rejects(reader.history('wrong-target'), /History target mismatch/);
+  reader.registerCatalogThread('image-input');
+  const imagePaths = new Map();
+  const imagePage = await reader.history('image-input', undefined, false, (id, paths) =>
+    imagePaths.set(id, paths),
+  );
+  assert.deepEqual(
+    [...imagePaths],
+    [['history-fallback:image-turn:item-1', [join(directory, 'image.png')]]],
+  );
+  assert.deepEqual(imagePage.messages[0].files, ['image.png']);
+  assert(
+    imagePage.messages[1].files.includes('历史附件'),
+    'Unknown media remains explicitly unregistered',
+  );
+  assert(
+    !JSON.stringify(imagePage).includes(join(directory, 'image.png')),
+    'Private source paths never enter the read result',
+  );
+  assert(!Object.keys(imagePage).some((key) => /path/i.test(key)));
   const first = await reader.history('t');
   assert.deepEqual(
     first.messages.map((m) => m.text),
@@ -183,6 +221,8 @@ try {
     await assert.rejects(desktop.desktopWorkspace(), /sidebar metadata unavailable/);
   } finally {
     desktop.close();
+    await desktop.closeAndWait();
+    assert.equal(desktop.process, undefined, 'Fixture reader must retire before cleanup');
   }
   const methods = (await readFile(log, 'utf8')).trim().split('\n');
   assert(
@@ -198,6 +238,121 @@ try {
       ].includes(method),
     ),
   );
+  // A changed installation replaces only the metadata process. Exercise a real
+  // delayed exit: the next process cannot spawn while old stdio remains open.
+  const replacement = join(directory, 'replacement.mjs');
+  await writeFile(replacement, await readFile(executable), { mode: 0o700 });
+  await writeFile(
+    executable,
+    (await readFile(executable, 'utf8')) +
+      "\nprocess.on('SIGTERM', () => setTimeout(() => process.exit(0), 150));\n",
+  );
+  let previousChild;
+  let previousClosed = false;
+  let replacementStarted = false;
+  childProcess.spawn = (command, args, options) => {
+    if (command === replacement) {
+      assert(previousClosed, 'Old metadata reader must fully close before replacement');
+      replacementStarted = true;
+      return originalSpawn(process.execPath, [replacement, ...args], {
+        ...options,
+        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      });
+    }
+    if (command === executable) {
+      previousChild = originalSpawn(process.execPath, [executable, ...args], {
+        ...options,
+        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      });
+      previousChild.once('close', () => {
+        previousClosed = true;
+      });
+      return previousChild;
+    }
+    return originalSpawn(command, args, options);
+  };
+  syncBuiltinESMExports();
+  // Restart the current reader through the production exit barrier first.
+  reader.close();
+  await reader.connect();
+  assert(previousChild && reader.ready);
+  await reader.configureExecutable(replacement);
+  assert(previousClosed);
+  assert.equal(reader.ready, false);
+  await reader.connect();
+  assert(replacementStarted && reader.ready);
+  await assert.rejects(reader.read('turn/start', {}), /Read-only method/);
+  await writeFile(join(directory, 'silent-reader'), 'no model/list response');
+  const originalTimeout = globalThis.setTimeout;
+  let disconnected = 0;
+  reader.onDisconnect = () => {
+    disconnected++;
+  };
+  try {
+    // Only compress the read deadline; the real child/JSONL/exit are untouched.
+    globalThis.setTimeout = (fn, ms, ...args) =>
+      originalTimeout(fn, ms === 15000 ? 100 : ms, ...args);
+    await assert.rejects(
+      reader.read('model/list', {}),
+      (error) => error.code === 'CODEX_READER_TIMEOUT',
+    );
+  } finally {
+    globalThis.setTimeout = originalTimeout;
+  }
+  assert.equal(disconnected, 1);
+  assert.equal(reader.ready, false, 'An alive stalled CLI cannot advertise runtime readiness');
+  await reader.configureExecutable(executable);
+  await reader.connect();
+  assert(reader.ready, 'A fresh read-only reader can recover without replaying a request');
+
+  if (process.platform === 'win32') {
+    // Windows Node/libuv can duplicate stdin handles. Close an owned raw Win32
+    // HANDLE instead; require the kernel INVALID_HANDLE and real EPIPE result.
+    const closedPipe = childProcess.spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL('./fixtures/windows-history-stdio-closure.mjs', import.meta.url)),
+        fileURLToPath(new URL('..', import.meta.url)),
+      ],
+      { windowsHide: true, stdio: 'inherit', timeout: 60000 },
+    );
+    assert.equal(closedPipe.status, 0, 'The native closed-input fixture must pass');
+  } else {
+    // A metadata child may close only its input while its PID/stdout stay live.
+    // The OS pipe error must retire that reader, not crash the whole Host.
+    const beforePipeFailure = disconnected;
+    const closedInputChild = reader.process;
+    // Do not close a pipe while its initialize notification is still writing.
+    await new Promise((resolve, reject) =>
+      closedInputChild.stdin.write('', (error) => (error ? reject(error) : resolve())),
+    );
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Fixture input close unconfirmed')), 5000);
+      closedInputChild.once('message', (message) => {
+        clearTimeout(timer);
+        assert.equal(message.kind, 'fixture-input-closed');
+        resolve();
+      });
+      closedInputChild.send({ kind: 'fixture-close-input' });
+    });
+    assert.equal(closedInputChild.exitCode, null);
+    await assert.rejects(reader.read('config/read', {}), /Reader (write failed|transport closed)/);
+    await new Promise((resolve) => closedInputChild.once('close', resolve));
+    assert.equal(disconnected, beforePipeFailure + 1);
+    assert.equal(reader.ready, false);
+    assert.equal(reader.pending.size, 0);
+    await reader.connect();
+    assert(reader.ready, 'A closed input recovers through a fresh metadata-only process');
+    assert.equal(
+      (await readFile(log, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter((method) => method === 'config/read').length,
+      0,
+      'Recovery must not replay the request rejected by the closed pipe',
+    );
+  }
+
   reader.close();
   assert.equal(reader.ready, false);
   await assert.rejects(reader.workspace());
@@ -206,6 +361,10 @@ try {
   );
 } finally {
   reader.close();
+  // The synthetic CLI can still append its method log until stdio closes.
+  // Use the existing bounded exit barrier before removing its directory.
+  await reader.closeAndWait();
+  assert.equal(reader.process, undefined, 'Fixture reader must retire before cleanup');
   childProcess.spawn = originalSpawn;
   syncBuiltinESMExports();
   await rm(directory, { recursive: true, force: true });

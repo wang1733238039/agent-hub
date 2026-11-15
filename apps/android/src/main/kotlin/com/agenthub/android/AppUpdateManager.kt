@@ -30,7 +30,7 @@ internal class AppUpdateManager(private val context: Context) {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
     private val releasesUrl =
-        "https://api.github.com/repos/wang1733238039/codex-mobile/releases?per_page=10"
+        "https://api.github.com/repos/wang1733238039/agent-hub/releases?per_page=10"
 
     private fun parseVersion(value: String): List<Int>? {
         val match = Regex("""(?:^|[^0-9])(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$""")

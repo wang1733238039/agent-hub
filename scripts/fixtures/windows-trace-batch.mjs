@@ -15,7 +15,7 @@ const run = promisify(execFile);
 
 // Actual Node filesystem, mapped into a disposable synthetic Windows namespace.
 // Native replies are synthetic: no DACL/Windows success is claimed on macOS.
-export async function batchSnapshotFixture(run) {
+export async function batchSnapshotFixture(run, senderFactory) {
   const fixture = await frozenBatchFixture();
   const drive = join(fixture.directory, 'drive');
   fs.mkdirSync(join(drive, 'fixture', 'traces'), { recursive: true, mode: 0o700 });
@@ -58,19 +58,27 @@ export const opendirSync=path=>fs.opendirSync(local(path));
       bytes: maximum ? fs.readFileSync(local(path)).subarray(0, maximum) : Buffer.alloc(0),
     };
   };
+  const send = (items) => {
+    counts.batch++;
+    return items.map((item, index) => {
+      changed?.('before', index, item);
+      const result = snapshot('C:\\fixture\\traces', item.path, item.maximum);
+      changed?.('after', index, item);
+      return result;
+    });
+  };
+  const sender = senderFactory?.(
+    'C:\\fixture\\traces',
+    (request) => send(request.items),
+    () => {},
+  );
   platform.installWindowsTraceBackend({
     snapshot(...args) {
       counts.single++;
       return snapshot(...args);
     },
     snapshotMany(root, items) {
-      counts.batch++;
-      return items.map((item, index) => {
-        changed?.('before', index, item);
-        const result = snapshot(root, item.path, item.maximum);
-        changed?.('after', index, item);
-        return result;
-      });
+      return sender ? sender.read(root, items) : send(items);
     },
   });
   const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -85,6 +93,7 @@ export const opendirSync=path=>fs.opendirSync(local(path));
         changed = callback;
       },
       reset() {
+        sender?.beginPhase();
         counts.single = 0;
         counts.batch = 0;
         counts.snapshots = 0;
@@ -99,12 +108,15 @@ export const opendirSync=path=>fs.opendirSync(local(path));
 
 async function stdioChild() {
   const { createInterface } = await import('node:readline');
-  const { appendFileSync } = await import('node:fs');
+  const { appendFileSync, existsSync } = await import('node:fs');
   const { createHash } = await import('node:crypto');
   const { win32 } = await import('node:path');
   const mode = process.env.TRACE_BATCH_MODE;
-  const record = (event) =>
-    appendFileSync(process.env.TRACE_BATCH_LOG, JSON.stringify({ event, pid: process.pid }) + '\n');
+  const record = (event, fields = {}) =>
+    appendFileSync(
+      process.env.TRACE_BATCH_LOG,
+      JSON.stringify({ event, pid: process.pid, ...fields }) + '\n',
+    );
   const digest = (value) => createHash('sha256').update(value).digest('base64');
   const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
   const snapshot = (item) => {
@@ -127,6 +139,18 @@ async function stdioChild() {
   setTimeout(() => process.exit(92), 6000).unref();
   const input = createInterface({ input: process.stdin });
   let previous;
+  let batchCount = 0;
+  let duplicateTimer;
+  const afterLogicalRead = () => {
+    if (duplicateTimer) return;
+    duplicateTimer = setInterval(() => {
+      if (!existsSync(process.env.TRACE_BATCH_LOG + '.logical-completed')) return;
+      clearInterval(duplicateTimer);
+      record('duplicate-after-read', { id: previous.id });
+      send(previous);
+    }, 5);
+    duplicateTimer.unref();
+  };
   input.on('line', (line) => {
     if (line === 'QUIT') {
       record('quit');
@@ -136,6 +160,13 @@ async function stdioChild() {
     assertLine: {
       if (!line.startsWith('B\t')) break assertLine;
       const request = JSON.parse(Buffer.from(line.slice(2), 'base64'));
+      batchCount++;
+      if (mode === 'cold-shared-budget')
+        record('cold-frame', {
+          id: request.id,
+          items: request.items.length,
+          receivedAt: performance.timeOrigin + performance.now(),
+        });
       const value = {
         schemaVersion: 1,
         kind: 'snapshot-many',
@@ -174,7 +205,7 @@ async function stdioChild() {
         send({ error: 'SYNTHETIC_SECOND_ITEM_REJECTED' });
         return;
       }
-      if (mode === 'batch-timeout') {
+      if (mode === 'batch-timeout' || (mode === 'cold-second-timeout' && batchCount === 2)) {
         setTimeout(() => record('first-item'), 450);
         setTimeout(() => send(value), 900);
         return;
@@ -183,12 +214,26 @@ async function stdioChild() {
         setTimeout(() => send(value), 180);
         return;
       }
+      if (mode === 'cold-shared-budget') {
+        // Publish the real cold prefix immediately. The next frame stays pending
+        // until the original owner budget closes it; no timer races the prefix.
+        if (batchCount === 1) {
+          send(value);
+          record('cold-prefix-written', { id: request.id });
+        } else record('cold-response-withheld', { id: request.id });
+        return;
+      }
       if (mode === 'owner-close') {
         setTimeout(() => send(value), 900);
         return;
       }
+      const coldDelay = Number(process.env.TRACE_BATCH_COLD_REPLY_DELAY_MS ?? 0);
+      if (mode === 'duplicate-late' && batchCount > 1 && coldDelay > 0) {
+        setTimeout(() => send(value), coldDelay);
+        return;
+      }
       send(value);
-      if (mode === 'duplicate-late') setTimeout(() => send(value), 100);
+      if (mode === 'duplicate-late') afterLogicalRead();
       return;
     }
     send({ error: 'FIXED_BATCH_ONLY' });
@@ -213,8 +258,62 @@ async function transportOwner() {
     firstPassed;
   const started = performance.now();
   const originalNow = Date.now;
+  const originalWait = Atomics.wait;
+  const sharedBudget = workerData.mode === 'cold-shared-budget';
+  const nowDescriptor = Object.getOwnPropertyDescriptor(performance, 'now');
+  const originalPerformanceNow = performance.now;
+  const clockNow = () => Reflect.apply(originalPerformanceNow, performance, []);
+  let observedNow;
+  if (sharedBudget)
+    // Observe the actual clock samples used by budget() and Atomics.wait's
+    // timeout arithmetic. Return each raw value unchanged; never advance a clock.
+    Object.defineProperty(performance, 'now', {
+      configurable: true,
+      value() {
+        const value = clockNow();
+        observedNow = value;
+        return value;
+      },
+    });
+  const timing =
+    workerData.mode === 'batch-timeout' || sharedBudget
+      ? {
+          timeOrigin: performance.timeOrigin,
+          waits: [],
+          ...(sharedBudget ? { omittedWaits: 0 } : {}),
+        }
+      : undefined;
+  if (timing)
+    Atomics.wait = function (view, index, expected, timeout) {
+      const sample = {
+        entered: clockNow(),
+        timeout,
+        before: Atomics.load(view, index),
+        ...(sharedBudget ? { timeoutComputedAt: observedNow } : {}),
+      };
+      if (!sharedBudget || timing.waits.length < 64) timing.waits.push(sample);
+      else timing.omittedWaits++;
+      try {
+        const status = Reflect.apply(originalWait, this, [view, index, expected, timeout]);
+        sample.returned = clockNow();
+        sample.status = status;
+        sample.after = Atomics.load(view, index);
+        return status;
+      } catch (error) {
+        sample.threwAt = clockNow();
+        throw error;
+      }
+    };
   try {
     backend.budget(1800);
+    if (sharedBudget) {
+      backend.budget(300);
+      timing.phaseBudget = {
+        milliseconds: 300,
+        startedAt: observedNow,
+        deadlineAt: observedNow + 300,
+      };
+    }
     if (workerData.mode === 'clock-forward') Date.now = () => originalNow() + 60_000;
     if (workerData.mode === 'clock-backward') {
       backend.budget(100);
@@ -227,21 +326,48 @@ async function transportOwner() {
     const items = Array.from({ length: workerData.itemCount }, (_, index) =>
       index % 2 === 0 ? { path: root, maximum: 0 } : { path: root + '\\one.txt', maximum: 4 },
     );
+    if (timing) timing.readEntered = performance.now();
     const values = backend.backend.snapshotMany(root, items);
+    if (timing) timing.readReturned = performance.now();
     passed = values.length === items.length && values[1].bytes.toString() === 'AAAA';
     firstPassed = passed;
     identities = values.map((value) => value.identity);
     if (workerData.mode === 'stale-while-next' || workerData.mode === 'duplicate-late') {
       passed = false;
-      if (workerData.mode === 'duplicate-late') await new Promise((done) => setTimeout(done, 200));
+      if (workerData.mode === 'duplicate-late')
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error('Duplicate transport did not retire')),
+            4000,
+          );
+          parentPort.once('message', (value) => {
+            clearTimeout(timer);
+            if (value?.kind === 'fixture-duplicate-retired') resolve();
+            else reject(new Error('Unexpected fixture retirement acknowledgement'));
+          });
+          // Cold reads can span multiple Native frames. Release the duplicate
+          // only after the whole original read, then observe actual retirement.
+          parentPort.postMessage({ kind: 'fixture-logical-read-completed' });
+        });
       backend.backend.snapshotMany(root, items);
       passed = true;
     }
   } catch (failure) {
+    if (timing) timing.readThrew = performance.now();
     error = failure.message;
   } finally {
+    Atomics.wait = originalWait;
     Date.now = originalNow;
-    backend.close();
+    if (sharedBudget) {
+      if (nowDescriptor) Object.defineProperty(performance, 'now', nowDescriptor);
+      else delete performance.now;
+    }
+    if (timing) timing.closeEntered = performance.now();
+    try {
+      backend.close();
+    } finally {
+      if (timing) timing.closeReturned = performance.now();
+    }
   }
   parentPort.postMessage({
     passed,
@@ -249,6 +375,7 @@ async function transportOwner() {
     identities,
     firstPassed,
     elapsed: performance.now() - started,
+    timing,
   });
   parentPort.close();
 }
@@ -284,7 +411,10 @@ async function transportMain() {
     }
   };
   const itemCount = Number(process.argv[4]);
-  assert(itemCount === 2 || itemCount === 8, 'Fixed synthetic batch width required');
+  assert(
+    itemCount === 2 || itemCount === 8 || itemCount === 64,
+    'Fixed synthetic batch width required',
+  );
   registerWindowsTraceTransport();
   const monitor = monitorPrivateStateWorkers(
     new URL('./desktop-trace-native-worker.js', import.meta.url),
@@ -301,8 +431,27 @@ async function transportMain() {
   });
   registerWindowsProcessWorker(owner);
   let answer;
+  let duplicateReleased = false;
   const completed = new Promise((resolve, reject) => {
-    owner.once('message', (value) => {
+    owner.on('message', (value) => {
+      if (value?.kind === 'fixture-logical-read-completed') {
+        try {
+          assert.equal(mode, 'duplicate-late');
+          assert.equal(duplicateReleased, false);
+          duplicateReleased = true;
+          fs.writeFileSync(process.env.TRACE_BATCH_LOG + '.logical-completed', '', {
+            flag: 'wx',
+            mode: 0o600,
+          });
+          until(() => monitor.active.size === 0).then(
+            () => owner.postMessage({ kind: 'fixture-duplicate-retired' }),
+            reject,
+          );
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
       answer = value;
     });
     owner.once('error', reject);
@@ -315,6 +464,8 @@ async function transportMain() {
     }
     await completed;
     await until(() => monitor.active.size === 0);
+    if (mode === 'duplicate-late')
+      assert.equal(rows().filter((row) => row.event === 'duplicate-after-read').length, 1);
     for (const row of rows().filter((row) => row.event === 'started')) {
       let alive;
       try {
@@ -330,7 +481,55 @@ async function transportMain() {
       requests: rows().filter((row) => row.event === 'request').length,
       partialExecuted: rows().some((row) => row.event === 'first-item'),
       allRetired: true,
+      ...(mode === 'cold-shared-budget'
+        ? {
+            requestFrames: rows()
+              .filter((row) => row.event === 'cold-frame')
+              .map(({ id, items, receivedAt }) => ({ id, items, receivedAt })),
+          }
+        : {}),
     };
+    if (mode === 'batch-timeout' || mode === 'cold-shared-budget') {
+      result.nativeTimers = [];
+      result.diagnosticIncomplete = false;
+      try {
+        const files = fs
+          .readdirSync(directory)
+          .filter((name) => /^native-timer-[0-9]+\.json$/.test(name));
+        if (files.length !== 1) result.diagnosticIncomplete = true;
+        for (const name of files.slice(0, 2)) {
+          const path = join(directory, name);
+          if (fs.statSync(path).size > 8192) throw new Error('Bounded timer diagnostics exceeded');
+          const value = JSON.parse(fs.readFileSync(path, 'utf8'));
+          const finite = (number) =>
+            typeof number === 'number' && Number.isFinite(number) && number >= 0;
+          if (
+            value.version !== 1 ||
+            !finite(value.timeOrigin) ||
+            !Number.isInteger(value.threadId) ||
+            value.threadId <= 0 ||
+            value.omitted !== 0 ||
+            !Array.isArray(value.rows) ||
+            value.rows.length < 1 ||
+            value.rows.length > 32 ||
+            !value.rows.every(
+              (row) =>
+                row &&
+                row.delay === 750 &&
+                finite(row.created) &&
+                ['fired', 'cleared'].every(
+                  (field) =>
+                    row[field] === undefined || (finite(row[field]) && row[field] >= row.created),
+                ),
+            )
+          )
+            result.diagnosticIncomplete = true;
+          result.nativeTimers.push(value);
+        }
+      } catch {
+        result.diagnosticIncomplete = true;
+      }
+    }
     fs.writeFileSync(join(directory, 'result.json'), JSON.stringify(result));
   } finally {
     await owner.terminate();
@@ -339,16 +538,50 @@ async function transportMain() {
 }
 
 export async function frozenBatchFixture() {
+  const taskId = process.env.AGENT_HUB_TEST_RESOURCE_TASK;
+  const operationId = process.env.AGENT_HUB_TEST_RESOURCE_OPERATION;
+  if (taskId !== undefined || operationId !== undefined) {
+    assert(
+      typeof taskId === 'string' &&
+        taskId.length >= 1 &&
+        taskId.length <= 128 &&
+        !/[^a-z0-9-]/.test(taskId),
+    );
+    assert(
+      typeof operationId === 'string' &&
+        operationId.length >= 1 &&
+        operationId.length <= 128 &&
+        !/[^a-z0-9-]/.test(operationId),
+    );
+  }
   fs.mkdirSync(join(repository, '.local'), { recursive: true, mode: 0o700 });
   const directory = fs.realpathSync(fs.mkdtempSync(join(repository, '.local/trace-batch-')));
+  if (taskId !== undefined) {
+    fs.writeFileSync(
+      join(directory, '.task-resource.json'),
+      JSON.stringify({
+        version: 1,
+        taskId,
+        operationId,
+        creatorPid: process.pid,
+        creatorTimeOrigin: performance.timeOrigin,
+        directory,
+        purpose: 'synthetic-windows-trace-batch-fixture',
+        generatorSha256: hash(fs.readFileSync(fileURLToPath(import.meta.url))),
+      }),
+      { flag: 'wx', mode: 0o600 },
+    );
+  }
   const inputs = new Map();
   for (const name of [
     'windows-trace-diagnostics',
     'desktop-trace-native',
     'desktop-trace-native-worker',
     'desktop-private-state-native',
+    'diagnostic-events',
     'windows-process',
     'desktop-prediction-trace',
+    'desktop-suggestion-store',
   ]) {
     const path = join(source, name + '.ts'),
       input = fs.readFileSync(path, 'utf8');
@@ -373,6 +606,12 @@ export async function frozenBatchFixture() {
     join(directory, 'desktop-platform.js'),
     `import {fileURLToPath} from 'node:url';
 let backend;
+export const assertPrivateFile=()=>{throw new Error('Compact store requires real private filesystem proof')};
+export const makePrivateDirectorySync=()=>{throw new Error('Compact store writes are outside this read-only fixture')};
+export const openPrivateFileSync=()=>{throw new Error('Compact store writes are outside this read-only fixture')};
+export const renamePrivateFileSync=()=>{throw new Error('Compact store writes are outside this read-only fixture')};
+export const protectWindowsStateDirectory=()=>{throw new Error('Compact store writes are outside this read-only fixture')};
+export const protectWindowsStateFile=()=>{throw new Error('Compact store writes are outside this read-only fixture')};
 export const installWindowsTraceBackend=value=>{backend=value};
 export const windowsTraceSnapshot=(...args)=>backend.snapshot(...args);
 export const windowsTraceSnapshotBatchAvailable=()=>backend?.snapshotMany!==undefined;
@@ -385,6 +624,21 @@ export const windowsTraceNativeExecutable=()=>process.env.TRACE_BATCH_EXE??fileU
     `import assert from 'node:assert/strict';
 import child from 'node:child_process';import {fileURLToPath} from 'node:url';
 import {syncBuiltinESMExports} from 'node:module';
+import {writeFileSync} from 'node:fs';import {dirname,join} from 'node:path';
+import {threadId} from 'node:worker_threads';
+if(['batch-timeout','cold-shared-budget'].includes(process.env.TRACE_BATCH_MODE)){
+ const originalSet=globalThis.setTimeout,originalClear=globalThis.clearTimeout,rows=[],handles=new Map();
+ let omitted=0;
+ globalThis.setTimeout=function(callback,delay,...args){
+  if(delay!==750||typeof callback!=='function')return Reflect.apply(originalSet,this,[callback,delay,...args]);
+  const row={created:performance.now(),delay};
+  if(rows.length<32)rows.push(row);else omitted++;
+  const handle=Reflect.apply(originalSet,this,[function(...passed){row.fired=performance.now();return Reflect.apply(callback,this,passed)},delay,...args]);
+  handles.set(handle,row);return handle;
+ };
+ globalThis.clearTimeout=function(handle){const row=handles.get(handle);if(row)row.cleared=performance.now();return Reflect.apply(originalClear,this,[handle])};
+ process.once('exit',()=>{try{writeFileSync(join(dirname(process.env.TRACE_BATCH_LOG),'native-timer-'+threadId+'.json'),JSON.stringify({version:1,timeOrigin:performance.timeOrigin,threadId,rows,omitted}),{flag:'wx',mode:0o600})}catch{}});
+}
 Object.defineProperty(process,'platform',{value:'win32'});
 const entry=fileURLToPath(new URL('./child.mjs',import.meta.url)),original=child.spawn;
 child.spawn=function(command,args,options){
@@ -410,7 +664,10 @@ child.spawn=function(command,args,options){
 }
 
 export async function batchTransportFixture(mode, extra = {}, itemCount = 2) {
-  assert(itemCount === 2 || itemCount === 8, 'Fixed synthetic batch width required');
+  assert(
+    itemCount === 2 || itemCount === 8 || itemCount === 64,
+    'Fixed synthetic batch width required',
+  );
   const fixture = await frozenBatchFixture();
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) =>

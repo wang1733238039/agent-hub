@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "taskId": "android-parallel-p7-migration-20261028",
+  "operationId": "parent-p7-authorization-fence-inventory-20261029-1",
+  "sourceCommit": "eb09a56b335e5ec34740eb2f639f51bca69b2b81",
+  "definition": "apps/android/src/main/kotlin/com/agenthub/android/EasyWorkAuthorizationCoordinator.kt",
+  "record": "easywork-authorization-fence:<sha256(ref)>",
+  "versionSupportedByProducer": 1,
+  "semantics": [
+    "ref/epoch fence independent of live grant",
+    "pending/confirmed revoke retains original saved grant/token/body/operation/intent hash/localReceipt",
+    "refreshResults audit retains originalPending opaque unknown fields without exposing original token"
+  ],
+  "migrationStatus": "implemented-audit-only-candidate-native-unverified",
+  "reason": "Current candidate preserves complete authorization residue/orphan graphs under inert versioned archive aliases. Active EasyWork metadata/business graphs remain a whole-archive boundary; no incoming authority or replay is created.",
+  "inventory": "Authenticated modern names include unreferenced per-action credentials. Exact referenced legacy grant/fence names resolve from original records; unknown hash-only originals and pending AtomicFile state refuse without recovery.",
+  "regression": "Existing missing-context/future fence vectors remain negative. New actual P8-writer hot6 and fresh-PID cold2 methods are prepared; current native/DEV acceptance pending.",
+  "remaining": [
+    "Current-source Android API26/API37/OEM native, exact cold pair, SAF and real DEV.",
+    "Active EasyWork descriptors/cache/business-operation projection with fresh explicit pairing and no authority copy.",
+    "Android/iOS interoperability and full P7."
+  ],
+  "implementation": "easywork-audit-archives.md"
+}

@@ -1,5 +1,56 @@
 import Foundation
 
+/// Only the EasyWork provider-error envelope gets concise presentation copy.
+/// Keep the original diagnostic and immutable receipt for inspection/reconciliation.
+enum EasyWorkFailurePresentation {
+  static func text(_ original:String, enabled:Bool) -> String {
+    guard enabled, original.hasPrefix("Model provider call failed:") else { return original }
+    return L10n.tr("模型服务请求失败。本次任务未完成，原输入和执行记录已保留。")
+  }
+}
+
+/// A read can reconnect after preserving its completed or pending operation.
+protocol RecoverableConnectionReadFailure: Error {}
+
+#if DEBUG
+@MainActor enum ConnectionNoticeDiagnostics {
+  private static var events: [String] = []
+  static func record(_ event: String) {
+    guard ProcessInfo.processInfo.environment["EASYWORK_CONNECTION_NOTICE_DIAGNOSTICS"] == "1" else { return }
+    events.append(event)
+    events = Array(events.suffix(64))
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("connection-notice-diagnostics.json")
+    if let data = try? JSONEncoder().encode(events) { try? data.write(to: url, options: .atomic) }
+  }
+}
+#endif
+
+/// Adapters identify definitive device-authorization failures without exposing
+/// wire codes or matching translated messages in the shared presentation layer.
+protocol ConnectionAuthorizationFailure: Error {
+  var authorizationNoticeKey: String? { get }
+}
+
+/// Routes may change while an authorization remains the same.
+struct ConnectionAuthorizationIdentity<Target: Equatable>: Equatable {
+  let target: Target
+  let credentialRef: String
+}
+
+/// Per live connection, suppress repeated automatic alerts after dismissal.
+/// Failure state, explicit user feedback, credentials and commands are unchanged.
+struct ConnectionAuthorizationNotices<Identity: Equatable> {
+  private var presented: [String: (identity: Identity, failure: String)] = [:]
+  mutating func shouldPresent(target: String, identity: Identity, failure: String?) -> Bool {
+    guard let failure else { return true }
+    if let old = presented[target], old.identity == identity, old.failure == failure { return false }
+    presented[target] = (identity, failure)
+    return true
+  }
+  mutating func reset(_ target: String) { presented.removeValue(forKey: target) }
+}
+
+
 // Presentation only: preserve the original transport error and never retry a command here.
 struct OperationFailure {
   let title: String

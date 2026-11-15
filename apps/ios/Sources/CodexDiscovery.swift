@@ -134,13 +134,23 @@ final class CodexHostRoutes: @unchecked Sendable {
       }
     }
   }
-  func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+  func data(for request: URLRequest, maxBytes: Int? = nil) async throws -> (Data, URLResponse) {
     let session = lock.withLock { () -> URLSession in
       guard let url = request.url, let origin = origin(url), let fingerprint = pins[origin] else { return systemSession }
       let key = origin + "|" + fingerprint
       if let session = sessions[key] { return session }
       let session = URLSession(configuration: .ephemeral, delegate: PairedHostTrust(endpoint: url.absoluteString, fingerprint: fingerprint), delegateQueue: nil)
       sessions[key] = session; return session
+    }
+    if let maxBytes {
+      let (bytes, response) = try await session.bytes(for: request)
+      defer { bytes.task.cancel() }
+      var data = Data()
+      for try await byte in bytes {
+        guard data.count < maxBytes else { throw HostServiceError.invalidResponse }
+        data.append(byte)
+      }
+      return (data, response)
     }
     return try await session.data(for: request)
   }
@@ -285,7 +295,7 @@ struct VPNPeerSnapshot: Decodable, Sendable {
     func priority(_ endpoint: String) -> Int {
       let host = URL(string: endpoint)?.host?.trimmingCharacters(in: CharacterSet(charactersIn: "[]")) ?? ""
       if isVPNAddress(host) { return 0 }
-      if host.hasSuffix(".ts.net") { return 1 }
+      if (host.hasSuffix(".ts.net") || host.hasSuffix(".mesh.51easyai.com")) { return 1 }
       return host.hasSuffix(".local") ? 3 : 2
     }
     return unique.enumerated().sorted {
@@ -495,7 +505,7 @@ struct VPNPeerSnapshot: Decodable, Sendable {
             }
             EasyWorkKnownHosts.shared.offerBonjour(endpoint: probe.endpoint, deviceId: host.target.desktopDeviceId)
             if !easyworkRows.contains(where: { $0.deviceId == host.target.desktopDeviceId }) {
-              easyworkRows.append(.init(id: "vpn-" + host.target.desktopDeviceId, name: host.name, endpoint: probe.endpoint, knownClientId: known?.id, detail: "VPN · " + (known == nil ? L10n.tr("点选连接") : L10n.tr("已发现")), deviceId: host.target.desktopDeviceId))
+              easyworkRows.append(.init(id: "vpn-" + host.target.desktopDeviceId, name: host.displayName, endpoint: probe.endpoint, knownClientId: known?.id, detail: "VPN · " + (known == nil ? L10n.tr("点选连接") : L10n.tr("已发现")), deviceId: host.target.desktopDeviceId))
             }
           }
         case nil: break

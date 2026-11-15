@@ -8,6 +8,8 @@ export * from './vpn-discovery.js';
 export * from './codex-private-connection.js';
 export * from './codex-connection-routes.js';
 export * from './workspace-sidebar.js';
+export * from './usage.js';
+export * from './project-git.js';
 
 export type ServiceName = 'host-agent' | 'relay';
 
@@ -79,9 +81,12 @@ export type DeliveryState =
 export * from './agent-management.js';
 export * from './voice-transcription.js';
 export * from './notifications.js';
+export * from './notification-recovery-v2.js';
 
 export * from './business-notifications.js';
 
 export * from './workspace-management.js';
 export * from './desktop-suggestion-observations.js';
 export * from './chat-actions.js';
+
+export * from './chat-management.js';

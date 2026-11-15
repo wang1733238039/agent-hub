@@ -101,33 +101,33 @@ function write(value, fragmented = false) {
     socket.write(frame.subarray(7));
   } else socket.write(frame);
 }
-function snapshot(id = 'thread') {
+function snapshot(id = 'thread', deliveryDelayMs = 0) {
   if (heldSnapshot?.id === id) {
     heldSnapshot.release = () => {
       heldSnapshot = undefined;
-      snapshot(id);
+      snapshot(id, deliveryDelayMs);
     };
     return;
   }
   const fixtureOwner = notificationOwnerFixture?.owners.get(id);
-  write(
-    {
-      type: 'broadcast',
-      method: 'thread-stream-state-changed',
-      version: 11,
-      sourceClientId: fixtureOwner?.clientId ?? source,
-      params: {
-        hostId: 'local',
-        conversationId: id,
-        change: {
-          type: 'snapshot',
-          revision,
-          conversationState: fixtureOwner?.state ?? { ...state(), id },
-        },
+  const message = {
+    type: 'broadcast',
+    method: 'thread-stream-state-changed',
+    version: 11,
+    sourceClientId: fixtureOwner?.clientId ?? source,
+    params: {
+      hostId: 'local',
+      conversationId: id,
+      change: {
+        type: 'snapshot',
+        revision,
+        conversationState: fixtureOwner?.state ?? { ...state(), id },
       },
     },
-    true,
-  );
+  };
+  const deliver = () => write(message, true);
+  if (deliveryDelayMs) setTimeout(deliver, deliveryDelayMs);
+  else deliver();
 }
 const server = createServer((connected) => {
   socket = connected;
@@ -740,21 +740,26 @@ try {
   await settle();
   assert.equal(following, readFollowCount);
   assert.equal(client.state('thread').hasUnreadTurn, false);
+  const waitForReadSnapshot = (previous) =>
+    waitForFixture(() => received > previous, 'Original owner unread snapshot was not observed');
   fixtureUnread = true;
+  let beforeReadSnapshot = received;
   readState({ hostId: 'local', conversationId: 'thread', hasUnreadTurn: true });
   readState({ hostId: 'local', conversationId: 'unloaded', hasUnreadTurn: true });
-  await settle();
+  await waitForReadSnapshot(beforeReadSnapshot);
   assert.equal(client.state('thread').hasUnreadTurn, true);
   assert.equal(client.hasOwner('unloaded'), false, 'Unread metadata cannot establish an owner');
   assert.equal(client.state('unloaded'), undefined);
   assert.equal(following, readFollowCount + 1);
   // Broadcasts from another identity cannot overwrite the owner's read value.
+  beforeReadSnapshot = received;
   readState({ hostId: 'local', conversationId: 'thread', hasUnreadTurn: false });
-  await settle();
+  await waitForReadSnapshot(beforeReadSnapshot);
   assert.equal(client.state('thread').hasUnreadTurn, true);
   fixtureUnread = false;
+  beforeReadSnapshot = received;
   readState({ hostId: 'local', conversationId: 'thread', hasUnreadTurn: false });
-  await settle();
+  await waitForReadSnapshot(beforeReadSnapshot);
   assert.equal(client.state('thread').hasUnreadTurn, false);
   write({
     type: 'broadcast',
@@ -874,11 +879,14 @@ try {
   revision++;
   snapshot();
   await settle();
-  const runtime = Object.assign(Object.create(DesktopRuntime.prototype), {
-    ipc: client,
-    options: { socket: path },
-    reader: { read: async () => ({ config: {} }) },
-  });
+  const runtime = Object.assign(
+    new DesktopRuntime({ mode: 'desktop-runtime' }, 'fixture-host', 'fixture'),
+    {
+      ipc: client,
+      options: { socket: path },
+      reader: { read: async () => ({ config: {} }) },
+    },
+  );
   const input = [
     { type: 'text', text: '首条文字' },
     { type: 'localImage', path: '/tmp/image.png' },
@@ -1034,7 +1042,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (request.method === 'initialize') result = {};
   else if (request.method === 'project/list') result = { data: JSON.parse(fs.readFileSync(${JSON.stringify(catalogFile)}, 'utf8')).projects, nextCursor: null };
   else if (request.method === 'thread/list') result = { data: JSON.parse(fs.readFileSync(${JSON.stringify(catalogFile)}, 'utf8')).threads.filter(t => request.params.archived === true ? t.archived === true : t.archived !== true).filter(t => !request.params.sectionId || t.section?.id === request.params.sectionId), nextCursor: null };
-  else if (request.method === 'model/list') result = { data: [{id:'desktop-fixture-model',displayName:'Desktop Model',isDefault:true,defaultReasoningEffort:'xhigh',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'xhigh'}]}, {id:'desktop-fast',serviceTiers:[{id:'priority',name:'Fast'}],displayName:'Desktop Fast',isDefault:false,defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low'}]}] };
+  else if (request.method === 'model/list') result = { data: [{id:'desktop-fixture-model',displayName:'Desktop Model',isDefault:true,defaultReasoningEffort:'xhigh',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'xhigh'}]}, {id:'desktop-fast',serviceTiers:[{id:'priority',name:'Fast'},{id:'ultrafast',name:'Ultrafast'}],displayName:'Desktop Fast',isDefault:false,defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low'}]}] };
   else if (request.method === 'config/read') result = { config: {} };
   else if (request.method === 'thread/read')
     result = { thread: { id: request.params.threadId, historyMode: 'paginated' } };
@@ -1106,8 +1114,14 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         },
       ];
       revision++;
-      snapshot();
-      await settle();
+      // This assertion depends on a received owner snapshot, not on the
+      // scheduler delivering a fragmented socket frame within 35 ms. Force a
+      // longer fixture delay so the old sleep cannot silently pass this case.
+      snapshot('thread', 75);
+      await waitForFixture(
+        () => session.history('thread').runtime.approvals.length === 1,
+        `Native app approval snapshot was not observed for ${decision}`,
+      );
       const [approval] = session.history('thread').runtime.approvals;
       assert(approval);
       assert.match(approval.detail, /com.apple.calculator/);
@@ -1632,7 +1646,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     fixtureTurns[0].items.at(-1).status = 'accepted';
     revision++;
     snapshot();
-    await settle();
+    await waitForFixture(
+      () => ['submitted', 'completed'].includes(rejectedReceipt.state),
+      'Original rejected answer must be confirmed by the owner before reconciliation',
+    );
     await session.answer(
       'thread',
       rejectedQuestion.id,
@@ -1700,7 +1717,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     fixtureTurns[0].items.at(-1).status = 'accepted';
     revision++;
     snapshot();
-    await settle();
+    await waitForFixture(
+      () => ['submitted', 'completed'].includes(uncertainReceipt.state),
+      'Late owner acceptance must reach the original receipt before reconciliation',
+    );
     await session.answer(
       'thread',
       uncertainQuestion.id,
@@ -2455,6 +2475,26 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     assert.equal(settingsWire.approvalPolicy, 'on-request');
     assert.equal(settingsWire.approvalsReviewer, 'user');
     assert(!('permissionMode' in settingsWire));
+    fixtureTurns.at(-1).status = 'completed';
+    running = false;
+    const ultrafast = { ...configured, clientMessageId: 'speed-ultrafast', speed: 'ultrafast' };
+    const ultraReceipt = await session.submit(ultrafast);
+    assert.equal(ultraReceipt.state, 'submitted');
+    assert.equal(commands.at(-1).params.turnStart.request.serviceTier, 'ultrafast');
+    const afterUltra = commands.length;
+    assert.equal((await session.submit(ultrafast)).turnId, ultraReceipt.turnId);
+    assert.equal(commands.length, afterUltra, 'Same ultrafast intent must execute once');
+    await assert.rejects(session.submit({ ...ultrafast, speed: 'fast' }), (e) => e.status === 409);
+    await assert.rejects(
+      session.submit({
+        ...configured,
+        clientMessageId: 'unsupported-ultrafast',
+        model: 'desktop-fixture-model',
+        speed: 'ultrafast',
+      }),
+      /不支持此速度/,
+    );
+    assert.equal(commands.length, afterUltra, 'Unsupported speed must not reach the owner');
     fixtureTurns.at(-1).status = 'completed';
     running = false;
     const standard = { ...configured, clientMessageId: 'speed-standard', speed: 'standard' };

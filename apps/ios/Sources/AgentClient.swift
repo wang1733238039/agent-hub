@@ -18,6 +18,9 @@ struct AgentConnection: Codable, Equatable, Sendable {
   var candidates: [AgentConnectionCandidate]
   var preference: AgentConnectionPreference
   var credentialRef: String
+  var authorizationNoticeIdentity: ConnectionAuthorizationIdentity<AgentRuntimeTarget> {
+    .init(target: target, credentialRef: credentialRef)
+  }
 }
 
 enum AgentJSONValue: Codable, Equatable, Sendable {
@@ -159,6 +162,9 @@ enum AgentDomainCodec {
 
 /// Product operations. Providers own wire, authentication and target mapping.
 protocol AgentClient: Sendable {
+  func projectGit(_ client: Client, projectId: String, target: AgentRuntimeTarget, refresh: Bool) async throws -> Data
+  func projectGitFiles(_ client: Client, projectId: String, target: AgentRuntimeTarget, snapshotId: String, worktreeId: String, cursor: String?) async throws -> Data
+  func usage(_ client: Client, target: AgentRuntimeTarget) async throws -> Data
   func voiceReadiness(_ client: Client) async throws -> VoiceTranscriptionReadiness
   func transcribeVoice(_ client: Client, recording: VoiceRecording, threadId: String?, draftId: String) async throws -> String
   func permissionOptions(_ client: Client) -> [AgentPermissionOption]
@@ -175,6 +181,7 @@ protocol AgentClient: Sendable {
   func workspace(_ client: Client, projectCursor: String?, threadCursor: String?) async throws -> WorkspaceSnapshot
   func history(_ client: Client, threadId: String, cursor: String?) async throws -> HistorySnapshot
   func nextTurnSuggestion(_ client: Client, scope: DesktopSuggestionScope) async throws -> DesktopSuggestionResponse
+  func desktopSuggestionSource(_ client: Client, workspace: WorkspaceSnapshot) -> DesktopSuggestionSourceKind?
   func acknowledgeRead(_ client: Client, threadId: String, readerId: String, position: ReadPosition) async throws -> ReadAcknowledgement
   func send(_ client: Client, reply: PendingReply) async throws -> DeliveryReceipt
   func receipt(_ client: Client, id: String) async throws -> DeliveryReceipt
@@ -182,6 +189,7 @@ protocol AgentClient: Sendable {
   func sendCapturedReply(_ client: Client, reply: PendingReply, target: AgentRuntimeTarget) async throws -> DeliveryReceipt
   func events(_ client: Client, epoch: String, after: Int, threadId: String) async throws -> EventBatch
   func createThread(_ client: Client, projectId: String?, operationId: String) async throws -> Conversation
+  func threadCreationStatus(_ client: Client, projectId: String?, operationId: String) async throws -> Conversation?
   func stop(_ client: Client, threadId: String, turnId: String) async throws -> CommandResult
   func cancelQueue(_ client: Client, threadId: String, messageId: String) async throws -> CommandResult
   func executeQueue(_ client: Client, threadId: String, messageId: String, expectedTurnId: String?) async throws -> CommandResult
@@ -191,6 +199,7 @@ protocol AgentClient: Sendable {
   func createProject(_ client: Client, name: String, directory: String, operationId: String) async throws -> WorkspaceSnapshot
   func upload(_ client: Client, threadId: String, file: LocalAttachment, data: Data) async throws -> RemoteAttachment
   func download(_ client: Client, file: RemoteAttachment) async throws -> URL
+  func cachedDownload(_ client: Client, file: RemoteAttachment) async throws -> URL?
   func resolveMessageFile(_ client: Client, threadId: String, messageId: String, reference: String) async throws -> RemoteAttachment
   func fileTransfers(_ client: Client) async throws -> ComputerFileCatalog
   func prepareFileTransfer(_ client: Client, file: ComputerFileManifest) async throws -> ComputerFileReceipt
@@ -213,8 +222,14 @@ protocol AgentClient: Sendable {
   func uploadCreation(_ client: Client, id: String, file: LocalAttachment, data: Data) async throws
 }
 extension AgentClient {
+  func threadCreationStatus(_ client: Client, projectId: String?, operationId: String) async throws -> Conversation? { throw HostServiceError.unavailable }
+  func projectGit(_ client: Client, projectId: String, target: AgentRuntimeTarget, refresh: Bool) async throws -> Data { throw HostServiceError.unavailable }
+  func projectGitFiles(_ client: Client, projectId: String, target: AgentRuntimeTarget, snapshotId: String, worktreeId: String, cursor: String?) async throws -> Data { throw HostServiceError.unavailable }
+  func usage(_ client: Client, target: AgentRuntimeTarget) async throws -> Data { throw HostServiceError.unavailable }
+  func cachedDownload(_ client: Client, file: RemoteAttachment) async throws -> URL? { nil }
   func resolveMessageFile(_ client: Client, threadId: String, messageId: String, reference: String) async throws -> RemoteAttachment { throw HostServiceError.message(L10n.tr("当前连接程序不支持原消息文件解析，请更新电脑连接程序后重试。")) }
   func nextTurnSuggestion(_ client: Client, scope: DesktopSuggestionScope) async throws -> DesktopSuggestionResponse { throw HostServiceError.unavailable }
+  func desktopSuggestionSource(_ client: Client, workspace: WorkspaceSnapshot) -> DesktopSuggestionSourceKind? { nil }
   func chatAction(_ client: Client, request: ChatActionRequest) async throws -> ChatActionReceipt { throw HostServiceError.unavailable }
   func chatActionStatus(_ client: Client, threadId: String, operationId: String) async throws -> ChatActionReceipt { throw HostServiceError.unavailable }
   func searchHistory(_ client: Client, threadId: String, cursor: String?) async throws -> HistorySnapshot { try await history(client, threadId: threadId, cursor: cursor) }
@@ -266,6 +281,11 @@ extension AgentClient {
 enum AgentDEVReplayOperation: String, Sendable { case create, reply }
 #endif
 struct CodexAgentClient: AgentClient {
+  func desktopSuggestionSource(_ client: Client, workspace: WorkspaceSnapshot) -> DesktopSuggestionSourceKind? {
+    guard workspace.connectionMode == "desktop-runtime", workspace.readTarget?.agentId == "codex" else { return nil }
+    if workspace.capabilities?.contains("desktop:suggestions:displayed:v1") == true { return .desktopDisplay }
+    return workspace.capabilities?.contains("desktop:suggestions:native-version:v1") == true ? .nativeTrace : nil
+  }
   func chatAction(_ client: Client, request: ChatActionRequest) async throws -> ChatActionReceipt {
     guard request.hostId == client.id else { throw HostServiceError.wrongHost }
     return try await HostService.load(HostService.request(try HostService.url(client, "v1/threads/actions"), token: CredentialVault.token(client.id), method: "POST", body: JSONEncoder().encode(request)))
@@ -418,6 +438,12 @@ struct CodexAgentClient: AgentClient {
   func upload(_ client: Client, threadId: String, file: LocalAttachment, data: Data) async throws -> RemoteAttachment { try await HostService.upload(client, threadId: threadId, file: file, data: data) }
   func download(_ client: Client, file: RemoteAttachment) async throws -> URL { try await HostService.download(client, file: file) }
   func resolveMessageFile(_ client: Client, threadId: String, messageId: String, reference: String) async throws -> RemoteAttachment { try await HostService.resolveMessageFile(client, threadId: threadId, messageId: messageId, reference: reference) }
+  func usage(_ client: Client, target: AgentRuntimeTarget) async throws -> Data {
+    CodexHostRoutes.shared.register(client)
+    var request = HostService.request(try HostService.url(client, "v1/usage", ["target": try usageTargetJSON(target)]), token: CredentialVault.token(client.id))
+    request.timeoutInterval = 8
+    return try await HostService.bytes(request, maxBytes: 262144)
+  }
   func models(_ client: Client) async throws -> ModelList { try await HostService.load(HostService.request(try HostService.url(client, "v1/models"), token: CredentialVault.token(client.id))) }
   func openThread(_ client: Client, threadId: String, operationId: String) async throws -> DesktopOpenOperation { try await HostService.post(client, "v1/desktop/open", ["threadId": threadId, "clientOperationId": operationId]) }
   func openStatus(_ client: Client, threadId: String, operationId: String) async throws -> DesktopOpenOperation { try await HostService.load(HostService.request(try HostService.url(client, "v1/desktop/open-status", ["threadId": threadId, "id": operationId]), token: CredentialVault.token(client.id))) }

@@ -2,8 +2,8 @@
 
 ## 安装包
 
-[下载本分支 Android APK](https://github.com/wang1733238039/codex-mobile/releases/download/v0.2.0-voice-preview.1/codex-mobile-0.2.0-preview.apk)；
-[版本说明与校验文件](https://github.com/wang1733238039/codex-mobile/releases/tag/v0.2.0-voice-preview.1)。
+本轮仅同步源码，尚未发布新 APK；请查看 [个人仓库 Releases](https://github.com/wang1733238039/agent-hub/releases)。
+[构建和验证范围](github-main-sync-20261115.md)。
 
 - Android 8.0 及以上，系统识别出的版本为 `0.2.0-dev`，包名 `com.codexmobile.personal.debug`。
 - 用手机浏览器下载后打开 APK；系统提示时允许该浏览器安装本次应用。此包为开发签名预览版。
