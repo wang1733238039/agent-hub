@@ -1,7 +1,8 @@
 param(
-    [ValidateSet('inspect', 'bridge', 'trace')][string]$Action = 'inspect',
+    [ValidateSet('inspect', 'bridge', 'trace', 'open')][string]$Action = 'inspect',
     [string]$ExpectedDesktop,
-    [string]$ExpectedSha256
+    [string]$ExpectedSha256,
+    [Guid]$ThreadId
 )
 $ErrorActionPreference = 'Stop'
 try {
@@ -72,6 +73,16 @@ try {
             $digest -ne $ExpectedSha256) { throw 'DESKTOP_IDENTITY_CHANGED' }
         [Console]::Error.WriteLine('CODEX_MANAGE_PIPE_READY')
         [CodexManagePipe]::Bridge($pipe)
+    } elseif ($Action -eq 'open') {
+        if ($ThreadId -eq [Guid]::Empty) { throw 'DESKTOP_OPEN_TARGET_INVALID' }
+        Add-Type -Path (Join-Path $PSScriptRoot 'desktop-open.cs')
+        if (-not [CodexManageDesktopOpen]::TryActivate(
+            $server.Handle,
+            $ThreadId,
+            (Join-Path $PSScriptRoot 'desktop-open.ps1')
+        )) {
+            Start-Process -FilePath ('codex://threads/' + $ThreadId.ToString('D'))
+        }
     } elseif ($Action -eq 'trace') {
         # Retain this authenticated pipe while inspecting the exact main and
         # direct executors. Avoid multiple PowerShell processes per read.
@@ -85,6 +96,22 @@ try {
         @{ pid = $serverProcessId; startedAtUnixMs = [DateTimeOffset]::new($server.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds(); executable = $desktop; executableSha256 = $digest; userSid = $currentSid; sameUser = $true; sameSession = $true; trustedPublisher = $true } | ConvertTo-Json -Compress
     }
 } catch {
+    if ($Action -eq 'open' -and $env:HOST_AGENT_STATE_DIR) {
+        $match = [regex]::Match($_.Exception.ToString(), 'DESKTOP_OPEN_[A-Z_]+(?::[0-9]+)?')
+        if ($match.Success) {
+            try {
+                $logDirectory = Join-Path $env:HOST_AGENT_STATE_DIR 'diagnostics'
+                $log = Join-Path $logDirectory 'desktop-open.jsonl'
+                if ((Test-Path -LiteralPath $logDirectory -PathType Container) -and
+                    -not ((Get-Item -LiteralPath $logDirectory).Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                    (-not (Test-Path -LiteralPath $log) -or ((Get-Item -LiteralPath $log).Length -lt 65536 -and
+                    -not ((Get-Item -LiteralPath $log).Attributes -band [IO.FileAttributes]::ReparsePoint)))) {
+                    @{ at = [DateTime]::UtcNow.ToString('o'); scope = 'windows-desktop-open'; code = $match.Value } |
+                        ConvertTo-Json -Compress | Add-Content -LiteralPath $log -Encoding utf8
+                }
+            } catch { }
+        }
+    }
     $known = @('WINDOWS_DESKTOP_NOT_RUNNING', 'PROCESS_QUERY_FAILED', 'TOKEN_QUERY_FAILED', 'PIPE_IDENTITY_FAILED', 'WRONG_DESKTOP_USER', 'WRONG_DESKTOP_SESSION', 'DESKTOP_PATH_UNAVAILABLE', 'UNTRUSTED_DESKTOP_PUBLISHER', 'DESKTOP_IDENTITY_CHANGED')
     $reason = if ($_.Exception.Message -in $known) { $_.Exception.Message } else { 'WINDOWS_DESKTOP_PIPE_REJECTED' }
     [Console]::Error.WriteLine($reason)

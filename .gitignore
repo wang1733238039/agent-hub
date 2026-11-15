@@ -57,3 +57,4 @@ apps/ios/FilePreviewKit/.swiftpm/
 !/docs/acceptance/file-preview-20261026.md
 
 !/docs/acceptance/thread-filtered-events-20261113.md
+!/docs/acceptance/windows-packaged-thread-open-20261115.md

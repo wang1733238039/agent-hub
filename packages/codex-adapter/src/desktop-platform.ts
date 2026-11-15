@@ -20,6 +20,11 @@ import type { TraceSnapshotItem, TraceSnapshotValue } from './desktop-trace-nati
 // Observed builds are a validation record, not an allowlist for starting the Host.
 export const desktopBuilds = ['26.930.61225', '26.1002.52244'];
 
+// Accept observed wire profiles explicitly; an app build label is not a runtime allowlist.
+export function supportsDesktopStreamVersion(value: unknown): value is 11 | 13 {
+  return value === 11 || value === 13;
+}
+
 /** Optional acceptance metadata. Build labels never decide runtime availability. */
 export function readMacDesktopVersion(): string {
   try {
@@ -454,7 +459,9 @@ export function inspectDesktopArchive(path: string): { version: string; asarSha2
     ) ||
     !modules.some(
       (value) =>
-        /"thread-stream-state-changed":11/.test(value) &&
+        supportsDesktopStreamVersion(
+          Number(/"thread-stream-state-changed"\s*:\s*(\d+)(?=\s*[,}])/.exec(value)?.[1]),
+        ) &&
         /"thread-follower-start-turn":2/.test(value) &&
         /"thread-follower-interrupt-turn":4/.test(value),
     )

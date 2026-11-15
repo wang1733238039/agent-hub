@@ -132,6 +132,8 @@ const loadedDigest = (() => {
   ])
     digest.update(readFileSync(new URL(name, import.meta.url)));
   digest.update(readFileSync(new URL('../windows/desktop-open.ps1', import.meta.url)));
+  digest.update(readFileSync(new URL('../windows/desktop-open.cs', import.meta.url)));
+  digest.update(readFileSync(new URL('../windows/desktop-pipe.ps1', import.meta.url)));
   digest.update(readFileSync(new URL('../windows/private-state.cs', import.meta.url)));
   digest.update(readFileSync(new URL('../windows/private-state.ps1', import.meta.url)));
   return digest.digest('hex');

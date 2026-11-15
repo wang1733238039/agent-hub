@@ -12,6 +12,7 @@ import { configuredPermissionSettings, permissionSettings } from './generation-s
 import {
   loadWindowsDesktop,
   openWindowsDesktopPipe,
+  supportsDesktopStreamVersion,
   windowsDesktopPipe,
   readMacDesktopVersion,
   type WindowsDesktopIdentity,
@@ -451,7 +452,7 @@ export class DesktopIpc {
         change = object(params.change);
       if (this.owners.get(id) !== message.sourceClientId) {
         if (
-          message.version === desktopProfile.streamVersion &&
+          supportsDesktopStreamVersion(message.version) &&
           /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id)
         )
           // A different source is only a discovery hint. The original desktop
@@ -459,7 +460,7 @@ export class DesktopIpc {
           this.onDiscovered(id);
         return;
       }
-      if (message.version !== desktopProfile.streamVersion) {
+      if (!supportsDesktopStreamVersion(message.version)) {
         this.invalidate(id);
         return;
       }

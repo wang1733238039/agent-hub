@@ -42,6 +42,19 @@ try {
   const result = inspectDesktopArchive(path);
   assert.equal(result.version, '26.1002.52244');
   assert.match(result.asarSha256, /^[a-f0-9]{64}$/);
+  await writeFile(path, archive(profile.replace(':11', ':13')));
+  assert.equal(inspectDesktopArchive(path).version, '26.1002.52244');
+  for (const unsupported of [12, 14, 110, 130]) {
+    await writeFile(path, archive(profile.replace(':11', ':' + unsupported)));
+    assert.throws(() => inspectDesktopArchive(path), /profile not recognized/);
+  }
+  for (const method of ['start-turn', 'interrupt-turn']) {
+    const invalid = profile
+      .replace(':11', ':13')
+      .replace(new RegExp('("thread-follower-' + method + '":)\\d+'), '$199');
+    await writeFile(path, archive(invalid));
+    assert.throws(() => inspectDesktopArchive(path), /profile not recognized/);
+  }
   await writeFile(path, archive(profile, undefined, '26.928.20755'));
   assert.equal(inspectDesktopArchive(path).version, '26.928.20755');
   await writeFile(path, archive(profile, undefined, null));

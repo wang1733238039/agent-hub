@@ -1,5 +1,7 @@
 # 架构设计
 
+2026-11-15 F05／F17／F28／F31：Windows 冷会话恢复兼容桌面流 profile 11／13，并通过已认证原 owner 的 AUMID 打开准确会话；提升权限的 Host 只委派固定导航 helper 给同用户交互 shell，helper 再验证原 pipe。未知 profile 继续拒绝；打开成功仍以准确原 owner 为准。见[专项验收](acceptance/windows-packaged-thread-open-20261115.md)。
+
 2026-11-13 F17／F31 补充：双端最新历史与事件使用同一个 `ConversationSnapshotFence`，按完整目标和导航／连接代次隔离；同 epoch 的旧游标回包不能覆盖较新的任务状态、消息和分页入口。缺少版本或 epoch 不同的并发响应使用本地读取代次判断，后续有界读取仍可建立新检查点；历史前缀分页保留当前运行时且不更新最新检查点，见[专项记录](acceptance/thread-filtered-events-20261113.md#additional-active-task-investigation)。
 
 2026-11-13 F17／F31：双端按会话过滤的事件订阅明确区分 Host 全局游标和会话快照；空批次游标前进不撤销控制新鲜度，重置、epoch 变化及独立有界补读继续修复真实缺口。Android 较早页请求与后台最新页读取分离，等待后复核原导航、连接及前台生命周期，见[实现与验收](acceptance/thread-filtered-events-20261113.md)。

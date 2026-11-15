@@ -1,5 +1,6 @@
 param([Parameter(Mandatory = $true)][Guid]$ThreadId)
 $ErrorActionPreference = 'Stop'
-# Only the registered existing-thread URI; no executable, command or path input.
-$uri = 'codex://threads/' + $ThreadId.ToString()
-Start-Process -FilePath $uri
+# Resolve the running original desktop from its authenticated pipe. Store app
+# activation must target that process's application ID, not the default URI handler.
+& (Join-Path $PSScriptRoot 'desktop-pipe.ps1') -Action open -ThreadId $ThreadId
+if (-not $?) { exit 1 }
