@@ -31,7 +31,10 @@ export function retainedDesktopHistory<T extends HistoryRow>(
   initializationIds: ReadonlySet<string>,
   completedTurns: ReadonlySet<string> = new Set(),
 ): T[] {
-  const visible = new Set(incoming.map((row) => row.id));
+  // Both reader and owner can expose reconstructed ordinal IDs. Qualify them
+  // by their known Turn before comparing, including legacy cached raw aliases.
+  // This is exact item identity, not text deduplication.
+  const visible = new Set(incoming.map((row) => historyIdentity(row.id, row.runId)));
   const priorStableIds = new Set(
     previous.filter((row) => !provisional(row.id)).map((row) => row.id),
   );
@@ -58,7 +61,11 @@ export function retainedDesktopHistory<T extends HistoryRow>(
   }
   return previous
     .filter((row) => {
-      if (visible.has(row.id) || initializationIds.has(row.id) || row.kind === 'planImplementation')
+      if (
+        visible.has(historyIdentity(row.id, row.runId)) ||
+        initializationIds.has(historyIdentity(row.id, row.runId)) ||
+        row.kind === 'planImplementation'
+      )
         return false;
       if (!dialog(row)) return true;
       const key = identity(row);

@@ -19,7 +19,7 @@ internal class OwnedControlAcceptance(private val activity: MainActivity, privat
     val session=MobileSession(storage)
     val folder: File
     init {
-        require(i.targetContext.packageName=="com.easyai.agenthub.android.acceptance")
+        require(i.targetContext.packageName=="com.codexmobile.personal.acceptance")
         require(!activity.session.restoring)
         val run=InstrumentationRegistry.getArguments().getString("ownerCallbacksRun") ?: "owned-model"
         require(run.matches(Regex("[a-zA-Z0-9_-]{1,80}")));require(category.matches(Regex("[a-zA-Z0-9_-]+")))

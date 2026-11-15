@@ -1381,10 +1381,7 @@
       "scenarios": ["S01", "S18"],
       "ui": ["UI01", "UI12"],
       "revision": 6,
-      "implementation": {
-        "ios": "code-present",
-        "android": "implemented"
-      },
+      "implementation": { "ios": "code-present", "android": "implemented" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1424,10 +1421,7 @@
       "scenarios": ["S01"],
       "ui": ["UI01", "UI03"],
       "revision": 24,
-      "implementation": {
-        "ios": "code-present",
-        "android": "implemented"
-      },
+      "implementation": { "ios": "code-present", "android": "implemented" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1460,10 +1454,7 @@
       "scenarios": ["S01"],
       "ui": ["UI01", "UI03"],
       "revision": 18,
-      "implementation": {
-        "ios": "code-present",
-        "android": "implemented"
-      },
+      "implementation": { "ios": "code-present", "android": "implemented" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1493,10 +1484,7 @@
       "scenarios": ["S01", "S11"],
       "ui": ["UI01", "UI03"],
       "revision": 12,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -1552,10 +1540,7 @@
       "scenarios": ["S01", "S03"],
       "ui": ["UI01", "UI03"],
       "revision": 27,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1578,10 +1563,7 @@
       "scenarios": ["S14"],
       "ui": ["UI03"],
       "revision": 2,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -1597,10 +1579,7 @@
       "scenarios": ["S14"],
       "ui": ["UI03"],
       "revision": 2,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -1616,10 +1595,7 @@
       "scenarios": ["S11", "S14"],
       "ui": ["UI03"],
       "revision": 4,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -1635,10 +1611,7 @@
       "scenarios": ["S14"],
       "ui": ["UI03"],
       "revision": 1,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -1660,10 +1633,7 @@
       "scenarios": ["S01", "S14"],
       "ui": ["UI03"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -1703,10 +1673,7 @@
       "scenarios": ["S01", "S11"],
       "ui": ["UI03"],
       "revision": 15,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1745,10 +1712,7 @@
       "scenarios": ["S02", "S18"],
       "ui": ["UI02"],
       "revision": 16,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1782,10 +1746,7 @@
       "scenarios": ["S02", "S11"],
       "ui": ["UI02"],
       "revision": 14,
-      "implementation": {
-        "ios": "code-present",
-        "android": "implemented"
-      },
+      "implementation": { "ios": "code-present", "android": "implemented" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1834,10 +1795,7 @@
       "scenarios": ["S02", "S05", "S11", "S18"],
       "ui": ["UI02", "UI05", "UI06"],
       "revision": 16,
-      "implementation": {
-        "ios": "code-present",
-        "android": "implemented"
-      },
+      "implementation": { "ios": "code-present", "android": "implemented" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1877,10 +1835,7 @@
       "scenarios": ["S02"],
       "ui": ["UI02"],
       "revision": 11,
-      "implementation": {
-        "ios": "code-present",
-        "android": "implemented"
-      },
+      "implementation": { "ios": "code-present", "android": "implemented" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1914,10 +1869,7 @@
       "scenarios": ["S02", "S03"],
       "ui": ["UI02"],
       "revision": 7,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -1950,10 +1902,7 @@
       "scenarios": ["S02", "S14"],
       "ui": ["UI02", "UI04"],
       "revision": 5,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2008,10 +1957,7 @@
       "scenarios": ["S02", "S11"],
       "ui": ["UI05"],
       "revision": 49,
-      "implementation": {
-        "ios": "code-present",
-        "android": "implemented"
-      },
+      "implementation": { "ios": "code-present", "android": "implemented" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2063,10 +2009,7 @@
       "scenarios": ["S05", "S11"],
       "ui": ["UI05"],
       "revision": 37,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2110,10 +2053,7 @@
       "scenarios": ["S05", "S18"],
       "ui": ["UI05"],
       "revision": 23,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2145,10 +2085,7 @@
       "scenarios": ["S05"],
       "ui": ["UI06"],
       "revision": 15,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2179,10 +2116,7 @@
       "scenarios": ["S08"],
       "ui": ["UI06", "UI09"],
       "revision": 5,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2216,10 +2150,7 @@
       "scenarios": ["S05"],
       "ui": ["UI06"],
       "revision": 9,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2242,10 +2173,7 @@
       "scenarios": ["S05", "S18"],
       "ui": ["UI05"],
       "revision": 4,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2300,10 +2228,7 @@
       "scenarios": ["S05", "S18"],
       "ui": ["UI05", "UI07"],
       "revision": 33,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2409,10 +2334,7 @@
       "scenarios": ["S06", "S11"],
       "ui": ["UI04", "UI07"],
       "revision": 96,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2467,10 +2389,7 @@
       "scenarios": ["S03", "S13"],
       "ui": ["UI04", "UI02"],
       "revision": 36,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2492,10 +2411,7 @@
       "scenarios": ["S03", "S13"],
       "ui": ["UI04"],
       "revision": 8,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2523,10 +2439,7 @@
       "scenarios": ["S03", "S13"],
       "ui": ["UI04"],
       "revision": 16,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2565,10 +2478,7 @@
       "scenarios": ["S03", "S04"],
       "ui": ["UI04"],
       "revision": 26,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2596,10 +2506,7 @@
       "scenarios": ["S04", "S18"],
       "ui": ["UI07"],
       "revision": 15,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2625,10 +2532,7 @@
       "scenarios": ["S04", "S11"],
       "ui": ["UI07"],
       "revision": 10,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2651,10 +2555,7 @@
       "scenarios": ["S04", "S18"],
       "ui": ["UI05", "UI07", "UI12"],
       "revision": 10,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -2670,10 +2571,7 @@
       "scenarios": ["S17"],
       "ui": ["UI07"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -2718,10 +2616,7 @@
       "scenarios": ["S06"],
       "ui": ["UI07", "UI08"],
       "revision": 33,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2771,10 +2666,7 @@
       "scenarios": ["S06"],
       "ui": ["UI07", "UI08"],
       "revision": 31,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2812,10 +2704,7 @@
       "scenarios": ["S06"],
       "ui": ["UI07", "UI08"],
       "revision": 27,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2876,10 +2765,7 @@
       "scenarios": ["S07"],
       "ui": ["UI07"],
       "revision": 34,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2926,10 +2812,7 @@
       "scenarios": ["S07"],
       "ui": ["UI07"],
       "revision": 21,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -2973,10 +2856,7 @@
       "scenarios": ["S07"],
       "ui": ["UI07"],
       "revision": 29,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3024,10 +2904,7 @@
       "scenarios": ["S08"],
       "ui": ["UI09"],
       "revision": 25,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3070,10 +2947,7 @@
       "scenarios": ["S09"],
       "ui": ["UI09"],
       "revision": 36,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3101,10 +2975,7 @@
       "scenarios": ["S09"],
       "ui": ["UI09"],
       "revision": 30,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3135,10 +3006,7 @@
       "scenarios": ["S09", "S15"],
       "ui": ["UI09", "UI11"],
       "revision": 18,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3228,10 +3096,7 @@
       "scenarios": ["S03", "S10", "S11"],
       "ui": ["UI04", "UI10"],
       "revision": 79,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3321,10 +3186,7 @@
       "scenarios": ["S10", "S11"],
       "ui": ["UI04", "UI10"],
       "revision": 67,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3361,10 +3223,7 @@
       "scenarios": ["S03", "S13"],
       "ui": ["UI04", "UI10"],
       "revision": 14,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3479,10 +3338,7 @@
       "scenarios": ["S05", "S11"],
       "ui": ["UI04", "UI10"],
       "revision": 91,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3528,10 +3384,7 @@
       "scenarios": ["S11", "S13", "S18"],
       "ui": ["UI10"],
       "revision": 13,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3576,10 +3429,7 @@
       "scenarios": ["S10"],
       "ui": ["UI10"],
       "revision": 21,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3608,10 +3458,7 @@
       "scenarios": ["S12"],
       "ui": ["UI02"],
       "revision": 7,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3643,10 +3490,7 @@
       "scenarios": ["S12", "S16"],
       "ui": ["UI11"],
       "revision": 12,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3671,10 +3515,7 @@
       "scenarios": ["S15", "S16"],
       "ui": ["UI11"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3690,10 +3531,7 @@
       "scenarios": ["S15", "S16"],
       "ui": ["UI11"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3709,10 +3547,7 @@
       "scenarios": ["S15", "S16"],
       "ui": ["UI11"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3728,10 +3563,7 @@
       "scenarios": ["S15", "S16"],
       "ui": ["UI11"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3747,10 +3579,7 @@
       "scenarios": ["S18"],
       "ui": ["UI12"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3784,10 +3613,7 @@
       "scenarios": ["S11", "S17", "S18"],
       "ui": ["UI12"],
       "revision": 30,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3804,10 +3630,7 @@
       "scenarios": ["S04", "S11", "S14"],
       "ui": ["UI02", "UI13", "UI11", "UI12"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -3823,10 +3646,7 @@
       "scenarios": ["S01", "S11", "S12", "S18"],
       "ui": ["UI01", "UI10"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3848,14 +3668,8 @@
       "scenarios": ["S03", "S10", "S13"],
       "ui": ["UI03", "UI10"],
       "revision": 6,
-      "implementation": {
-        "ios": "implemented",
-        "android": "implemented"
-      },
-      "verification": {
-        "ios": "passed",
-        "android": "passed"
-      },
+      "implementation": { "ios": "implemented", "android": "implemented" },
+      "verification": { "ios": "passed", "android": "passed" },
       "sourceNotes": "UM02修正ef447c5：本机三安卓各41边界/2真实Turn、本机iOS完整56及真实首条/原scope回复；Mac24当前15组56及真实首条/回复独立核实通过。2次POST只转发1次、唯一新增1Turn，授权scope/实际权限文件/重开消费与新草稿保持。原CE7失败和发现隔离限制保留，取消归档不计生命周期修复；[独立摘要](../acceptance/mobile-evidence/UM02-ios-independent.json)。A6暂停。 P1 native examiners resolve the exact target package for foreground activity; the independent acceptance identity cannot activate the original DEV app. New-phone and current-source gates remain in progress; no full feature acceptance claim. 2026-10-24 主线集成候选：用户授权已验收阶段提PR合并并清理原开发分支。核对main已复制84b609e安卓快照后，以该准确源码快照三方对照，保留main的Host Key/机器身份、LAN/Tailscale路由、iOS阅读/资源/语音及Windows/CI修复，并纳入安卓其后原操作恢复、回执、原桌面身份和侧栏改动；Markdown历史分别保留，manifest按功能ID与变更ID合并，根检查保留main64项及安卓3项独有检查共67命令。集成后代码/包/Adapter指纹将变化，旧阶段结果按原指纹保留；当前Android82任务与iOS模拟器构建、817份冻结源码下67项根检查556.93秒、三环境按4+3+9分9组共48项原生辅助验收及新手机原桌面检索/手势/IME与独立冷读取2方法均通过；六轮原owner/canonical仍原2输入，0POST/0新增模型，默认真实草稿元数据保持，75个自有MainActivity文件已核对归属并抽查9图总览/3张真机原图。只读验收器私有适配版仅增加一个准确Host的connection-routes GET，完整变体指纹单列；永久验收入口后续同步，不扩展任意调用。结果文档更新后另跑格式/一致性；远端CI与PR合并状态待平台回执，不能将本地检查当作远端通过，不宣称全P3/P4或跨机通过。任务/项目管理暂缓，A6/P7/语音验收暂停、蜂窝/VPN/人工归档待验及64条原模型输入封存不变。主线既有语音源码被保留，不新增语音验收。 2026-10-24 PR #5 准备期间main更新至4ae3b889，保留附件ctime完整快照重试与M5 Host Key发现/授权同步修复；正常三方仅manifest/检查命令冲突，按ID保留双方变更并登记组合后源码。集成构建与根检查重新执行，未新增模型输入，既有阶段结果不升级。",
       "sharedImplementation": {
         "status": "implemented",
@@ -3887,14 +3701,8 @@
       "scenarios": ["S03", "S10", "S11", "S13"],
       "ui": ["UI03", "UI20"],
       "revision": 10,
-      "implementation": {
-        "ios": "implemented",
-        "android": "implemented"
-      },
-      "verification": {
-        "ios": "passed",
-        "android": "passed"
-      },
+      "implementation": { "ios": "implemented", "android": "implemented" },
+      "verification": { "ios": "passed", "android": "passed" },
       "sourceNotes": "UM03适用分支门槛通过：三安卓各80项及各真实双环境，本机iOS完整56（同验收器续验）/整组11/真实双环境；Mac24独立15组56、最终单轮11、真实双环境原HTTP/owner/Git及原图已回收核实。未知只查原ID、晚到不抢目标/新草稿，源Git保持。F64全局许可仍依赖UM05，不计完整App封存；A6暂停；[独立摘要](../acceptance/mobile-evidence/UM03-ios-independent.json)。 2026-10-22 Android P2：当前产品MainActivity默认存储三环境warm/cold共6原生阶段通过，断数据前缓存/草稿/8个ID保留，恢复实核history200；分支仅GET选项和菜单未执行，0新增模型/POST。原失败、API26灰缩放截图和API37中间输入状态保留；4条P2原输入补核canonical turnId，不追改旧策略失败。 2026-10-22 Android P2：验收器在原60秒预算内补恢复后目录/历史空闲、可写及原生发送按钮就绪断言，三环境6个新阶段通过；仅等2原生帧/平台空闲，产品不变、0新增输入。API26首缓存窗口几何仍异常并保留，不能宣称视觉修复。 2026-10-24 P4-4h.3 配对TLS只读续验：用上一阶段封存的同一验收聊天及手机原加密数据，恢复原自有TLS端点/证书/Host身份，全部产品POST禁止。诊断模式保留原白名单，准确采到终态回复分支按钮LaunchedEffect自动预读的/v1/threads/fork-options；修订仅将该具名GET纳入准确原thread范围，并为未来未知路由登记路径。生产Android/Host/Adapter未修改，原回复恢复验收器的白名单已修订，但未重跑两条模型输入。 最终冻结源码下诊断和修订模式各一项完整真机方法通过，前者准确拒绝fork-options、后者真实200并验证同目录可用；通过生产NativeCodexCommands读取，再由Session加载后核对当前终态轮次可分支，没有执行分支或新建。原记录意图/摘要/已消费标记保持，不能重试；完整机器目标、配对证书、许可、后续草稿和本地文件ID/字节保持。两轮合计六次独立原owner/canonical核对均恰好原两条输入，两张自有MainActivity PixelCopy原图已查看。20份登记源码冻结，完整59条根检查通过（354.58秒）。产品包未变，辅助252项/三组及回调21项/三组匹配复用，共273组合证据，旧runner与本次runner分列。新增真实输入0，P4累计51、全阶段64条封存。 只读首次诊断错误要求工作区GET必须带查询Host ID，实际允许省略，身份仍由证书/令牌和响应目标校验；该原失败及源码保留。修正后诊断完整通过，首次修订模式真实fork-options已200，但验收器误用原owner轮次投影id（实际turnId）导致缺字段；原失败与当时源码保留。修正为turnId并与独立canonical ID相等后，最终两模式重跑通过。旧根检查仅运行约一分钟便为这次验收器字段修正停止，只终止准确自有检查进程树，原日志/源码指纹保留，另跑最终完整59条。五轮均零产品POST/零新增输入，逐轮原Host状态先树外归档并逐文件读回核对；五轮各三个端口最终均关闭、五个Host正常退出。 上一阶段P4-4h.2的整轮模型场景仍为失败：其原报告及指纹未修改，只有两项原生恢复及桌面核对有限断言通过。本次零输入只读成功不能替换它，也不新增当前源码的全流程模型通过。既有64条原输入不追加不重放。TLS边缘/公开描述仍为验收器自有，不覆盖生产网关安装/签发、相机扫码、设备授权握手、系统Picker、真实LAN/蜂窝/VPN或完整视觉。继续来源节点逐字段缺口、legacy/presence/大历史投影与P3原生交互；完整27节点/20功能及P3/P4仍开放，iOS/Windows无新增通过。人工归档和蜂窝/VPN单列待验收，任务/项目管理暂缓，A6/P7/语音暂停及P9依赖保持。 2026-10-24 P3-6b.1 新桌面只读兼容性检查点（部分通过）：验收器增加显式准确桌面版本参数，默认仍锁原报告版本，实际版本必须完全相等；分别记录原/预期/观察版本，旧报告保持不可变。产品、Host/Adapter、Android/iOS未改。桌面新进程26.1016.62342已就绪，具名打开前核对原聊天在未归档目录中唯一且项目根相同；原入口打开后准确owner/完成轮次与canonical对账通过。最初单次发现早于界面接管，失败记录保留；后续按产品已有有界发现等待复核，不将单次未发现误报为兼容失败。 同一产品包及5e9586fd测试runner在新桌面下，一项完整真机只读冷恢复通过：默认加密原草稿、附件ID/字节、目标/证书/设置、原意图/摘要/版本及已消费不可重试保持。后续侧栏/搜索方法失败前后共五次独立owner/canonical对账仍各原两条输入；全部产品GET，无新模型输入或POST。两张自有窗口图已查看，两轮Host正常退出、六个端口记录关闭，原Host状态均树外归档读回；桌面安装文件及准确进程指纹前后一致。当前29份源码冻结，完整59条根检查通过（360.43秒）；原生包/runner未变，构建与此前42项执行类/产品匹配证据单列引用，不记本次新跑。 新桌面下侧栏方法在重选聊天后、进入完整查找前，按正文获取唯一原回复时失败，尚未执行后续定位/IME/手势，不能记整组兼容通过。独立Host持久缓存已保存八条投影：两轮各自的user/assistant同时保留旧msg标识与新item序号标识，而原owner/canonical仍各两条输入、两条助手回复；确认是读取投影身份衔接重复候选，不是重复发送。原始失败、缓存副本及SHA保留；下一检查点修复该边界，不用first/text去放宽验收，也不清缓存或改旧操作。 P3-6b原桌面版本的手势通过证据保持原指纹；新桌面的搜索/手势整轮未通过，冷恢复子项通过单列。64条历史模型输入（P4共51）继续封存，原TLS整轮失败不被只读结果替换。完整P3/P4、来源节点、全部交互和视觉矩阵仍开放；蜂窝/VPN和人工归档待验，任务/项目管理暂缓，A6/P7/语音暂停及P9依赖保持。 2026-10-24 P3-6b.2 修复桌面重启后的原对话重复投影：原Adapter只处理临时序号到稳定ID的衔接；新桌面原owner重建序号ID时，旧稳定消息被当作缺失历史保留。新增反向衔接仅接受已确认completed的准确原轮次，按role/kind/回复阶段/完整正文一一对应，逐个消费匹配数量；真实同文多条、未匹配前缀、不同轮次、工具和附件保持，未知/活动轮次不能借临时ID移除稳定消息。仅Adapter读取身份规则和验收器变化，不改Android/iOS生产代码、上游历史或原提交协议。该Host共享投影影响双端；iOS/Windows本轮不新增原生通过。 旧实现新增针对性反例失败，修复后原身份边界与反向重启/同文数量/完成与未知轮次/回复阶段/工具/附件保护全部通过。对失败缓存副本只读核对得到8到4，副本未修改；实际独立DEV Host正常读取后也持久为原四条消息，无清缓存/改历史。手机沿用相同产品APK与runner，新桌面26.1016.62342下两项完整只读方法通过：侧栏临时搜索/折叠恢复及同聊天重选、完整历史真实200、原生Sheet关闭后准确消息定位、边缘/列表/输入框手势与实际IME显示/收起，再单独冷启动恢复原草稿/附件字节/目标/设置和已消费不可重试的原意图/摘要/版本。六次独立owner/canonical对账始终原两条输入；全部产品GET，零新模型输入/POST。 最终31份登记源码冻结，完整59条根检查通过（360.58秒），Adapter当前构建及当前一致性另通过。五个自有窗口文件共四张唯一图均查看；两轮自有Host正常退出、六个端口记录关闭，原状态均树外归档逐文件读回。手机APK/runner未变，无重装/卸载/清数据；前42项仅按Android产品/执行类相同保留为组件辅助，不称本次新跑42或当前完整Host链路通过。只读验收器为新Adapter增加显式准确摘要门禁，默认仍锁旧实现摘要，原/预期/实际摘要分别记录；所有POST继续拒绝。桌面安装/进程指纹稳定。 P3-6b.1原失败报告、八条缓存副本与旧反例保持，P3-6b原版本手势通过仍保留原指纹；本项关闭的是已复现的完成对话身份反向衔接子边界。原TLS整轮模型失败仍失败，零输入只读成功不替代真实新模型验收；全阶段64/P4共51条原输入不追加/重放。正式Host未部署本候选，后续按统一产物分发规则处理。未加载owner/分页缺少完成证据时仍保留未知身份历史，相关路径另列验收。完整P3/P4、全部来源节点、连续过渡触摸/物理返回/代码选择及完整视觉、剩余聊天管理/控制真实DEV仍开放；API37旧连续整组空闲失败和API26首缓存几何继续待验。蜂窝/VPN及人工归档待验，任务/项目管理暂缓，A6/P7/语音暂停及P9依赖保持。 2026-10-24 主线集成候选：用户授权已验收阶段提PR合并并清理原开发分支。核对main已复制84b609e安卓快照后，以该准确源码快照三方对照，保留main的Host Key/机器身份、LAN/Tailscale路由、iOS阅读/资源/语音及Windows/CI修复，并纳入安卓其后原操作恢复、回执、原桌面身份和侧栏改动；Markdown历史分别保留，manifest按功能ID与变更ID合并，根检查保留main64项及安卓3项独有检查共67命令。集成后代码/包/Adapter指纹将变化，旧阶段结果按原指纹保留；当前Android82任务与iOS模拟器构建、817份冻结源码下67项根检查556.93秒、三环境按4+3+9分9组共48项原生辅助验收及新手机原桌面检索/手势/IME与独立冷读取2方法均通过；六轮原owner/canonical仍原2输入，0POST/0新增模型，默认真实草稿元数据保持，75个自有MainActivity文件已核对归属并抽查9图总览/3张真机原图。只读验收器私有适配版仅增加一个准确Host的connection-routes GET，完整变体指纹单列；永久验收入口后续同步，不扩展任意调用。结果文档更新后另跑格式/一致性；远端CI与PR合并状态待平台回执，不能将本地检查当作远端通过，不宣称全P3/P4或跨机通过。任务/项目管理暂缓，A6/P7/语音验收暂停、蜂窝/VPN/人工归档待验及64条原模型输入封存不变。主线既有语音源码被保留，不新增语音验收。 2026-10-24 PR #5 准备期间main更新至4ae3b889，保留附件ctime完整快照重试与M5 Host Key发现/授权同步修复；正常三方仅manifest/检查命令冲突，按ID保留双方变更并登记组合后源码。集成构建与根检查重新执行，未新增模型输入，既有阶段结果不升级。 2026-10-24 原桌面目录策略简化：desktop-runtime 不再使用 HOST_AGENT_ROOT 作为建议、附件下载或服务就绪的全局授权范围。该旧配置仅保留默认 cwd 兼容语义；托管／共享模式的显式边界和原 Agent 执行权限保持。建议按原 owner、当前实例和准确完成轮验证私有 Trace，不要求项目目录存在；文件下载按本会话已登记资源授权，原消息引用、目标变化、大小与摘要检查保持。iOS／Android 共用 Host 行为，无新增权限界面；实际桌面、模型、实体手机及 Windows 结果分别记证。 实施与真实验收见 docs/acceptance/desktop-directory-policy-20261024.md。",
       "sharedImplementation": {
         "status": "implemented",
@@ -3939,10 +3747,7 @@
       "scenarios": ["S01", "S11"],
       "ui": ["UI01", "UI02", "UI03"],
       "revision": 23,
-      "implementation": {
-        "ios": "implemented",
-        "android": "implemented"
-      },
+      "implementation": { "ios": "implemented", "android": "implemented" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -3983,10 +3788,7 @@
       "scenarios": ["S04", "S11", "S17", "S18"],
       "ui": ["UI06", "UI21"],
       "revision": 22,
-      "implementation": {
-        "ios": "implemented",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "implemented", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -4011,10 +3813,7 @@
       "scenarios": ["S01", "S04", "S10", "S11", "S18"],
       "ui": ["UI14", "UI15", "UI18"],
       "revision": 2,
-      "implementation": {
-        "ios": "code-present",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "code-present", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -4038,10 +3837,7 @@
       "scenarios": ["S02", "S04", "S09", "S10", "S11", "S18"],
       "ui": ["UI14", "UI15", "UI16", "UI17", "UI18"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -4057,10 +3853,7 @@
       "scenarios": ["S12", "S15", "S16", "S18"],
       "ui": ["UI09", "UI19"],
       "revision": 3,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -4114,14 +3907,8 @@
       "scenarios": ["S05", "S11", "S14", "S18"],
       "ui": ["UI03", "UI05"],
       "revision": 42,
-      "implementation": {
-        "ios": "implemented",
-        "android": "implemented"
-      },
-      "verification": {
-        "ios": "passed",
-        "android": "passed"
-      },
+      "implementation": { "ios": "implemented", "android": "implemented" },
+      "verification": { "ios": "passed", "android": "passed" },
       "sharedImplementation": {
         "status": "implemented",
         "scope": "Android 使用 KMP 结构合并规则；iOS 保留上游 Swift 合并器。两端消费同一份实际桌面生产器生成的15组版本化样例，原生层验证摘要和会话生命周期。",
@@ -4148,10 +3935,7 @@
       "scenarios": ["S07", "S13"],
       "ui": ["UI07"],
       "revision": 10,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -4186,10 +3970,7 @@
       "scenarios": ["S02", "S07", "S10", "S11"],
       "ui": ["UI01", "UI03", "UI10"],
       "revision": 14,
-      "implementation": {
-        "ios": "in-progress",
-        "android": "in-progress"
-      },
+      "implementation": { "ios": "in-progress", "android": "in-progress" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified"
@@ -4219,14 +4000,8 @@
       "scenarios": ["S04", "S05", "S11", "S13", "S18"],
       "ui": ["UI04", "UI07", "UI12"],
       "revision": 6,
-      "implementation": {
-        "ios": "code-present",
-        "android": "planned"
-      },
-      "verification": {
-        "ios": "not-verified",
-        "android": "not-verified"
-      },
+      "implementation": { "ios": "code-present", "android": "planned" },
+      "verification": { "ios": "not-verified", "android": "not-verified" },
       "sharedImplementation": {
         "status": "implemented",
         "scope": "本地导入槽位、准确目标/草稿代次、重复回调与最近新增资格纯规则；Android 生产接入保持待开发及 A6 暂停。",
@@ -4245,10 +4020,7 @@
       "scenarios": ["S04", "S18"],
       "ui": ["UI05", "UI07", "UI12"],
       "revision": 1,
-      "implementation": {
-        "ios": "implemented",
-        "android": "code-present"
-      },
+      "implementation": { "ios": "implemented", "android": "code-present" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -4271,10 +4043,7 @@
       "scenarios": ["S04", "S18"],
       "ui": ["UI06"],
       "revision": 1,
-      "implementation": {
-        "ios": "code-present",
-        "android": "code-present"
-      },
+      "implementation": { "ios": "code-present", "android": "code-present" },
       "verification": {
         "ios": "not-verified-for-current-product",
         "android": "not-verified-for-current-product"
@@ -10124,6 +9893,90 @@
         "packages/mobile-core/src/commonMain/kotlin/com/agenthub/core/ReadingPolicy.kt": "f0349bb4879f1014ead60a3a100d67741a68760cb1b28797d00ccff1c718b209",
         "packages/protocol/fixtures/mobile/reading-policy.json": "12e74f31fa0f58e2d67e0aff550755a460532996bbbba24c26360def52b18a09",
         "scripts/large-conversation-sync-smoke.mjs": "d3c15ebc2ee9a22c1655e1c9120904b4b1064e693d98804e84724b10def67c67"
+      }
+    },
+    {
+      "id": "thread-filtered-event-controls-20261113",
+      "baseCommit": "af340ecc9db6132595796b7ca2ddeebb91fd3a47",
+      "features": ["F17", "F31"],
+      "summary": "Thread-filtered global cursor heartbeats preserve control freshness on both clients; Android earlier paging remains interactive during background reads and fences queued work to its original selection.",
+      "files": {
+        "packages/mobile-core/src/commonMain/kotlin/com/agenthub/core/OperationPolicies.kt": "8219bbd740d90c357cf055de974472cbba7768ed12dc8ee6d60864d296bd3f67",
+        "packages/mobile-core/src/commonTest/kotlin/com/agenthub/core/FilteredEventPolicyTest.kt": "52e28b73e8c9ef567c8ef8177412ef3245d197707ca4f53c8a57cca4d72cedd4",
+        "apps/android/src/main/kotlin/com/agenthub/android/MobileSession.kt": "f05660b21968a5040a216d6844b24e893eca5b35b67759accfc61fd570e500fb",
+        "apps/android/src/main/kotlin/com/agenthub/android/AgentHubApp.kt": "c24d954a62858cbaca1bcd759feaa462cc00076cb3b03e39daa7a60bbddb41f3",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/MobileEarlierLoadingUiTest.kt": "90f28a58312efab9c7f60224df44ea0ab318edaeaf9d4f2a6f334398516f068f",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/MobileFilteredEventsTest.kt": "eea9bd92d2880e982d9e737bf75802f103dced8d47dfe08e90e6c06c090cdba6",
+        "apps/ios/Sources/SessionStore.swift": "ca56ff4c92c3cc345e0cc4489621ba45a957d10bf9d4c2f22e2ccacc73fef2b1"
+      }
+    },
+    {
+      "id": "running-conversation-snapshot-order-20261113",
+      "baseCommit": "c0ff0036fcd2177203cdf5255872d409b7e1db33",
+      "features": ["F17", "F31"],
+      "summary": "Both native clients fence concurrent latest-history and event publication against older checkpoints; current completion and readiness loss still apply, and Android earlier pages retain live runtime metadata.",
+      "files": {
+        "packages/mobile-core/src/commonMain/kotlin/com/agenthub/core/ConversationSnapshotFence.kt": "e34fa6b2392f9664f91ed3e19a851fb749b0922eeb968f3e8bdb78a83eb33c03",
+        "packages/mobile-core/src/commonTest/kotlin/com/agenthub/core/ConversationSnapshotFenceTest.kt": "b460bdf1351ca38840fce29781bd284eed8d90859f9e21e2578606950c10464d",
+        "apps/android/src/main/kotlin/com/agenthub/android/MobileSession.kt": "f3f74e4fe9eb38b8537f108188409d6db2b61e30668fe03f0bf1b2635a610d9d",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/MobileRunningSnapshotOrderTest.kt": "f7cdb39d3a0c309698fa485259b4ad18a0b71640f9343e27b7ca37c19b1ce476",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/MobileFilteredEventsTest.kt": "9fbfc5391c0ae50041fd6ac625d1df49b40a3caf4ae37b1f88adf32283225a12",
+        "apps/ios/Sources/SessionStore.swift": "51acd69ed807f15f921886d0f67af223d9c8f004b1acdde3c8b076ea6c7fc297"
+      }
+    },
+    {
+      "id": "historical-owner-ordinal-identity-20261114",
+      "baseCommit": "527b800f73a85356cf486b7008d9b80e11db3068",
+      "features": ["F17", "F31"],
+      "summary": "Qualify original-owner ordinal rows by their real Turn across all desktop history projections; reconcile legacy exact aliases without text deduplication. Android controlled real-history read-only validation and iOS/production limitations are recorded separately.",
+      "files": {
+        "packages/codex-adapter/src/runtime-session.ts": "a99d44daaf17c40c16d000fc473a666fd6d9cd2f118c22113cd9a8fcc3a9e3f0",
+        "packages/codex-adapter/src/desktop-history-identity.ts": "11f94db4a32bd971c8c246959481b412436db0b6ddb61aa3d41838c5698dff5b",
+        "scripts/desktop-history-identity-smoke.mjs": "8012c9ff643fcd8b4e876427ff3eb4a8f9996c60536659e7475791260998329b",
+        "scripts/desktop-known-owner-recovery.test.mjs": "6187cfd8631b9f0cbb4f0071fe90838eb582df35a9666f8416c76e8b47e35c9f",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/NativeColdThreadLiveTest.kt": "0874285042030f5ae10634da16a2a2689a12beeb11c7a0cde024d6bd2355ca37",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/NativeHistoryTransitionLiveTest.kt": "b6abc4e3e273a8096ea2339cd8eafc99e862f015cfadaf24f38ab85bffee7cdb"
+      }
+    },
+    {
+      "id": "pr3-physical-running-read-followup-20261114",
+      "baseCommit": "527b800f73a85356cf486b7008d9b80e11db3068",
+      "features": ["F17", "F31"],
+      "summary": "Opt-in Android physical read-only observation of an existing original-desktop task: native stop/earlier controls across concurrent real history/events, local expansion, no command submission. Combined candidate passes 17 physical synthetic-provider regressions and two real read-only scenarios; iOS, remote networking and production remain unverified.",
+      "files": {
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/NativePr3RunningReadLiveTest.kt": "2eb687d617e248b37a6c9631f194d52a4d31e3b5c9732519f7d186000f49c720"
+      }
+    },
+    {
+      "id": "personal-main-pr3-integration-20261115",
+      "baseCommit": "9aee5097a9ac9a423a0f58e56205e5d86fdc4c83",
+      "features": ["F17", "F31", "F73"],
+      "summary": "Integrate the three PR3 repairs into the personal main without importing unrelated upstream updates. Retain personal voice, the 15-row reading window, package identity and update/signing configuration. Native test fixtures use the personal acceptance package; inherited acceptance records remain historical.",
+      "files": {
+        "apps/android/build.gradle.kts": "e532070f19eef38815feeaee5636dd19e595f0055b51a1550b268f6550d1eef9",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/MobileEarlierLoadingUiTest.kt": "f9c0dcf3364c126a1094b1151501246a229ba801c34daacc90bd3ab50277786e",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/NativeColdThreadLiveTest.kt": "d4cb9d7337970dd8205b02700fa9faf2840d37717aa9f9ef40734cd7f7aff376",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/NativeHistoryTransitionLiveTest.kt": "6c6880fa4d222fe873031d9e20c415886c337cf715beae89a4b071405e7e7bc0",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/NativePr3RunningReadLiveTest.kt": "1e1a22409af8b134b7ddbf755f5e907a004afde0920096509a139bba01458ef1",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/NativeTestDiagnostics.kt": "9d6d829665f6b39d1be99db9348ce24c6941fb791b6fd99b7484f96599e3c0e6",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/OwnedControlAcceptance.kt": "716df848f2e688f409cd320ce2cb5ca74c46c6e48544d1b6f229b9fe61c0d6f1",
+        "apps/android/src/main/AndroidManifest.xml": "82abfa761e87fb78a6f1228c208c05cd3db7c64ef655ddf9085c4a6f0f4e3b57",
+        "apps/android/src/main/kotlin/com/agenthub/android/AgentHubApp.kt": "5f420267a6b37489a3cd9fe244b67d93ced271f30893478e62a6efb70ed810fd",
+        "apps/android/src/main/kotlin/com/agenthub/android/AppUpdateManager.kt": "e181f14704fe46b0511967703fc3239a4422d652e2b6e1944478feea444557ee",
+        "apps/android/src/main/kotlin/com/agenthub/android/MobileSession.kt": "a306d30106acb5da893bc1ce6d786cd7007185a994594c1d97da1437c34ade35",
+        "apps/android/src/main/kotlin/com/agenthub/android/NativeSheets.kt": "150c5e9e2eb0073dd5c6a43f97f20dfe107aeb7d7397d0455cd32f84f3d99d72",
+        "apps/android/src/main/res/xml/preview_file_paths.xml": "4697dd35f29dba3221f8806ad1f4afa9f97c9334b1dd78ed4680ee3989adc961",
+        "apps/ios/Sources/SessionStore.swift": "babd92f5396d5555175237975d8f605725da10e53149eaf1be736dfb0544bc34",
+        "packages/codex-adapter/src/desktop-history-identity.ts": "a12593a8377d6d281b7d92ff51d84987c6f9d3d8335e11862f34227e1bb3b4f9",
+        "packages/codex-adapter/src/runtime-session.ts": "ca9b92f74dce0fcf9a53a8ea7c103c1c2bfd84f9292ec80e7f74f703981d10df",
+        "scripts/desktop-history-identity-smoke.mjs": "4a508f1d9f66364f9dfd8adf1cc6a4d4745d30de740bc40bcd887376307e6bfe",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/MobileFilteredEventsTest.kt": "9fbfc5391c0ae50041fd6ac625d1df49b40a3caf4ae37b1f88adf32283225a12",
+        "apps/android/src/androidTest/kotlin/com/agenthub/android/MobileRunningSnapshotOrderTest.kt": "f7cdb39d3a0c309698fa485259b4ad18a0b71640f9343e27b7ca37c19b1ce476",
+        "packages/mobile-core/src/commonMain/kotlin/com/agenthub/core/ConversationSnapshotFence.kt": "e34fa6b2392f9664f91ed3e19a851fb749b0922eeb968f3e8bdb78a83eb33c03",
+        "packages/mobile-core/src/commonMain/kotlin/com/agenthub/core/OperationPolicies.kt": "8219bbd740d90c357cf055de974472cbba7768ed12dc8ee6d60864d296bd3f67",
+        "packages/mobile-core/src/commonTest/kotlin/com/agenthub/core/ConversationSnapshotFenceTest.kt": "b460bdf1351ca38840fce29781bd284eed8d90859f9e21e2578606950c10464d",
+        "packages/mobile-core/src/commonTest/kotlin/com/agenthub/core/FilteredEventPolicyTest.kt": "52e28b73e8c9ef567c8ef8177412ef3245d197707ca4f53c8a57cca4d72cedd4",
+        "scripts/desktop-known-owner-recovery.test.mjs": "6187cfd8631b9f0cbb4f0071fe90838eb582df35a9666f8416c76e8b47e35c9f"
       }
     }
   ]
