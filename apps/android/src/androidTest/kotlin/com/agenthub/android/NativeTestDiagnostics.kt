@@ -14,7 +14,7 @@ internal class NativeTestDiagnostics: TestRule {
         override fun evaluate() {
             if(InstrumentationRegistry.getArguments().getString("nativeThreadSnapshots")!="1") { base.evaluate();return }
             val instrumentation=InstrumentationRegistry.getInstrumentation()
-            check(instrumentation.targetContext.packageName=="com.easyai.agenthub.android.acceptance")
+            check(instrumentation.targetContext.packageName=="com.codexmobile.personal.acceptance")
             val timer=Timer("native-read-diagnostics",true)
             timer.schedule(object: TimerTask() {
                 override fun run() {

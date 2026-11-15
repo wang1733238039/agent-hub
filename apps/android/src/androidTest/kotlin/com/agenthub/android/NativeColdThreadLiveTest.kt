@@ -19,7 +19,7 @@ class NativeColdThreadLiveTest {
     @After fun stop() { if(::owned.isInitialized)ui.runOnIdle { session.leaveForeground();owned.verifyDefault() } }
     @Test fun oldOriginalChatOpensOnceAndReceivesOneNativeReply() {
         val i=InstrumentationRegistry.getInstrumentation()
-        require(i.targetContext.packageName=="com.easyai.agenthub.android.acceptance")
+        require(i.targetContext.packageName=="com.codexmobile.personal.acceptance")
         val file=File(i.targetContext.filesDir,"acceptance/cold-thread-live.json")
         Assume.assumeTrue("Private cold-thread fixture required",file.exists())
         val f=JSONObject(file.readText(Charsets.UTF_8))
@@ -27,7 +27,7 @@ class NativeColdThreadLiveTest {
         require(f.getBoolean("independentOwnerAbsentBefore"))
         val id=f.getString("threadId");val marker=f.getString("marker")
         ui.waitUntil(30_000) { !ui.activity.session.restoring }
-        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"cold-original-chat");session.resetAcceptance();session.changeLanguage("en") }
+        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"cold-original-chat");session.resetAcceptance() }
         main { session.connect("USB isolated original desktop",f.getString("endpoint"),f.getString("token")) }
         ui.waitUntil(30_000) { !session.loading&&session.threads.any { it.id==id } }
         ui.runOnIdle { session.selectThread(session.threads.single { it.id==id }) }

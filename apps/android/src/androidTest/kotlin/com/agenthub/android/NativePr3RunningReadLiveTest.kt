@@ -28,7 +28,7 @@ class NativePr3RunningReadLiveTest {
     }
     @Test fun realRunningTaskKeepsStopAndEarlierControlsThroughConcurrentReads() {
         val i=InstrumentationRegistry.getInstrumentation()
-        require(i.targetContext.packageName=="com.easyai.agenthub.android.acceptance")
+        require(i.targetContext.packageName=="com.codexmobile.personal.acceptance")
         val file=File(i.targetContext.filesDir,"acceptance/pr3-running-live.json")
         Assume.assumeTrue("Private read-only running fixture required",file.exists())
         val f=JSONObject(file.readText(Charsets.UTF_8))
@@ -52,7 +52,7 @@ class NativePr3RunningReadLiveTest {
             }
         }
         ui.waitUntil(30_000) { !ui.activity.session.restoring }
-        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"pr3-running-read");session.resetAcceptance(reader,commands);session.changeLanguage("en") }
+        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"pr3-running-read");session.resetAcceptance(reader,commands) }
         main { session.connect("USB isolated running desktop",f.getString("endpoint"),token) }
         ui.waitUntil(30_000) { !session.loading&&session.threads.any { it.id==id } }
         ui.runOnIdle { session.selectThread(session.threads.single { it.id==id }) }
