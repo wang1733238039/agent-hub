@@ -20,6 +20,8 @@
 
 2026-11-09 F05/F28/F43：Windows 未配置独立桥接时的旧会话恢复见[专项记录](../windows-cold-thread-recovery.md)。两端复用已有显式发送流程，无 UI 修改；独立 Windows Host 完成未加载、历史仅读、具名打开、准确 owner、真实一次输入/回复及重启测试。无 Android ADB 设备，iOS/Xcode 不可用，双端真机仍未验收，不升级整项通过状态。
 
+2026-11-09 F03／F69（UI01／UI10，S01／S11／S18）：Host 元数据辅助进程失败后保留退出与 stdio close 屏障，原生队列初始化中关闭立即回收，只终止本进程创建的准确 child；SIGTERM 后一秒仍存活则升级 SIGKILL，未确认关闭不重建，未知输入不重放。macOS Trace 回收在全 payload inventory 前增加新鲜占用早拒，原删除前后身份、内容与占用校验全部保留；同结果保留／失败项按 1／2／4／8／15 分钟退避，active 仍五秒，新目录不等待旧项。iOS／Android 共用 Host 恢复路径，界面、token、文案不变；本轮为隔离辅助证据，正式服务、真实原 owner 写入、手机与 Windows 未验收，A6 保持暂停。见[专项记录](host-lifecycle-cpu-20261109.md)。
+
 2026-11-09 F34/F36、S06、UI07/UI08：Android菜单锚点与当前值末端对齐的最终源码完整14项回归通过，原目标/独立字段/旧回调守卫、菜单选择与原图分别核对。iOS匹配源仅复用参考，本轮无新iOS实现或真实DEV；首候选与最终候选指纹分开，见[阶段131](../plans/android-alignment-20261022/records/stage131-c2-generation-menu-anchor.md)。
 
 2026-11-09 F36、UI07/UI08：补齐双端当前中文浅色竖屏的fast-only/三档菜单与完整速度卡片原图，实际交互、包指纹和图片由总控独立核对。没有可见DEBUG探针；Android未留AX树。只关闭信息/选择态可辨、入口和该卡片范围，材质/锚点、其他视口与真实DEV独立待验，见[阶段130](../plans/android-alignment-20261022/records/stage130-c2-speed-menu-visual.md)。
@@ -1906,3 +1908,7 @@ I7.119–120。新Root默认权限快照复用原会话感知权限服务，显�
 2026-11-08 F03/F06/F57/F63。iOS 27 与 Android API 33 模拟器以专用 mesh 新域读取同一真实 DEV 两次，原保存的完整目标、公钥和配对证书指纹匹配，错误身份被拒绝。iOS 本机代理的精确新主机例外已补齐，初始失败保留。Android 真机新域候选安装及原 grant/内容读取另列，原 issuer 与未知操作继续按原身份查询。详见[阶段126](../plans/android-alignment-20261022/records/stage126-c2-new-domain-and-android-permissions.md)。
 
 2026-11-09 F18/F19/F20 / UI05。Android API33 与 iOS27 模拟器通过原生手柄拖动、系统 Copy 及精确原文子串核对，分别跨两个和三个原始换行，本次剪贴板基线恢复已读回。受限视口的已通过控件与 iOS 导航覆盖观察、API37 启动失败分别登记，不关闭整组真机/界面或 Provider 范围。详见[阶段127](../plans/android-alignment-20261022/records/stage127-c2-multiline-selection-and-viewport.md)。
+
+### mobile-new-chat-destination-20261109
+
+Android new-chat picker closes its drawer, shows project roots and selected draft destination, disables unsupported choices and offers catalog refresh/paging. Selection validates Host, scope and navigation/connection revision. iOS shows the same folder roots and refresh/empty guidance. First send still owns exact-target staged creation. See docs/mobile-new-chat-destination.md for current validation and pending physical-device acceptance.
