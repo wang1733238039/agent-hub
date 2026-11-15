@@ -17,6 +17,9 @@
 ## 个人分支 F76（2026-10-27）
 
 本分支新增连续语音代码。TypeScript 工作区类型检查及桌面桥接定向检查通过；首次 Android SDK 路径、iOS 控制器作用域与上游菜单类型检查超时均已修复。提交 f66c4a8 的 Personal mobile builds／40508623559 中 Android 与 iOS Simulator 两项成功，Android 预览 APK 已发布。完整工作区 CI 另发现 F76 清单格式问题，现已修正编号、枚举、源码指纹及生成表；本机相对上游备份的清单与 6 项规则回归通过，完整 CI 另记。本机原生 Host 被 Windows Restricted 脚本策略阻塞，未提供已验证的原生连接。实体手机上的识别、连续两轮、播报打断、断网恢复、后台恢复、审批和原桌面单次执行尚未验收。详情见 `docs/personal-voice-call.md`，下文上游历史证明不属于本用户或本次分支。
+
+2026-11-09 F05/F28/F43：Windows 未配置独立桥接时的旧会话恢复见[专项记录](../windows-cold-thread-recovery.md)。两端复用已有显式发送流程，无 UI 修改；独立 Windows Host 完成未加载、历史仅读、具名打开、准确 owner、真实一次输入/回复及重启测试。无 Android ADB 设备，iOS/Xcode 不可用，双端真机仍未验收，不升级整项通过状态。
+
 2026-11-09 F34/F36、S06、UI07/UI08：Android菜单锚点与当前值末端对齐的最终源码完整14项回归通过，原目标/独立字段/旧回调守卫、菜单选择与原图分别核对。iOS匹配源仅复用参考，本轮无新iOS实现或真实DEV；首候选与最终候选指纹分开，见[阶段131](../plans/android-alignment-20261022/records/stage131-c2-generation-menu-anchor.md)。
 
 2026-11-09 F36、UI07/UI08：补齐双端当前中文浅色竖屏的fast-only/三档菜单与完整速度卡片原图，实际交互、包指纹和图片由总控独立核对。没有可见DEBUG探针；Android未留AX树。只关闭信息/选择态可辨、入口和该卡片范围，材质/锚点、其他视口与真实DEV独立待验，见[阶段130](../plans/android-alignment-20261022/records/stage130-c2-speed-menu-visual.md)。
