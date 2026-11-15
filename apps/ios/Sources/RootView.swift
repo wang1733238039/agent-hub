@@ -1480,8 +1480,8 @@ struct RootView: View {
   }
   @AppStorage(L10n.storageKey) private var appLanguage = AppLanguage.system.rawValue
   @AppStorage(VoiceTranscriptionPreference.storageKey) private var voicePreference = VoiceTranscriptionPreference.desktop
-  @StateObject private var store = SessionStore()
-  @StateObject private var taskHub = TaskHubStore()
+  @StateObject private var store: SessionStore
+  @StateObject private var taskHub: TaskHubStore
   @StateObject private var voice = VoiceInputController()
   @StateObject private var sidebarMotion = SidebarDrawerCommands()
   @StateObject private var readingCovers = ChatReadingCovers()
@@ -1524,6 +1524,11 @@ struct RootView: View {
   @Environment(\.colorScheme) private var inheritedColorScheme
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  init(store: SessionStore, taskHub: TaskHubStore) {
+    _store = StateObject(wrappedValue: store)
+    _taskHub = StateObject(wrappedValue: taskHub)
+  }
 
   @ViewBuilder var body: some View {
     #if DEBUG
@@ -1671,7 +1676,7 @@ struct RootView: View {
       TaskNotificationController.shared.setActive(phase == .active)
       if phase != .active { EasyWorkKnownHosts.shared.stop(); CodexHostDiscovery.shared.stop(); VPNHostDiscovery.shared.stop() }
     }
-    .onChange(of: businessNotifications.pendingNavigation?.id) { _, eventId in
+    .onChange(of: businessNotifications.pendingNavigation?.id, initial: true) { _, eventId in
       if !hostedExaminerOwnsRefresh, eventId != nil { store.sheet = .taskHub }
     }
     .tint(.primary)
@@ -4737,7 +4742,7 @@ private struct ApprovalSubmitButtonStyle: ButtonStyle {
   }
 }
 
-#Preview { RootView() }
+#Preview { RootView(store: SessionStore(), taskHub: TaskHubStore()) }
 
 
 /// Keep one visible label and one production action for each input route.

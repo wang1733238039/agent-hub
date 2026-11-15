@@ -436,9 +436,9 @@ private fun languageTitle(value: String,t: NativeL10n)=when(NativeAppLanguage.fr
             if(projects.isEmpty()) Text(productText(if(session.loading) "正在读取电脑上的项目…" else "尚无可选项目。可在电脑端添加项目或文件夹后刷新。"),Modifier.padding(16.dp).testTag("new-chat-empty-projects"),fontSize=14.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if(!client.isDemo) GroupCard {
-            TextButton(onClick={ session.refresh(userInitiated=true) },enabled=!session.loading,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp).testTag("new-chat-refresh")) { Text(productText(if(session.loading) "正在读取电脑上的项目…" else "刷新项目")) }
-            if(session.workspace?.nextProjectCursor!=null) TextButton(onClick={ session.refresh(more=true,userInitiated=true) },enabled=!session.loading,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp).testTag("new-chat-more-projects")) { Text(productText("更多项目")) }
-            if(session.canCreateProject) TextButton(onClick={ navigate("add-project") },modifier=Modifier.fillMaxWidth().heightIn(min=48.dp).testTag("new-chat-add-project")) { Text(productText("添加项目")) }
+            TextButton(onClick={ if(session.isCurrentNewChatTarget(target))session.refresh(userInitiated=true) },enabled=!session.loading,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp).testTag("new-chat-refresh")) { Text(productText(if(session.loading) "正在读取电脑上的项目…" else "刷新项目")) }
+            if(session.workspace?.nextProjectCursor!=null) TextButton(onClick={ if(session.isCurrentNewChatTarget(target))session.refresh(more=true,userInitiated=true) },enabled=!session.loading,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp).testTag("new-chat-more-projects")) { Text(productText("更多项目")) }
+            if(session.canCreateProject) TextButton(onClick={ if(session.isCurrentNewChatTarget(target) && session.canCreateProject)navigate("add-project") },modifier=Modifier.fillMaxWidth().heightIn(min=48.dp).testTag("new-chat-add-project")) { Text(productText("添加项目")) }
         }
     }
 }

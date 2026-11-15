@@ -25,7 +25,7 @@ class NativeNewChatLiveTest {
     }
     @After fun stop() { ui.runOnIdle { session.leaveForeground() } }
     @Test fun chooseProjectFolderAndCreateOnceInOriginalDesktop() {
-        require(instrumentation.targetContext.packageName=="com.easyai.agenthub.android.acceptance")
+        require(instrumentation.targetContext.packageName=="com.codexmobile.personal.acceptance")
         val fixture=File(instrumentation.targetContext.filesDir,"acceptance/new-chat-live.json")
         org.junit.Assume.assumeTrue("Private original-desktop acceptance fixture required",fixture.exists())
         val config=JSONObject(fixture.readText(Charsets.UTF_8))
@@ -36,7 +36,18 @@ class NativeNewChatLiveTest {
         main { session.connect("New-chat isolated original desktop",config.getString("endpoint"),token) }
         ui.onNodeWithTag("open-sidebar").performClick();ui.onNodeWithTag("sidebar-new").performClick()
         ui.onNodeWithTag("new-chat-refresh").performScrollTo().performClick()
-        try { ui.waitUntil(30_000) { !session.loading&&session.projects.any { it.id==project }&&session.canCreateThread } }
+        try {
+            ui.waitUntil(30_000) { !session.loading&&session.canCreateThread }
+            for(page in 1..12) {
+                if(ui.runOnIdle { session.projects.any { it.id==project } }) break
+                val cursor=checkNotNull(ui.runOnIdle { session.workspace?.nextProjectCursor }) {
+                    "Registered test project not found in the complete project catalog"
+                }
+                ui.onNodeWithTag("new-chat-more-projects").performScrollTo().performClick()
+                ui.waitUntil(20_000) { !session.loading && (session.projects.any { it.id==project } || session.workspace?.nextProjectCursor!=cursor) }
+            }
+            assertTrue("Registered test project not found within 12 pages",ui.runOnIdle { session.projects.any { it.id==project } })
+        }
         catch(failure: ComposeTimeoutException) { shot("failure-projects");throw AssertionError("Live project picker: online=${session.selectedClient.online}, projects=${session.projects.map { it.id }}, creation=${session.canCreateThread}, unavailable=${session.newChatUnavailableReason}, error=${session.error}",failure) }
         ui.onNodeWithTag("choose-project-$project").performScrollTo().assertIsDisplayed();shot("project-picker")
         ui.onNodeWithTag("choose-project-$project").performClick()

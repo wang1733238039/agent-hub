@@ -32,11 +32,20 @@ test('Windows production startup provisions a private Host-bound bridge exactly 
   Object.defineProperty(process, 'platform', { value: 'win32' });
   const input = options();
   const hostId = randomUUID();
-  const file = defaultDesktopPreparedBridge(input, hostId);
+  let persisted = 0;
+  const path = join(input.directory, 'prepared-bridge.json');
+  const file = defaultDesktopPreparedBridge(input, hostId, () => {
+    assert(!existsSync(path));
+    persisted++;
+  });
   assert.equal(file, join(input.directory, 'prepared-bridge.json'));
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { hostId });
   const bytes = readFileSync(file);
-  assert.equal(defaultDesktopPreparedBridge(input, hostId), file);
+  assert.equal(
+    defaultDesktopPreparedBridge(input, hostId, () => assert.fail('Identity already persisted')),
+    file,
+  );
+  assert.equal(persisted, 1);
   assert.deepEqual(readFileSync(file), bytes);
 });
 
@@ -106,34 +115,37 @@ test('default bridge keeps validation policy and rejects a wrong Host even with 
   }
 });
 
-test('session restart keeps its original identity and bridge, and readiness requires live desktop', async () => {
-  Object.defineProperty(process, 'platform', originalPlatform);
-  if (process.platform !== 'win32') return;
-  const input = {
-    ...options(),
-    root,
-    name: 'Cold-thread recovery fixture',
-    executable: join(root, 'never-execute'),
-  };
-  const first = new RuntimeSession(input);
-  const hostId = first.hostId;
-  const file = join(input.directory, 'prepared-bridge.json');
-  assert.equal(
-    JSON.parse(readFileSync(join(input.directory, 'runtime.json'), 'utf8')).hostId,
-    hostId,
-  );
-  assert.equal(JSON.parse(readFileSync(file, 'utf8')).hostId, hostId);
-  assert(first.desktopCreationDriver instanceof DesktopPreparedBridge);
-  await first.refreshDesktopCreationAvailability();
-  assert.equal(first.capabilities.includes('desktop:open'), false);
-  first.close();
-  const restarted = new RuntimeSession(input);
-  try {
-    assert.equal(restarted.hostId, hostId);
+test(
+  'session restart keeps its original identity and bridge, and readiness requires live desktop',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    Object.defineProperty(process, 'platform', originalPlatform);
+    const input = {
+      ...options(),
+      root,
+      name: 'Cold-thread recovery fixture',
+      executable: join(root, 'never-execute'),
+    };
+    const first = new RuntimeSession(input);
+    const hostId = first.hostId;
+    const file = join(input.directory, 'prepared-bridge.json');
+    assert.equal(
+      JSON.parse(readFileSync(join(input.directory, 'runtime.json'), 'utf8')).hostId,
+      hostId,
+    );
     assert.equal(JSON.parse(readFileSync(file, 'utf8')).hostId, hostId);
-    assert(restarted.desktopCreationDriver instanceof DesktopPreparedBridge);
-    assert.equal(restarted.capabilities.includes('desktop:open'), false);
-  } finally {
-    restarted.close();
-  }
-});
+    assert(first.desktopCreationDriver instanceof DesktopPreparedBridge);
+    await first.refreshDesktopCreationAvailability();
+    assert.equal(first.capabilities.includes('desktop:open'), false);
+    first.close();
+    const restarted = new RuntimeSession(input);
+    try {
+      assert.equal(restarted.hostId, hostId);
+      assert.equal(JSON.parse(readFileSync(file, 'utf8')).hostId, hostId);
+      assert(restarted.desktopCreationDriver instanceof DesktopPreparedBridge);
+      assert.equal(restarted.capabilities.includes('desktop:open'), false);
+    } finally {
+      restarted.close();
+    }
+  },
+);

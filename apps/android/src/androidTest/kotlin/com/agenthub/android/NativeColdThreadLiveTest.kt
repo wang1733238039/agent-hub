@@ -27,7 +27,7 @@ class NativeColdThreadLiveTest {
         require(f.getBoolean("independentOwnerAbsentBefore"))
         val id=f.getString("threadId");val marker=f.getString("marker")
         ui.waitUntil(30_000) { !ui.activity.session.restoring }
-        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"cold-original-chat");session.resetAcceptance() }
+        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"cold-original-chat");session.resetAcceptance();session.changeLanguage("en") }
         main { session.connect("USB isolated original desktop",f.getString("endpoint"),f.getString("token")) }
         ui.waitUntil(30_000) { !session.loading&&session.threads.any { it.id==id } }
         ui.runOnIdle { session.selectThread(session.threads.single { it.id==id }) }

@@ -162,7 +162,12 @@ private fun LazyListScope.sidebarProjectRows(project: MobileProject,children: Li
                 ProductIcon("folder");Spacer(Modifier.width(10.dp));Text(project.name,Modifier.weight(1f),maxLines=1,fontSize=16.sp,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 Spacer(Modifier.width(8.dp));ProductIcon(if(expanded) "down" else "chevron",Modifier.size(12.dp),colors.onSurfaceVariant)
             }
-            if(session.canCreateThread)IconAction("new",productText("在 %@ 新建对话",project.name),"new-in-${project.id}") { if(session.newChat(project.id))close() }
+            if(session.canCreateThread) {
+                val target=session.captureNewChatTarget()
+                IconAction("new",productText("在 %@ 新建对话",project.name),"new-in-${project.id}") {
+                    if(project.hostId==target.client.id && session.newChat(project.id,target))close()
+                }
+            }
         }
     }
     if(expanded) {

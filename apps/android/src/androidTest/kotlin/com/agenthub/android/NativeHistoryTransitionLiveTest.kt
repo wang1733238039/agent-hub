@@ -42,7 +42,7 @@ class NativeHistoryTransitionLiveTest {
             }
         }
         ui.waitUntil(30_000) { !ui.activity.session.restoring }
-        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"history-transition-live");session.resetAcceptance(reader,gated) }
+        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"history-transition-live");session.resetAcceptance(reader,gated);session.changeLanguage("en") }
         main { session.connect("USB isolated original desktop",f.getString("endpoint"),token) }
         ui.waitUntil(30_000) { !session.loading&&session.threads.any { it.id==id } }
         ui.runOnIdle { session.selectThread(session.threads.single { it.id==id }) }

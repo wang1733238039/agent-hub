@@ -1033,28 +1033,25 @@ export function discoverWindowsDesktopCli(
   const bundled = trusted.filter((v) =>
     adjacent.some((p) => resolve(p).toLowerCase() === v.path.toLowerCase()),
   );
-  // Store resources can be readable but not executable outside the package.
-  // Only prefer staged bytes matching this owner's bundled payload exactly.
-  const stagedCopies = trusted.filter(
-    (value) =>
-      stagedPaths.has(value.path.toLowerCase()) &&
-      bundled.some((payload) => payload.sha256 === value.sha256),
-  );
-  if (stagedCopies.length) {
-    const selected =
-      configured &&
-      stagedCopies.find((value) => value.path.toLowerCase() === resolve(configured).toLowerCase());
-    return (selected || stagedCopies[0]!).path;
-  }
   const choices = bundled.length ? bundled : trusted;
   if (!choices.length) throw windowsInstallationFailure('WINDOWS_CLI_NOT_FOUND');
+  const configuredPath = configured ? resolve(configured).toLowerCase() : undefined;
   const configuredChoice =
-    configured &&
-    choices.find((value) => value.path.toLowerCase() === resolve(configured).toLowerCase());
-  if (configuredChoice) return configuredChoice.path;
-  if (new Set(choices.map((v) => v.sha256)).size !== 1)
+    configuredPath && choices.find((value) => value.path.toLowerCase() === configuredPath);
+  if (!configuredChoice && new Set(choices.map((v) => v.sha256)).size !== 1)
     throw windowsInstallationFailure('WINDOWS_CLI_AMBIGUOUS');
-  return choices[0]!.path;
+  const selected = configuredChoice || choices[0]!;
+  if (!bundled.length) return selected.path;
+  // The Store binary can be readable but not spawnable. Resolve the trusted
+  // payload first, then prefer only an official staged copy of those exact bytes.
+  const staged = trusted.filter(
+    (value) => stagedPaths.has(value.path.toLowerCase()) && value.sha256 === selected.sha256,
+  );
+  return (
+    staged.find((value) => value.path.toLowerCase() === configuredPath)?.path ??
+    staged[0]?.path ??
+    selected.path
+  );
 }
 
 export function inspectWindowsInstallation(configured?: string, identity = inspectWindowsPipe()) {

@@ -405,11 +405,19 @@ struct ProjectPickerView: View {
   @AppStorage(L10n.storageKey) private var appLanguage = AppLanguage.system.rawValue
     @ObservedObject var store: SessionStore
     var body: some View {
+        let target = store.newChatTarget
         NavigationStack {
             List {
+                if let reason = store.newChatUnavailableReason {
+                    Section {
+                        Text(reason)
+                            .foregroundStyle(Palette.secondary)
+                            .accessibilityIdentifier("new-chat-unavailable")
+                    }
+                }
                 if store.canCreateProjectless {
                     Section {
-                        Button { store.newProjectlessConversation() } label: {
+                        Button { store.newProjectlessConversation(target: target) } label: {
                             Label(L10n.tr("不选择项目"), systemImage: "square.and.pencil")
                         }.disabled(store.client?.online != true).foregroundStyle(Color.primary).accessibilityIdentifier("choose-projectless")
                     }
@@ -418,10 +426,10 @@ struct ProjectPickerView: View {
                     Section {
                         ForEach(store.recentProjects) { project in
                             Button {
-                                store.newConversation(in: project)
+                                store.newConversation(in: project, target: target)
                             } label: {
                                 projectChoice(project, icon: "clock")
-                            }.disabled(!store.canCreateThread || store.client?.online != true).foregroundStyle(Color.primary).accessibilityIdentifier(
+                            }.disabled(!store.canChooseNewChatProject).foregroundStyle(Color.primary).accessibilityIdentifier(
                                 "choose-recent-project-\(project.id)")
                         }
                     } header: {
@@ -431,29 +439,39 @@ struct ProjectPickerView: View {
                 Section {
                     ForEach(store.projects) { project in
                         Button {
-                            store.newConversation(in: project)
+                            store.newConversation(in: project, target: target)
                         } label: {
                             projectChoice(project, icon: "folder")
-                        }.disabled(!store.canCreateThread || store.client?.online != true).foregroundStyle(Color.primary).accessibilityIdentifier(
+                        }.disabled(!store.canChooseNewChatProject).foregroundStyle(Color.primary).accessibilityIdentifier(
                             "choose-project-\(project.id)")
                     }
-                    if store.projects.isEmpty { Text(L10n.tr("尚无可选项目。可在电脑端添加项目或文件夹后刷新。")).foregroundStyle(Palette.secondary) }
+                    if store.projects.isEmpty {
+                        Text(store.loading
+                            ? L10n.tr("正在读取电脑上的项目…")
+                            : L10n.tr("尚无可选项目。可在电脑端添加项目或文件夹后刷新。"))
+                            .foregroundStyle(Palette.secondary).accessibilityIdentifier("new-chat-empty-projects")
+                    }
                 } header: {
                     Text(store.client?.name ?? L10n.tr("未连接"))
                 }
                 Section {
                     if store.client?.isDemo != true {
-                        Button(L10n.tr("刷新项目")) { Task { await store.refresh(includeHistory: false, userInitiated: true) } }
+                        Button(L10n.tr("刷新项目")) { Task { await store.refreshNewChatProjects(for: target) } }
                             .disabled(store.loading).accessibilityIdentifier("new-chat-refresh")
+                        if store.hasMoreNewChatProjects {
+                            Button(L10n.tr("更多项目")) { Task { await store.refreshNewChatProjects(for: target, loadMore: true) } }
+                                .disabled(store.loading).accessibilityIdentifier("new-chat-more-projects")
+                        }
                     }
-                    if store.canCreateProject {
-                        Button(L10n.tr("添加项目")) { store.sheet = .addProject }
+                    if store.canCreateProject && store.client?.online == true {
+                        Button(L10n.tr("添加项目")) {
+                            if target == store.newChatTarget && store.canCreateProject && store.client?.online == true {
+                                store.sheet = .addProject
+                            }
+                        }
                     }
                 } footer: {
                     Text(L10n.tr("选择对话所属的项目或文件夹，发送第一条消息后创建。"))
-                    if !store.canCreateThread || store.client?.online != true {
-                        Text(L10n.tr(store.client?.online != true ? "电脑连接尚未确认，请连接后刷新。" : "当前连接不支持新建对话。"))
-                    }
                 }
             }.navigationTitle(L10n.tr("选择项目")).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -467,7 +485,7 @@ struct ProjectPickerView: View {
         Label {
             VStack(alignment: .leading, spacing: 3) {
                 Text(project.name)
-                ForEach(project.roots, id: \.self) { root in
+                ForEach(Array(project.roots.enumerated()), id: \.offset) { _, root in
                     Text(root).font(.caption).foregroundStyle(Palette.secondary).lineLimit(2)
                 }
             }

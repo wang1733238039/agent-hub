@@ -33,7 +33,7 @@ data class MobileClient(val id: String, val name: String, val scope: TargetScope
 }
 data class PendingAgentLink(val presentation: String=UUID.randomUUID().toString(),val payload: String)
 data class DraftDestination(val key: String,val selection: Long)
-internal data class NewChatTarget(val client: MobileClient,val navigation: Long,val revision: Long)
+internal data class NewChatTarget(val client: MobileClient,val navigation: Long,val revision: Long,val selection: Long)
 internal data class CreationWaitContext(val key: String,val record: SavedOperation,val client: MobileClient,val selection: Long,val navigation: Long,val revision: Long)
 data class ComposerActionContext(val key: String,val client: MobileClient,val threadId: String,val selection: Long,
     val navigation: Long,val connectionRevision: Long,val turnId: String?,val state: String,val action: String,val draftVersion: String?,
@@ -1703,11 +1703,13 @@ class MobileSession(private val storage: NativeSessionStorage? = null, reader: H
     }
     var scrollToLatestRevision by mutableLongStateOf(0)
         private set
-    internal fun captureNewChatTarget() = NewChatTarget(selectedClient,clientNavigationRevision,revisions[selectedClient.id] ?: 0)
+    internal fun captureNewChatTarget() = NewChatTarget(selectedClient,clientNavigationRevision,revisions[selectedClient.id] ?: 0,selectionRevision)
+    internal fun isCurrentNewChatTarget(target: NewChatTarget) =
+        target.navigation==clientNavigationRevision && target.revision==(revisions[selectedClient.id] ?: 0) &&
+            target.selection==selectionRevision && target.client.id==selectedClient.id &&
+            target.client.endpoint==selectedClient.endpoint && sameScope(target.client.scope,selectedClient.scope)
     internal fun newChat(projectId: String? = null,target: NewChatTarget = captureNewChatTarget()): Boolean {
-        if(target.navigation!=clientNavigationRevision || target.revision!=(revisions[selectedClient.id] ?: 0) ||
-            target.client.id!=selectedClient.id || target.client.endpoint!=selectedClient.endpoint || !sameScope(target.client.scope,selectedClient.scope) ||
-            !canCreateThread || projectId==null && !canCreateProjectless ||
+        if(!isCurrentNewChatTarget(target) || !canCreateThread || projectId==null && !canCreateProjectless ||
             projectId!=null && projects.none { it.id==projectId && it.hostId==selectedClient.id }) return false
         voice?.suspendRecording();questionVoice?.suspendRecording();aiSharingRequest=null
         if(!selectedClient.isDemo) {

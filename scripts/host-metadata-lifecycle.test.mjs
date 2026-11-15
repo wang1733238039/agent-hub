@@ -6,6 +6,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const originalSpawn = childProcess.spawn;
 const originalTimeout = globalThis.setTimeout;
@@ -29,7 +30,7 @@ import {spawn} from 'node:child_process';
 const log=${JSON.stringify(log)}, mode=${JSON.stringify(mode)};
 const record=x=>appendFileSync(log, JSON.stringify({pid:process.pid,...x})+'\\n');
 record({event:'start'});
-if(mode==='late-close'){const holder=spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),1400)'],{stdio:['ignore',process.stdout,'ignore']});record({event:'holder',holderPid:holder.pid});}
+if(mode==='late-close'){if(process.platform==='win32'){record({event:'holder',syntheticCloseNotificationDelay:true});}else{const holder=spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),1400)'],{stdio:['ignore',process.stdout,'ignore']});record({event:'holder',holderPid:holder.pid});}}
 process.on('SIGTERM',()=>{record({event:'term'}); if(mode==='ignore' || mode==='bad-list' || mode==='silent-init') return; setTimeout(()=>process.exit(0),150)});
 process.stdin.on('end',()=>{if(mode!=='ignore' && mode!=='silent-init')process.exit(0)});
 createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);record({event:'request',method:r.method});if(r.id===undefined)return;
@@ -47,6 +48,19 @@ setInterval(()=>{},1000);
   childProcess.spawn = (command, args, options) => {
     if (command !== cli) return originalSpawn(command, args, options);
     const child = originalSpawn(process.execPath, [cli, ...args], options);
+    if (process.platform === 'win32' && mode === 'late-close') {
+      // Windows does not preserve the POSIX inherited-pipe holder scenario.
+      // Delay only this fixture's close notification after real child exit;
+      // the unchanged assertions still require replacement to await that close.
+      const emit = child.emit;
+      child.emit = function (event, ...values) {
+        if (event === 'close') {
+          originalTimeout(() => emit.call(child, event, ...values), 1400);
+          return true;
+        }
+        return emit.call(this, event, ...values);
+      };
+    }
     const entry = { child, closed: false, overlap: children.some((x) => !x.closed) };
     children.push(entry);
     child.once('close', () => {
@@ -244,73 +258,82 @@ test('synthetic: reader close reaps resistant child before explicit reconnect', 
   });
 });
 
-test('synthetic: history Host SIGTERM and restart reap the exact spawned children', async () => {
-  await fixture('ignore', async ({ cli, dir, events, waitFor }) => {
-    const entry = new URL('../apps/host-agent/dist/history-entry.js', import.meta.url);
-    const hosts = [];
-    const recorded = new Set();
-    const cleanupErrors = [];
-    try {
-      for (let cycle = 0; cycle < 2; cycle++) {
-        const host = originalSpawn(process.execPath, [entry.pathname], {
-          env: {
-            ...process.env,
-            CODEX_EXECUTABLE: cli,
-            HOST_AGENT_PORT: '0',
-            HOST_AGENT_STATE_DIR: dir,
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        hosts.push(host);
-        let ready = false;
-        let errors = '';
-        host.stdout.on('data', (chunk) => {
-          if (String(chunk).includes('history-only')) ready = true;
-        });
-        host.stderr.on('data', (chunk) => {
-          errors += chunk;
-        });
-        const exited = new Promise((resolve) =>
-          host.once('close', (code, signal) => resolve({ code, signal })),
-        );
-        await waitFor(() => ready || host.exitCode !== null, 'fixture Host did not start', 4000);
-        assert.equal(ready, true, `fixture Host failed: ${errors}`);
-        const starts = (await events()).filter((event) => event.event === 'start');
-        assert.equal(starts.length, cycle + 1);
-        const pid = starts[cycle].pid;
-        recorded.add(pid);
-        assert.equal(host.kill('SIGTERM'), true);
-        const outcome = await Promise.race([exited, delay(5000).then(() => null)]);
-        assert.ok(outcome, 'fixture Host did not exit after SIGTERM');
-        assert.equal(outcome.code, 0);
-        await waitFor(
-          () => {
-            try {
-              process.kill(pid, 0);
-              return false;
-            } catch (error) {
-              return error.code === 'ESRCH';
-            }
-          },
-          'fixture metadata child survived Host shutdown',
-          3000,
-        );
-        recorded.delete(pid);
-      }
-    } finally {
-      for (const host of hosts)
-        if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
-      for (const pid of recorded) {
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch (error) {
-          if (error.code !== 'ESRCH') cleanupErrors.push(error);
+test(
+  'synthetic: history Host SIGTERM and restart reap the exact spawned children',
+  {
+    skip:
+      process.platform === 'win32'
+        ? 'Requires POSIX executable shebangs and catchable SIGTERM; not Windows shutdown acceptance'
+        : false,
+  },
+  async () => {
+    await fixture('ignore', async ({ cli, dir, events, waitFor }) => {
+      const entry = new URL('../apps/host-agent/dist/history-entry.js', import.meta.url);
+      const hosts = [];
+      const recorded = new Set();
+      const cleanupErrors = [];
+      try {
+        for (let cycle = 0; cycle < 2; cycle++) {
+          const host = originalSpawn(process.execPath, [fileURLToPath(entry)], {
+            env: {
+              ...process.env,
+              CODEX_EXECUTABLE: cli,
+              HOST_AGENT_PORT: '0',
+              HOST_AGENT_STATE_DIR: dir,
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          hosts.push(host);
+          let ready = false;
+          let errors = '';
+          host.stdout.on('data', (chunk) => {
+            if (String(chunk).includes('history-only')) ready = true;
+          });
+          host.stderr.on('data', (chunk) => {
+            errors += chunk;
+          });
+          const exited = new Promise((resolve) =>
+            host.once('close', (code, signal) => resolve({ code, signal })),
+          );
+          await waitFor(() => ready || host.exitCode !== null, 'fixture Host did not start', 4000);
+          assert.equal(ready, true, `fixture Host failed: ${errors}`);
+          const starts = (await events()).filter((event) => event.event === 'start');
+          assert.equal(starts.length, cycle + 1);
+          const pid = starts[cycle].pid;
+          recorded.add(pid);
+          assert.equal(host.kill('SIGTERM'), true);
+          const outcome = await Promise.race([exited, delay(5000).then(() => null)]);
+          assert.ok(outcome, 'fixture Host did not exit after SIGTERM');
+          assert.equal(outcome.code, 0);
+          await waitFor(
+            () => {
+              try {
+                process.kill(pid, 0);
+                return false;
+              } catch (error) {
+                return error.code === 'ESRCH';
+              }
+            },
+            'fixture metadata child survived Host shutdown',
+            3000,
+          );
+          recorded.delete(pid);
+        }
+      } finally {
+        for (const host of hosts)
+          if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
+        for (const pid of recorded) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch (error) {
+            if (error.code !== 'ESRCH') cleanupErrors.push(error);
+          }
         }
       }
-    }
-    assert.deepEqual(cleanupErrors, []);
-  });
-});
+      assert.deepEqual(cleanupErrors, []);
+    });
+  },
+);
 
 test('synthetic: late stdout close blocks reader replacement then permits recovery', async () => {
   await fixture('late-close', async ({ cli, children, events, waitFor }) => {

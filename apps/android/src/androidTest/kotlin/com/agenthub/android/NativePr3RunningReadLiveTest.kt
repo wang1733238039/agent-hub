@@ -52,7 +52,7 @@ class NativePr3RunningReadLiveTest {
             }
         }
         ui.waitUntil(30_000) { !ui.activity.session.restoring }
-        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"pr3-running-read");session.resetAcceptance(reader,commands) }
+        ui.runOnIdle { owned=OwnedControlAcceptance(ui.activity,"pr3-running-read");session.resetAcceptance(reader,commands);session.changeLanguage("en") }
         main { session.connect("USB isolated running desktop",f.getString("endpoint"),token) }
         ui.waitUntil(30_000) { !session.loading&&session.threads.any { it.id==id } }
         ui.runOnIdle { session.selectThread(session.threads.single { it.id==id }) }

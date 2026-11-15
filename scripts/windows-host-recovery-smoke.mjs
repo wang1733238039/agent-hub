@@ -326,6 +326,17 @@ try {
       cli,
       'Even matching bytes outside the official staging paths do not gain preference',
     );
+    const otherBundleDirectory = join(directory, 'installed/bin');
+    mkdirSync(otherBundleDirectory);
+    const otherBundle = join(otherBundleDirectory, 'codex.exe');
+    writeFileSync(otherBundle, 'other bundled payload');
+    cliHashes.set(otherBundle, 'd'.repeat(64));
+    assert.throws(
+      () => discoverWindowsDesktopCli(identity, cli),
+      (error) => error.code === 'WINDOWS_CLI_AMBIGUOUS',
+      'A matching staged copy must not resolve an ambiguous desktop bundle',
+    );
+    assert.equal(discoverWindowsDesktopCli(identity, bundledCli), cli);
   } finally {
     cliHashes.clear();
     unlinkSync(bundledCli);
