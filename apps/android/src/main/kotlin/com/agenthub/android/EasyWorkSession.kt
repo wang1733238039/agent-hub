@@ -239,7 +239,10 @@ class EasyWorkRemoteSession(val connection: AgentConnection,private val credenti
             }
             if(subscriptions[threadId]!=epoch) {
                 subscribedThreads.add(threadId)
-                request("thread/subscribe",JSONObject().put("threadId",threadId).put("afterSequence",after))
+                // Same authenticated runtime: reconnect from what this session actually
+                // received. A new socket epoch is not a loss of persisted event progress.
+                val resumeAfter=maxOf(after,threadSequences[threadId]?:0)
+                request("thread/subscribe",JSONObject().put("threadId",threadId).put("afterSequence",resumeAfter))
                 currentCoroutineContext().ensureActive();subscriptions[threadId]=epoch
                 threadSequences.merge(threadId,after,::maxOf)
             }

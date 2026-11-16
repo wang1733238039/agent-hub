@@ -150,7 +150,7 @@ import androidx.compose.foundation.text.KeyboardOptions
         GroupTitle(t.tr("关于"))
         GroupCard {
             SettingsRow("检查更新","v${BuildConfig.VERSION_NAME}","settings-update",icon="refresh") { navigate("update") }
-            Row(Modifier.fillMaxWidth().padding(16.dp)) { Text("Codex 手机版",Modifier.weight(1f)); Text(BuildConfig.VERSION_NAME,color=colors.onSurfaceVariant) }
+            Row(Modifier.fillMaxWidth().padding(16.dp)) { Text(androidx.compose.ui.res.stringResource(R.string.app_display_name),Modifier.weight(1f)); Text(BuildConfig.VERSION_NAME,color=colors.onSurfaceVariant) }
             SettingsRow(t.tr("隐私政策"),"","settings-privacy-policy",icon="privacy") { open(t.privacyPolicyUrl) }
             SettingsRow(t.tr("帮助与支持"),"","settings-support",icon="help-circle") { open(t.supportUrl) }
             Text(t.tr("统一管理局域网内多台电脑上的 Agent 客户端，目前支持 Codex 和 Easy Work，后续可兼容更多客户端。\n\n一键切换客户端，随时发起任务，让 AI 自动完成并交付工作。"),Modifier.padding(horizontal=16.dp).padding(bottom=16.dp),fontSize=14.sp,color=colors.onSurfaceVariant)
