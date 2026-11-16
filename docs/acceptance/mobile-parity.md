@@ -1,5 +1,7 @@
 # 双端一致性验收场景与记录规范
 
+2026-11-16 F17 / F31 / UI05: Android EasyWork uses bounded receive backpressure and resumes authenticated session progress after a socket reconnect. Personal-fork application identity and signing configuration are preserved. iOS and physical-phone acceptance are unchanged; see [replay recovery](../easywork-replay-recovery-20261116.md).
+
 2026-11-15 F05／F17／F28／F31：Windows 原会话 profile 13 与 MSIX 冷打开修复见[专项记录](windows-packaged-thread-open-20261115.md)。手机 UI 和消息提交契约未变；Android 已用现有验收版完成专用冷会话接管测试，iOS 与外网/Tailscale链路未新增通过。
 
 2026-11-14 F17／F31 辅助检查续验：仅给测试进程补充已存在的官方 CLI 完整路径，原重连诊断测试 7 通过／0 失败／3 平台或权限跳过，完整 `pnpm check` 中该文件也通过。全量随后在独立文件传输用例创建符号链接时被 Windows `EPERM` 阻断，后续链未执行，不能记为整套通过。产品源码、正式 Host 配置及真机验收范围不变；详见[续验记录](history-owner-identity-20261114.md#windows-cli-path-follow-up-2026-11-14)。

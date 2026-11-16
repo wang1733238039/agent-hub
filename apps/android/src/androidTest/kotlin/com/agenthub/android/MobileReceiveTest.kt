@@ -89,6 +89,37 @@ class MobileReceiveTest {
             assertTrue(reads.all { it.getString("method")=="thread/sync" })
         } finally { session.close() }
     }
+
+    @Test fun reconnectSubscribesAfterAuthenticatedProgressInsteadOfZero()=runBlocking {
+        val vector=asset("easywork-crypto-vector.json")
+        val credential=EasyWorkCredential.decode(vector.getJSONObject("credential"))
+        val connection=AgentConnection(credential.binding.target.scope(),listOf(AgentCandidate("fixture-relay","relay-http","https://relay.invalid")),"synthetic-ref","relay-only")
+        val peers=java.util.concurrent.CopyOnWriteArrayList<NativeEasyWorkProtocolPeer>()
+        val cursors=java.util.concurrent.CopyOnWriteArrayList<Long>()
+        val transports=AgentTransportRegistry().apply { register("relay-http") { _,_,_,_->
+            lateinit var peer: NativeEasyWorkProtocolPeer
+            peer=NativeEasyWorkProtocolPeer(credential,vector.getString("confirmation")) { request->
+                when(request.getString("method")) {
+                    "thread/subscribe"->{
+                        val params=request.getJSONObject("params");cursors.add(params.getLong("afterSequence"))
+                        peer.emitThreadEvent(JSONObject().put("threadId","thread").put("threadSeq",7L+cursors.size-1).put("payload",JSONObject()))
+                        JSONObject().put("subscribed",true)
+                    }
+                    "runtime/context"->JSONObject()
+                    else->error("Unexpected read")
+                }
+            };peers.add(peer);peer
+        } }
+        val remote=EasyWorkRemoteSession(connection,credential,{ "synthetic" },transports)
+        try {
+            assertEquals(7L,remote.events("thread",0))
+            peers.first().close()
+            remote.request("runtime/context")
+            remote.events("thread",0)
+            assertEquals(listOf(0L,7L),cursors.toList())
+            assertEquals(2,peers.size)
+        } finally {remote.close()}
+    }
     @Test fun sessionCacheIsBoundedToFourThreadsAndCloseRejectsLateReads()=runBlocking {
         val known=java.util.concurrent.CopyOnWriteArrayList<Int>();val waiting=CompletableDeferred<Unit>();val release=CompletableDeferred<Unit>()
         val session=session { request ->

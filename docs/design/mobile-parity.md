@@ -1,5 +1,7 @@
 # 双端 UI 一致性规格
 
+2026-11-16 F17 / F31 / UI05: Android EasyWork uses bounded receive backpressure and resumes authenticated session progress after a socket reconnect. Personal-fork application identity and signing configuration are preserved. iOS and physical-phone acceptance are unchanged; see [replay recovery](../easywork-replay-recovery-20261116.md).
+
 2026-11-14 F17／F31／UI05：历史切换实时连接后，同一原消息仅显示一次；不同轮次或不同原项即使正文相同仍分别显示。Host 在投影边界统一标识，双端沿用原排版、控件、文案和设计 token。Android 实体手机与 iOS 未验范围见[专项记录](../acceptance/history-owner-identity-20261114.md)。
 
 2026-11-13 F17／F31／UI05 补充：执行中的停止按钮、较早消息入口和任务完成展示以最新已接受的会话快照为准，晚到旧历史或旧事件不得使界面回退。正常更新的完成和失去控制状态仍立即生效，不以延时或保留假状态掩盖变化。两端同步采用共享排序规则；源码回归和原生视觉验收分别记录于[专项记录](../acceptance/thread-filtered-events-20261113.md#additional-active-task-investigation)。
