@@ -63,6 +63,10 @@ internal class AppUpdateManager(private val context: Context) {
             for (index in 0 until releases.length()) {
                 val release = releases.optJSONObject(index) ?: continue
                 if (release.optBoolean("draft", false)) continue
+                if (!updateReleaseMatchesApplication(
+                        release.optString("body"), BuildConfig.APPLICATION_ID,
+                        BuildConfig.LEGACY_AGENT_HUB_UPDATE,
+                    )) continue
                 val assets = release.optJSONArray("assets") ?: continue
                 val asset = (0 until assets.length())
                     .mapNotNull { assets.optJSONObject(it) }

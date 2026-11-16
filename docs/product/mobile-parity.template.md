@@ -1,5 +1,7 @@
 # iOS / Android 功能与一致性清单
 
+2026-11-16 F56: An explicit Android Agent Hub DEV compatibility build retains the earlier installation identity and display name, with separate output and application-id metadata for updates. The personal default and iOS remain unchanged. Build and JVM checks are auxiliary; affected-phone update/data/display acceptance is pending. See [replay recovery](../easywork-replay-recovery-20261116.md).
+
 2026-11-16 F17 / F31 / UI05: Android EasyWork uses bounded receive backpressure and resumes authenticated session progress after a socket reconnect. Personal-fork application identity and signing configuration are preserved. iOS and physical-phone acceptance are unchanged; see [replay recovery](../easywork-replay-recovery-20261116.md).
 
 2026-11-14 F17／F31／UI05：Codex Host 统一历史读取与原 owner 的轮次内序号标识，避免切换实时状态时重复旧消息或跨轮覆盖；相同正文的不同原消息继续保留。双端共用 Host，Android 实体手机只读切换及三次刷新通过，iOS、正式部署与新冷会话发送场景未新增验收，见[专项记录](../acceptance/history-owner-identity-20261114.md)。

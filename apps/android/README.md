@@ -4,6 +4,24 @@
 
 ## 上游工程说明
 
+### 原 Agent Hub DEV 的兼容更新
+
+个人仓库可显式启用 `-PagentHubLegacyUpdate=true`，为已有
+`com.easyai.agenthub.android.debug` 安装制作覆盖更新，版本为 `0.1.2-dev`
+（versionCode 1002）。使用本机原有 debug 签名；不同签名无法覆盖，不要卸载或清除数据。
+个人默认包名、版本和 release 签名配置保持原设置。
+
+```sh
+pnpm exec node scripts/mobile/gradle.mjs :android:testDebugUnitTest :android:assembleDebug -PagentHubLegacyUpdate=true
+```
+
+兼容输出位于 `.build/native/android-agenthub-legacy/outputs/apk/debug/`，不覆盖
+个人包或原来源目录。该配置禁止混用 acceptance，且不生成 release 变体。
+兼容包的 GitHub Release 正文必须声明
+`codex-mobile-application-id: com.easyai.agenthub.android.debug`；每个 Release
+只附该身份的 APK。更新器拒绝身份不匹配的声明，兼容包也拒绝没有身份声明的旧个人发布。
+Android 系统安装器最终校验包名与签名；此配置不迁移其他 App 的数据。
+
 原生 Kotlin / Jetpack Compose 工程，Android 8.0 / API 26 起，compile / target API 37。A1–A4 及 UM01–UM05 已有实现与历史适用验收；EasyWork A5 整体尚未封存，后续 iOS 优化尚未全部同步，系统能力与 Android 通知的完整门槛未关闭。当前以 [2026-10-22 后续计划](../../docs/plans/android-alignment-20261022.md)及逐项矩阵为准；Task Hub 业务项目/任务暂缓，A6 保持暂停。更换后的真机仅完成开发环境核验，未执行产品功能验收。
 
 开发包为 `com.easyai.agenthub.android.debug`，发布包为 `com.easyai.agenthub.android`。两者安装身份分离；发布签名尚未配置。品牌图标直接复用现有 iOS PNG；后续产品图标采用语义相同的自有矢量，平台系统控件差异单列。

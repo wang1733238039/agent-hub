@@ -9,9 +9,17 @@ val acceptanceBuild = providers.gradleProperty("agentHubAcceptance").map {
     it.toBoolean()
 }.getOrElse(false)
 val acceptanceScenario = providers.gradleProperty("agentHubAcceptanceScenario").getOrElse("default")
+// Explicit in-place update for the user's earlier Agent Hub DEV installation.
+val legacyUpdate = providers.gradleProperty("agentHubLegacyUpdate").map {
+    require(it == "true" || it == "false") { "agentHubLegacyUpdate must be true or false" }
+    it.toBoolean()
+}.getOrElse(false)
 require(acceptanceScenario in setOf("default", "document-cold", "photo-cold", "camera-cold")) { "Unknown acceptance scenario" }
 require(acceptanceScenario == "default" || acceptanceBuild) { "Cold selection scope requires an acceptance build" }
-if (acceptanceScenario != "default") {
+require(!legacyUpdate || !acceptanceBuild) { "Legacy updates cannot use the separate acceptance identity" }
+if (legacyUpdate) {
+    layout.buildDirectory.set(rootProject.layout.projectDirectory.dir(".build/native/android-agenthub-legacy"))
+} else if (acceptanceScenario != "default") {
     layout.buildDirectory.set(rootProject.layout.projectDirectory.dir(".build/native/android-${acceptanceScenario}"))
 }
 
@@ -19,11 +27,13 @@ android {
     namespace = "com.agenthub.android"
     compileSdk = 37
     defaultConfig {
-        applicationId = "com.codexmobile.personal"
+        applicationId = if (legacyUpdate) "com.easyai.agenthub.android" else "com.codexmobile.personal"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode = if (legacyUpdate) 1002 else 1
+        versionName = if (legacyUpdate) "0.1.2" else "0.2.0"
+        buildConfigField("boolean", "LEGACY_AGENT_HUB_UPDATE", legacyUpdate.toString())
+        resValue("string", "app_display_name", if (legacyUpdate) "Agent Hub" else "Codex 手机版")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
@@ -63,9 +73,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { compose = true; buildConfig = true }
+    buildFeatures { compose = true; buildConfig = true; resValues = true }
     testOptions { animationsDisabled = true }
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("packages/protocol/fixtures/mobile"))
+}
+
+// A compatibility update is always DEV-signed, never a personal release build.
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variant ->
+        if (legacyUpdate) variant.enable = false
+    }
 }
 
 dependencies {

@@ -1,5 +1,7 @@
 # 双端一致性验收场景与记录规范
 
+2026-11-16 F56: An explicit Android Agent Hub DEV compatibility build retains the earlier installation identity and display name, with separate output and application-id metadata for updates. The personal default and iOS remain unchanged. Build and JVM checks are auxiliary; affected-phone update/data/display acceptance is pending. See [replay recovery](../easywork-replay-recovery-20261116.md).
+
 2026-11-16 F17 / F31 / UI05: Android EasyWork uses bounded receive backpressure and resumes authenticated session progress after a socket reconnect. Personal-fork application identity and signing configuration are preserved. iOS and physical-phone acceptance are unchanged; see [replay recovery](../easywork-replay-recovery-20261116.md).
 
 2026-11-15 F05／F17／F28／F31：Windows 原会话 profile 13 与 MSIX 冷打开修复见[专项记录](windows-packaged-thread-open-20261115.md)。手机 UI 和消息提交契约未变；Android 已用现有验收版完成专用冷会话接管测试，iOS 与外网/Tailscale链路未新增通过。
